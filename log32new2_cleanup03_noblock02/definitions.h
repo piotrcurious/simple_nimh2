@@ -3,7 +3,7 @@
 
 #include <TFT_eSPI.h>
 #include <SPI.h>
-#include <IRremote.h>
+
 #include <cmath>
 #include <limits>
 #include <vector>

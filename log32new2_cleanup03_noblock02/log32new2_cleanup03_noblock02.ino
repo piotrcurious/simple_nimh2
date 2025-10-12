@@ -3,7 +3,7 @@
 #include "graphing.h"
 #include "charging.h"
 #include "internal_resistance.h"
-
+#include <IRremote.h>
 // --- Global Variable Definitions ---
 CurrentModel currentModel;
 SHT4xSensor sht4Sensor;
@@ -311,4 +311,4 @@ void loop() {
     }
 }
 
-inline unsigned long unmanagedCastUL(unsigned long v){ return v; }
+//inline unsigned long unmanagedCastUL(unsigned long v){ return v; }
