@@ -26,10 +26,6 @@
 
 #include <Arduino.h>
 #include "analog.h"
-#include "graphing.h"
-#include "logging.h"
-#include "SHT4xSensor.h"
-#include "ThermistorSensor.h"
 //#include <Fonts/FreeSans9pt7b.h> // Make sure you have included the font file
 #define DEBUG_LABELS // uncomment to see debugging messages from graph plot label placement logic... rabbit hole warning!
 
@@ -103,14 +99,56 @@ struct MeasurementData {
     unsigned long timestamp;
 };
 
+enum class LabelVerticalPlacement {
+    CENTER,
+    ABOVE,
+    BELOW
+};
+
+struct Label {
+    std::string text;
+    int x;
+    int y;
+    uint16_t color;
+    int textWidth;
+    int textHeight;
+    int lineStartX;
+    int lineEndX;
+    int y_initial;
+    int lineY;
+    LabelVerticalPlacement verticalPlacement; // Add this line
+    float minValue; // Add min value
+    float maxValue; // Add max value
+};
+
 // Define the structure to hold the current model (polynomial coefficients)
 struct CurrentModel {
     Eigen::VectorXd coefficients;
     bool isModelBuilt = false;
 };
 
+// Structure to hold supplementary tick information
+struct TickLabel {
+    int y;
+    float value;
+    uint16_t color;
+    Label label;
+};
+
 // Global instance of the current model
 CurrentModel currentModel;
+
+// Structure to hold charge log data
+struct ChargeLogData {
+    unsigned long timestamp;
+    float current;
+    float voltage;
+    float ambientTemperature; // Placeholder - you might need to get this from a sensor
+    float batteryTemperature; // Assuming this is temp1 or temp2
+    int dutyCycle;
+    float internalResistanceLoadedUnloaded;
+    float internalResistancePairs;
+};
 
 // Structure to hold MH electrode voltage measurement data
 struct MHElectrodeData {
@@ -190,6 +228,13 @@ struct AsyncMeasure {
         resultReady = false;
     }
 } meas; // single global measurement instance
+
+
+// Global vector to store charge log data
+std::vector<ChargeLogData> chargeLog;
+
+#include "SHT4xSensor.h"
+#include "ThermistorSensor.h"
 
 // --- Configuration Section ---
 // Define TFT display pins
@@ -383,17 +428,21 @@ float regressedInternalResistancePairsIntercept = 0.0f;
 bool isMeasuringResistance = false;
 
 // --- Function Declarations ---
+float mapf(float value, float in_min, float in_max, float out_min, float out_max); // Float version of map
 void setupPWM();
 void measureInternalResistance();
-void processThermistorData(const MeasurementData& data, const String& measurementType );
-void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
-MHElectrodeData measureMHElectrodeVoltage(int testDutyCycle);
-int findOptimalChargingDutyCycle(int maxChargeDutyCycle, int suggestedStartDutyCycle);
-void handleIRCommand();
-MeasurementData takeMeasurement(int dc,uint32_t stabilization_delay);
+void displayInternalResistanceGraph();
 
+//   function declarations
+
+void processThermistorData(const MeasurementData& data, const String& measurementType );
 
 // --- Function Implementations ---
+
+// Float version of map function for better precision in scaling
+float mapf(float value, float in_min, float in_max, float out_min, float out_max) {
+    return (value - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
 
 #define BUILD_CURRENT_MODEL_DELAY 200 // 200ms is enough (current measurement takes about 100ms)
 
@@ -702,12 +751,68 @@ void processThermistorData(const MeasurementData& data, const String& measuremen
     plotVoltageData();
     plotTemperatureData();
     displayTemperatureLabels(data.temp1, data.temp2, data.tempDiff, data.t1_millivolts, data.voltage, data.current);
-    bigUglyMessage(measurementType);
+
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(PLOT_X_START + 20, PLOT_Y_START + PLOT_HEIGHT / 2 - 10);
+    tft.print(measurementType);
+}
+
+void bigUglyMessage(const String& measurementType = "") {
+
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(2);
+    tft.setCursor(PLOT_X_START + 20, PLOT_Y_START + PLOT_HEIGHT / 2 - 10);
+    tft.print(measurementType);
+}
+
+// Colors
+const uint16_t BLACK = TFT_BLACK;
+const uint16_t WHITE = TFT_WHITE;
+const uint16_t RED = TFT_RED;
+const uint16_t GREEN = TFT_GREEN;
+const uint16_t BLUE = TFT_BLUE;
+const uint16_t GREY = TFT_DARKGREY;
+const uint16_t YELLOW = TFT_YELLOW;
+
+// Visualization parameters
+const int DUTY_CYCLE_BAR_Y = 10;
+const int DUTY_CYCLE_BAR_HEIGHT = 10;
+const int DUTY_CYCLE_BAR_START_X = 30;
+const int DUTY_CYCLE_BAR_END_X = SCREEN_WIDTH - 2;
+
+// Function to draw the duty cycle bar
+void drawDutyCycleBar(int low, int high, int mid, float current, float threshold) {
+  tft.fillRect(DUTY_CYCLE_BAR_START_X, DUTY_CYCLE_BAR_Y, DUTY_CYCLE_BAR_END_X - DUTY_CYCLE_BAR_START_X + 1, DUTY_CYCLE_BAR_HEIGHT, GREY);
+  tft.drawRect(DUTY_CYCLE_BAR_START_X, DUTY_CYCLE_BAR_Y, DUTY_CYCLE_BAR_END_X - DUTY_CYCLE_BAR_START_X + 1, DUTY_CYCLE_BAR_HEIGHT, WHITE);
+
+  // Calculate positions for low, high, and mid markers
+  int range = MAX_DUTY_CYCLE - MIN_DUTY_CYCLE_START;
+  if (range == 0) range = 1; // Avoid division by zero
+
+  int low_x = map(low, MIN_DUTY_CYCLE_START, MAX_DUTY_CYCLE, DUTY_CYCLE_BAR_START_X, DUTY_CYCLE_BAR_END_X);
+  int high_x = map(high, MIN_DUTY_CYCLE_START, MAX_DUTY_CYCLE, DUTY_CYCLE_BAR_START_X, DUTY_CYCLE_BAR_END_X);
+  int mid_x = map(mid, MIN_DUTY_CYCLE_START, MAX_DUTY_CYCLE, DUTY_CYCLE_BAR_START_X, DUTY_CYCLE_BAR_END_X);
+
+  // Draw low and high markers
+  tft.drawLine(low_x, DUTY_CYCLE_BAR_Y - 10, low_x, DUTY_CYCLE_BAR_Y + DUTY_CYCLE_BAR_HEIGHT + 10, WHITE);
+  tft.drawLine(high_x, DUTY_CYCLE_BAR_Y - 10, high_x, DUTY_CYCLE_BAR_Y + DUTY_CYCLE_BAR_HEIGHT + 10, WHITE);
+
+  // Draw mid marker with color indicating result
+  uint16_t mid_color = (current >= threshold) ? GREEN : RED;
+  tft.fillCircle(mid_x, DUTY_CYCLE_BAR_Y + DUTY_CYCLE_BAR_HEIGHT / 2, 8, mid_color);
+
+  // Display current measurement information
+  tft.setTextColor(WHITE);
+  tft.setTextSize(1);
+  tft.printf("Low: %d%%, High: %d%%, Mid: %d%%\n", low, high, mid);
+  tft.printf("Current: %.3f A (Threshold: %.3f A)\n", current, threshold);
+  tft.printf("Measurable: %s\n", (current >= threshold) ? "Yes" : "No");
 }
 
 // Function to clear a specific area for updating text
 void clearTextArea(int y_start, int height) {
-  tft.fillRect(0, y_start, 320, height, TFT_BLACK);
+  tft.fillRect(0, y_start, SCREEN_WIDTH, height, BLACK);
 }
 
 // Step 1: Find the minimal duty cycle for measurable current using binary search
@@ -812,6 +917,52 @@ int findMinimalDutyCycle() {
   }
 }
 
+// --- Helper function to draw the graph ---
+void drawGraph(int* dutyCycles, float* currents, int numPoints, float maxCurrent, int x, int y, int width, int height) {
+  if (numPoints <= 1) return; // Need at least two points to draw a line
+
+  // Clear the graph area
+  tft.fillRect(x, y, width, height, BLACK);
+
+  // Draw axes
+  tft.drawRect(x, y, width, height, WHITE);
+
+  // Calculate scaling factors
+  float xScale = (float)width / (MAX_DUTY_CYCLE - MIN_DUTY_CYCLE_START);
+  float yScale = (height > 0 && maxCurrent > 0) ? (float)height / maxCurrent : 0;
+
+  // Draw data points and connect them with lines
+  for (int i = 0; i < numPoints - 1; i++) {
+    int x1 = x + (dutyCycles[i] - MIN_DUTY_CYCLE_START) * xScale;
+    int y1 = y + height - currents[i] * yScale;
+    int x2 = x + (dutyCycles[i + 1] - MIN_DUTY_CYCLE_START) * xScale;
+    int y2 = y + height - currents[i + 1] * yScale;
+    tft.drawLine(x1, y1, x2, y2, GREEN); // Use a distinct color for the graph
+  }
+
+  // Optionally, draw axis labels and values
+  tft.setTextColor(TFT_YELLOW);
+  tft.setTextSize(1);
+  tft.drawString("Duty Cycle (%)", x + width / 2 - 40, y + height + 20);
+  tft.drawString("(A)", x - 30, y + height / 2);
+
+  // Draw some tick marks on the axes (optional)
+  for (int i = MIN_DUTY_CYCLE_START; i <= MAX_DUTY_CYCLE; i += (MAX_DUTY_CYCLE - MIN_DUTY_CYCLE_START) / 5) {
+    int xTick = x + (i - MIN_DUTY_CYCLE_START) * xScale;
+    tft.drawLine(xTick, y + height, xTick, y + height + 5, WHITE);
+     tft.drawNumber(i, xTick - 10, y + height + 5); // Uncomment if you have a drawNumber function
+  }
+
+  if (maxCurrent > 0) {
+    for (float i = 0; i <= maxCurrent; i += maxCurrent / 3) {
+      int yTick = y + height - i * yScale;
+      tft.drawLine(x - 5, yTick, x, yTick, WHITE);
+       tft.drawFloat(i, 2, x - 30, yTick - 5); // Uncomment if you have a drawFloat function
+    }
+  }
+  tft.setTextColor(WHITE); // Restore text color
+  tft.setTextSize(2); // Restore text size
+}
 
 // Improved function to generate duty cycle pairs with approximately linear spacing
 // across highDc current increments using binary search
@@ -1162,6 +1313,308 @@ void measureInternalResistance() {
     isMeasuringResistance = false; // Only measure once (adjust logic as needed)
 }
 
+namespace { // Anonymous namespace to limit scope of helper functions
+
+// Structure to represent a data point (current, resistance)
+struct DataPoint {
+    float current;
+    float resistance;
+};
+
+// Function to extract valid resistance data from a raw data array
+std::vector<DataPoint> extractValidData(float (*rawData)[2], int dataCount) {
+    std::vector<DataPoint> validData;
+    if (rawData != nullptr) {
+        for (int i = 0; i < dataCount; ++i) {
+            if (rawData[i][1] != -1.0f) {
+                validData.push_back({rawData[i][0], rawData[i][1]});
+            }
+        }
+    }
+    return validData;
+}
+
+// Function to find the minimum and maximum current and resistance from a vector of data points
+void findMinMax(const std::vector<DataPoint>& dataPoints, float& minCurrent, float& maxCurrent, float& minResistance, float& maxResistance) {
+    for (const auto& dataPoint : dataPoints) {
+        minCurrent = std::min(minCurrent, dataPoint.current);
+        maxCurrent = std::max(maxCurrent, dataPoint.current);
+        minResistance = std::min(minResistance, dataPoint.resistance);
+        maxResistance = std::max(maxResistance, dataPoint.resistance);
+    }
+}
+
+// Function to plot a single resistance dataset
+void plotResistanceData(const std::vector<DataPoint>& dataPoints, uint16_t color, float minCurrent, float maxCurrent, float minResistance, float maxResistance, int graphXStart, int graphYStart, int graphXEnd, int graphYEnd) {
+    tft.setTextColor(color);
+    if (dataPoints.size() >= 2) {
+        for (size_t i = 0; i < dataPoints.size() - 1; ++i) {
+            float current1 = dataPoints[i].current;
+            float resistance1 = dataPoints[i].resistance;
+            float current2 = dataPoints[i + 1].current;
+            float resistance2 = dataPoints[i + 1].resistance;
+
+            int x1 = mapf(current1, minCurrent, maxCurrent, graphXStart, graphXEnd);
+            int y1 = mapf(resistance1, minResistance, maxResistance, graphYEnd, graphYStart); // Inverted Y-axis
+
+            int x2 = mapf(current2, minCurrent, maxCurrent, graphXStart, graphXEnd);
+            int y2 = mapf(resistance2, minResistance, maxResistance, graphYEnd, graphYStart); // Inverted Y-axis
+
+            tft.drawLine(x1, y1, x2, y2, color);
+            // tft.fillCircle(x1, y1, 2, color);
+            // if (i == dataPoints.size() - 2) {
+            //     tft.fillCircle(x2, y2, 2, color);
+            // }
+        }
+    }
+}
+
+} // namespace
+
+void displayInternalResistanceGraph() {
+    tft.fillRect(PLOT_X_START, PLOT_Y_START, PLOT_WIDTH, PLOT_HEIGHT, TFT_BLACK);
+
+    // --- Process resistance datasets ---
+    std::vector<DataPoint> validResistanceData = extractValidData(internalResistanceData, resistanceDataCount);
+    std::vector<DataPoint> validInternalResistancePairs = extractValidData(internalResistanceDataPairs, resistanceDataCountPairs);
+
+    // Check if there is enough data to plot
+    if (validResistanceData.size() < 2 && validInternalResistancePairs.size() < 2) {
+        tft.setTextColor(TFT_WHITE);
+        tft.setTextSize(2);
+        tft.setCursor(PLOT_X_START + 20, PLOT_Y_START + PLOT_HEIGHT / 2 - 10);
+        tft.println("Not enough valid data");
+        return;
+    }
+
+    // Find min/max current and resistance from both valid datasets
+    float minCurrent = std::numeric_limits<float>::max();
+    float maxCurrent = std::numeric_limits<float>::min();
+    float minResistance = std::numeric_limits<float>::max();
+    float maxResistance = std::numeric_limits<float>::min();
+
+    bool dataFound = false;
+
+    if (!validResistanceData.empty()) {
+        findMinMax(validResistanceData, minCurrent, maxCurrent, minResistance, maxResistance);
+        dataFound = true;
+    }
+    if (!validInternalResistancePairs.empty()) {
+        findMinMax(validInternalResistancePairs, minCurrent, maxCurrent, minResistance, maxResistance);
+        dataFound = true;
+    }
+
+    if (!dataFound) {
+        tft.setTextColor(TFT_WHITE);
+        tft.setTextSize(2);
+        tft.setCursor(PLOT_X_START + 20, PLOT_Y_START + PLOT_HEIGHT / 2 - 10);
+        tft.println("No valid data to plot");
+        return;
+    }
+
+    // Add some padding for better visualization
+    auto adjustRange =[](float& minVal, float& maxVal, float paddingFactor) {
+        float range = maxVal - minVal;
+        if (range > 0) {
+            minVal -= range * paddingFactor;
+            maxVal += range * paddingFactor;
+        } else if (maxVal == minVal) {
+            minVal -= 0.1f;
+            maxVal += 0.1f;
+        }
+    };
+
+    adjustRange(minCurrent, maxCurrent, 0.1f);
+    adjustRange(minResistance, maxResistance, 0.01f);
+
+    // Ensure min is not greater than max (shouldn't happen with the padding logic, but for safety)
+    if (minCurrent > maxCurrent) std::swap(minCurrent, maxCurrent);
+    if (minResistance > maxResistance) std::swap(minResistance, maxResistance);
+
+    // Define graph boundaries
+    int graphXStart = PLOT_X_START + 40;
+    int graphYStart = PLOT_Y_START + 20;
+    int graphXEnd = PLOT_X_START + PLOT_WIDTH - 20;
+    int graphYEnd = PLOT_Y_START + PLOT_HEIGHT - 40;
+    int graphWidth = graphXEnd - graphXStart;
+    int graphHeight = graphYEnd - graphYStart;
+
+    // Draw axes
+    tft.drawLine(graphXStart, graphYEnd, graphXEnd, graphYEnd, PLOT_X_AXIS_COLOR); // X-axis
+    tft.drawLine(graphXStart, graphYEnd, graphXStart, graphYStart, PLOT_Y_AXIS_COLOR); // Y-axis
+
+    // Plot the resistance datasets
+    plotResistanceData(validResistanceData, GRAPH_COLOR_RESISTANCE, minCurrent, maxCurrent, minResistance, maxResistance, graphXStart, graphYStart, graphXEnd, graphYEnd);
+    plotResistanceData(validInternalResistancePairs, GRAPH_COLOR_RESISTANCE_PAIR, minCurrent, maxCurrent, minResistance, maxResistance, graphXStart, graphYStart, graphXEnd, graphYEnd);
+
+    // Add axis labels
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(1);
+    tft.setCursor(graphXStart + graphWidth / 2 - 30, graphYEnd + 10);
+    tft.println("Current (A)");
+
+    tft.setCursor(PLOT_X_START + 5, graphYStart + graphHeight / 2 - 5);
+    tft.print("R");
+    // tft.print((char)937); //ohm
+
+    // Display min/max values for reference
+    tft.setCursor(graphXEnd - 50, graphYEnd + 10);
+    tft.printf("%.2fA", maxCurrent);
+    tft.setCursor(graphXStart + 5, graphYEnd + 10);
+    tft.printf("%.2fA", minCurrent);
+
+    tft.setCursor(graphXStart - 30, graphYStart - 10);
+    tft.printf("%.2f", maxResistance);
+    tft.setCursor(graphXStart - 30, graphYEnd - 10);
+    tft.printf("%.2f", minResistance);
+
+/*
+    // --- Add the overall internal resistance line and label ---
+    if (dataFound) {
+        if (regressedInternalResistance >= minResistance && regressedInternalResistance <= maxResistance) {
+            int overallResistanceY = mapf(regressedInternalResistance, minResistance, maxResistance, graphYEnd, graphYStart);
+            // Draw a horizontal line
+            tft.drawLine(graphXStart, overallResistanceY, graphXEnd, overallResistanceY, TFT_WHITE);
+            // Add a label for the line
+            tft.setTextSize(1);
+            tft.setTextColor(TFT_WHITE);
+            char buffer[20];
+            snprintf(buffer, sizeof(buffer), "Rint: %.2f", regressedInternalResistance);
+            tft.setCursor(graphXEnd - 50, overallResistanceY - 20); // Adjust position as needed
+            tft.print(buffer);
+            // tft.print((char)937); //ohm
+        } else if (regressedInternalResistance < minResistance) {
+            tft.setTextSize(1);
+            tft.setTextColor(TFT_WHITE);
+            tft.setCursor(graphXEnd - 50, graphYEnd - 10); // Adjust position as needed
+            tft.printf("R_int < %.2f", minResistance);
+        } else if (regressedInternalResistance > maxResistance) {
+            tft.setTextSize(1);
+            tft.setTextColor(TFT_WHITE);
+            tft.setCursor(graphXEnd - 50, graphYStart + 10); // Adjust position as needed
+            tft.printf("R_int > %.2f", maxResistance);
+        }
+    }
+
+    if (dataFound) {
+        if (regressedInternalResistancePairs >= minResistance && regressedInternalResistancePairs <= maxResistance) {
+            int overallResistanceY = mapf(regressedInternalResistancePairs, minResistance, maxResistance, graphYEnd, graphYStart);
+            // Draw a horizontal line
+            tft.drawLine(graphXStart, overallResistanceY, graphXEnd, overallResistanceY, TFT_WHITE);
+            // Add a label for the line
+            tft.setTextSize(1);
+            tft.setTextColor(TFT_WHITE);
+            char buffer[20];
+            snprintf(buffer, sizeof(buffer), "Rint: %.2f", regressedInternalResistancePairs);
+            tft.setCursor(graphXEnd - 50, overallResistanceY - 20); // Adjust position as needed
+            tft.print(buffer);
+            // tft.print((char)937); //ohm
+        } else if (regressedInternalResistancePairs < minResistance) {
+            tft.setTextSize(1);
+            tft.setTextColor(TFT_WHITE);
+            tft.setCursor(graphXEnd - 50, graphYEnd - 10); // Adjust position as needed
+            tft.printf("R_int < %.2f", minResistance);
+        } else if (regressedInternalResistancePairs > maxResistance) {
+            tft.setTextSize(1);
+            tft.setTextColor(TFT_WHITE);
+            tft.setCursor(graphXEnd - 50, graphYStart + 10); // Adjust position as needed
+            tft.printf("R_int > %.2f", maxResistance);
+        }
+    }
+*/
+
+   // --- Add the overall internal resistance line and label (Loaded/Unloaded Regression) ---
+    if (dataFound) {
+        if (resistanceDataCount >= 2) {
+            float resistanceAtMinCurrent = regressedInternalResistanceSlope * minCurrent + regressedInternalResistanceIntercept;
+            float resistanceAtMaxCurrent = regressedInternalResistanceSlope * maxCurrent + regressedInternalResistanceIntercept;
+
+            if ((resistanceAtMinCurrent >= minResistance && resistanceAtMinCurrent <= maxResistance) ||
+                (resistanceAtMaxCurrent >= minResistance && resistanceAtMaxCurrent <= maxResistance)) {
+                int y1 = mapf(resistanceAtMinCurrent, minResistance, maxResistance, graphYEnd, graphYStart);
+                int y2 = mapf(resistanceAtMaxCurrent, minResistance, maxResistance, graphYEnd, graphYStart);
+
+                // Draw the regression line
+                tft.drawLine(graphXStart, y1, graphXEnd, y2, TFT_WHITE);
+
+                // Add a label for the line
+                tft.setTextSize(1);
+                tft.setTextColor(TFT_WHITE);
+                char buffer[50];
+                snprintf(buffer, sizeof(buffer), "Rint(LU): %.2f + %.2f*I", regressedInternalResistanceIntercept, regressedInternalResistanceSlope);
+                tft.setCursor(graphXEnd - 150, y2 - 10); // Adjust position as needed
+                tft.print(buffer);
+                // tft.print((char)937); //ohm
+            } else {
+                tft.setTextSize(1);
+                tft.setTextColor(TFT_WHITE);
+                tft.setCursor(graphXStart + 10, graphYStart + 10); // Adjust position as needed
+                tft.print("Rint(LU) out of range");
+            }
+        } else if (resistanceDataCount == 1) {
+            // If only one point, might want to show it as a single point or handle differently
+            int overallResistanceY = mapf(internalResistanceData[0][1], minResistance, maxResistance, graphYEnd, graphYStart);
+            tft.drawCircle(mapf(internalResistanceData[0][0], minCurrent, maxCurrent, graphXStart, graphXEnd), overallResistanceY, 2, TFT_WHITE);
+        } else {
+            tft.setTextSize(1);
+            tft.setTextColor(TFT_WHITE);
+            tft.setCursor(graphXStart + 10, graphYStart + 20); // Adjust position as needed
+            tft.print("No Rint(LU) regression");
+        }
+    }
+
+    // --- Add the overall internal resistance line and label (Pairs Regression) ---
+    if (dataFound) {
+        if (resistanceDataCountPairs >= 2) {
+            float resistanceAtMinCurrentPairs = regressedInternalResistancePairsSlope * minCurrent + regressedInternalResistancePairsIntercept;
+            float resistanceAtMaxCurrentPairs = regressedInternalResistancePairsSlope * maxCurrent + regressedInternalResistancePairsIntercept;
+
+            if ((resistanceAtMinCurrentPairs >= minResistance && resistanceAtMinCurrentPairs <= maxResistance) ||
+                (resistanceAtMaxCurrentPairs >= minResistance && resistanceAtMaxCurrentPairs <= maxResistance)) {
+                int y1 = mapf(resistanceAtMinCurrentPairs, minResistance, maxResistance, graphYEnd, graphYStart);
+                int y2 = mapf(resistanceAtMaxCurrentPairs, minResistance, maxResistance, graphYEnd, graphYStart);
+
+                // Draw the regression line (using a different color if desired)
+                tft.drawLine(graphXStart, y1, graphXEnd, y2, TFT_GREEN);
+
+                // Add a label for the line
+                tft.setTextSize(1);
+                tft.setTextColor(TFT_GREEN);
+                char buffer[50];
+                snprintf(buffer, sizeof(buffer), "Rint(Pair): %.2f + %.2f*I", regressedInternalResistancePairsIntercept, regressedInternalResistancePairsSlope);
+                tft.setCursor(graphXEnd - 150, y2 + 10); // Adjust position as needed
+                tft.print(buffer);
+                // tft.print((char)937); //ohm
+            } else {
+                tft.setTextSize(1);
+                tft.setTextColor(TFT_GREEN);
+                tft.setCursor(graphXStart + 10, graphYStart + 30); // Adjust position as needed
+                tft.print("Rint(Pair) out of range");
+            }
+        } else if (resistanceDataCountPairs == 1) {
+            // If only one point, might want to show it as a single point or handle differently
+            int overallResistanceY = mapf(internalResistanceDataPairs[0][1], minResistance, maxResistance, graphYEnd, graphYStart);
+            tft.drawCircle(mapf(internalResistanceDataPairs[0][0], minCurrent, maxCurrent, graphXStart, graphXEnd), overallResistanceY, 2, TFT_GREEN);
+        } else {
+            tft.setTextSize(1);
+            tft.setTextColor(TFT_GREEN);
+            tft.setCursor(graphXStart + 10, graphYStart + 40); // Adjust position as needed
+            tft.print("No Rint(Pair) regression");
+        }
+    }
+
+    // --- Add a legend ---
+    tft.setTextSize(1);
+    tft.setTextColor(GRAPH_COLOR_RESISTANCE);
+    tft.setCursor(graphXStart + 10, PLOT_Y_START + 10);
+    tft.print("R_int(1)");
+
+    tft.setTextColor(GRAPH_COLOR_RESISTANCE_PAIR);
+    tft.setCursor(graphXStart + 10, PLOT_Y_START + 20);
+    tft.print("R_int(2)");
+}
+
+// Function to read and retrieve thermistor, voltage, and current data
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current) {
     while (thermistorSensor.isLocked()) {
         yield();
@@ -1172,6 +1625,313 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
     t1_millivolts = thermistorSensor.getRawMillivolts1();
     voltage = voltage_mv / 1000.0f; // Convert mV to Volts
     current = current_ma / 1000.0f; // Convert mA to Amps
+}
+
+// Function to print thermistor, voltage, and current data to the serial monitor
+void printThermistorSerial(double temp1, double temp2, double tempDiff, float t1_millivolts, float voltage, float current) {
+    Serial.print("Thermistor 1 (Top, SHT4x): ");
+    if (isnan(temp1)) Serial.print("Error"); else Serial.printf("%.3f °C", temp1);
+    Serial.print(", Thermistor 2 (Bottom): ");
+    if (isnan(temp2)) Serial.print("Error"); else Serial.printf("%.3f °C", temp2);
+    Serial.print(", Diff (T1-T2): ");
+    if (isnan(tempDiff)) Serial.print("Error"); else Serial.printf("%.3f °C", tempDiff);
+    Serial.printf(", Voltage : %.3f V", voltage);
+    Serial.printf(", Current : %.3f A", current);
+    Serial.println(" °C");
+}
+
+// Function to update the temperature, voltage, and current history arrays for plotting
+void updateTemperatureHistory(double temp1, double temp2, double tempDiff, float voltage, float current) {
+    for (int i = 0; i < PLOT_WIDTH - 1; i++) {
+        temp1_values[i] = temp1_values[i + 1];
+        temp2_values[i] = temp2_values[i + 1];
+        diff_values[i] = diff_values[i + 1];
+        voltage_values[i] = voltage_values[i + 1]; // Update voltage history
+        current_values[i] = current_values[i + 1];     // Update current history
+    }
+    temp1_values[PLOT_WIDTH - 1] = temp1;
+    temp2_values[PLOT_WIDTH - 1] = temp2;
+    diff_values[PLOT_WIDTH - 1] = tempDiff;
+    voltage_values[PLOT_WIDTH - 1] = voltage; // Add new voltage reading
+    current_values[PLOT_WIDTH - 1] = current;     // Add new current reading
+}
+
+// Improved function to get a darker and more gray shade of a color
+uint16_t darkerColor(uint16_t color, float darkeningFactor) {
+    // Ensure factor is within valid range
+    darkeningFactor = max(0.0f, min(1.0f, darkeningFactor));
+    float grayingFactor = 0.6f; // Adjust for desired level of grayness
+
+    // Extract RGB components (5-6-5 format)
+    uint8_t r = (color >> 11) & 0x1F;
+    uint8_t g = (color >> 5) & 0x3F;
+    uint8_t b = color & 0x1F;
+
+    // Convert to floating point (0.0 to 1.0 range)
+    float fr = r / 31.0f;
+    float fg = g / 63.0f;
+    float fb = b / 31.0f;
+
+    // Calculate luminance
+    float luminance = 0.2126 * fr + 0.7152 * fg + 0.0722 * fb;
+
+    // Reduce saturation
+    fr = fr * (1.0f - grayingFactor) + luminance * grayingFactor;
+    fg = fg * (1.0f - grayingFactor) + luminance * grayingFactor;
+    fb = fb * (1.0f - grayingFactor) + luminance * grayingFactor;
+
+    // Apply Darkening
+    fr *= (1.0f - darkeningFactor);
+    fg *= (1.0f - darkeningFactor);
+    fb *= (1.0f - darkeningFactor);
+
+    // Clamp values
+    fr = max(0.0f, min(1.0f, fr));
+    fg = max(0.0f, min(1.0f, fg));
+    fb = max(0.0f, min(1.0f, fb));
+
+    // Convert back to 5-6-5 format
+    uint16_t new_r = static_cast<uint16_t>(fr * 31.0f + 0.5f);
+    uint16_t new_g = static_cast<uint16_t>(fg * 63.0f + 0.5f);
+    uint16_t new_b = static_cast<uint16_t>(fb * 31.0f + 0.5f);
+
+    return (new_r << 11) | (new_g << 5) | new_b;
+}
+
+// Function to clear the plot area and draw the zero line
+void prepareTemperaturePlot() {
+    tft.fillRect(PLOT_X_START, PLOT_Y_START, PLOT_WIDTH, PLOT_HEIGHT, TFT_BLACK);
+
+    // Calculate the Y-coordinate for the zero line of the temperature difference graph
+    float zero_diff_mapped = mapf(0, MIN_DIFF_TEMP, MAX_DIFF_TEMP, 0, PLOT_HEIGHT);
+    int zero_diff_y = PLOT_Y_START + PLOT_HEIGHT - (int)zero_diff_mapped;
+
+    // Draw the zero line for the temperature difference graph
+    tft.drawFastHLine(PLOT_X_START, zero_diff_y, PLOT_WIDTH, PLOT_ZERO_COLOR);
+}
+
+void plotVoltageData() {
+    if (PLOT_WIDTH <= 1) return; // Avoid division by zero
+
+    // 1. Auto-scale voltage
+    float min_voltage = 1000.0; // Initialize to a very high value
+    float max_voltage = -1000.0; // Initialize to a very low value
+    bool first_valid_voltage = true;
+
+    for (int i = 0; i < PLOT_WIDTH; i++) {
+        if (!isnan(voltage_values[i])) {
+            if (first_valid_voltage) {
+                min_voltage = voltage_values[i];
+                max_voltage = voltage_values[i];
+                first_valid_voltage = false;
+            } else {
+                min_voltage = fmin(min_voltage, voltage_values[i]);
+                max_voltage = fmax(max_voltage, voltage_values[i]);
+            }
+        }
+    }
+
+    // Constrain auto-scale
+    min_voltage = fmax(min_voltage, 1.15f);
+    max_voltage = fmin(max_voltage, 3.0f);
+
+//    Serial.print("Calculated min_voltage: ");
+//    Serial.println(min_voltage);
+//    Serial.print("Calculated max_voltage: ");
+//    Serial.println(max_voltage);
+
+    if (min_voltage == max_voltage) {
+        // Handle the case where all voltage values are the same or NaN
+        if (first_valid_voltage) {
+            min_voltage = 0.5f;
+            max_voltage = 1.0f; // Default range if no valid data
+        } else {
+            // Add a small range to make the line visible
+            float offset = 0.1f;
+            min_voltage -= offset;
+            max_voltage += offset;
+            min_voltage = fmax(min_voltage, 0.5f);
+            max_voltage = fmin(max_voltage, 3.0f);
+        }
+    }
+
+    uint16_t grid_color = darkerColor(GRAPH_COLOR_VOLTAGE, 0.25f); // Use the improved function
+
+    // 2. Draw guidance grid (1/8 of graph width)
+    int grid_x = PLOT_X_START + PLOT_WIDTH / 8;
+//    tft.drawFastVLine(grid_x, PLOT_Y_START, PLOT_HEIGHT, grid_color);
+
+    // 3. Draw horizontal grid lines and labels
+    float target_voltages[] = {min_voltage, 1.25f, 1.38f, 1.55f, max_voltage};
+    int num_targets = sizeof(target_voltages) / sizeof(target_voltages[0]);
+
+    tft.setTextColor(grid_color);
+    tft.setTextSize(1); // Adjust as needed
+
+    for (int i = 0; i < num_targets; i++) {
+        float voltage = target_voltages[i];
+        float mapped_y = mapf(voltage, min_voltage, max_voltage, 0, PLOT_HEIGHT);
+        int grid_y = PLOT_Y_START + PLOT_HEIGHT - (int)mapped_y;
+
+        // Draw horizontal grid line
+        tft.drawFastHLine(grid_x, grid_y, PLOT_WIDTH, grid_color);
+
+        // Draw label using tft.drawFloat
+        if (voltage == min_voltage) {
+            //tft.drawFloat(voltage, 2, grid_x - 5, grid_y - 5, 1); // Adjust position as needed
+        } else if (voltage == max_voltage) {
+            //tft.drawFloat(voltage, 2, grid_x - 5, grid_y - 15, 1); // Adjust position as needed
+        } else {
+            tft.drawFloat(voltage, 2, grid_x - 5, grid_y + 8, 1); // Adjust position as needed
+        }
+    }
+
+    // 4. Plot voltage data with auto-scaled range
+    for (int i = 0; i < PLOT_WIDTH - 1; i++) {
+        if (!isnan(voltage_values[i]) && !isnan(voltage_values[i + 1])) {
+            int y_voltage_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(voltage_values[i], min_voltage, max_voltage, 0, PLOT_HEIGHT);
+            int y_voltage_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(voltage_values[i + 1], min_voltage, max_voltage, 0, PLOT_HEIGHT);
+            tft.drawLine(PLOT_X_START + i, y_voltage_prev, PLOT_X_START + i + 1, y_voltage_current, GRAPH_COLOR_VOLTAGE);
+        }
+    }
+
+    // 5. Draw legend (min and max voltage) using tft.drawFloat
+    tft.setTextColor(GRAPH_COLOR_VOLTAGE);
+    tft.setTextSize(1); // Adjust as needed
+    tft.drawFloat(min_voltage, 2, PLOT_X_START + PLOT_WIDTH - 40, PLOT_Y_START + PLOT_HEIGHT - 15, 1); // Adjust position
+    //tft.drawString("Min V", PLOT_X_START + PLOT_WIDTH + 5, PLOT_Y_START + PLOT_HEIGHT - 5, 1); // Label
+    tft.drawFloat(max_voltage, 2, PLOT_X_START + PLOT_WIDTH - 40, PLOT_Y_START, 1); // Adjust position
+    //tft.drawString("Max V", PLOT_X_START + PLOT_WIDTH + 5, PLOT_Y_START + 10, 1); // Label
+}
+
+// Function to plot the temperature, voltage, and current data on the TFT display
+void plotTemperatureData() {
+    for (int i = 0; i < PLOT_WIDTH - 1; i++) {
+        if (!isnan(temp1_values[i]) && !isnan(temp1_values[i + 1])) {
+            int y1_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(temp1_values[i], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
+            int y1_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(temp1_values[i + 1], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
+            tft.drawLine(PLOT_X_START + i, y1_prev, PLOT_X_START + i + 1, y1_current, GRAPH_COLOR_1);
+        }
+        if (!isnan(temp2_values[i]) && !isnan(temp2_values[i + 1])) {
+            int y2_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(temp2_values[i], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
+            int y2_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(temp2_values[i + 1], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
+            tft.drawLine(PLOT_X_START + i, y2_prev, PLOT_X_START + i + 1, y2_current, GRAPH_COLOR_2);
+        }
+        if (!isnan(diff_values[i]) && !isnan(diff_values[i + 1])) {
+            int y_diff_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(diff_values[i], MIN_DIFF_TEMP, MAX_DIFF_TEMP, 0, PLOT_HEIGHT);
+            int y_diff_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(diff_values[i + 1], MIN_DIFF_TEMP, MAX_DIFF_TEMP, 0, PLOT_HEIGHT);
+            tft.drawLine(PLOT_X_START + i, y_diff_prev, PLOT_X_START + i + 1, y_diff_current, GRAPH_COLOR_DIFF);
+        }
+        // Removed the old voltage plotting here, call the dedicated function
+        if (!isnan(current_values[i]) && !isnan(current_values[i + 1])) {
+            int y_current_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(current_values[i], MIN_CURRENT, MAX_CURRENT, 0, PLOT_HEIGHT);
+            int y_current_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(current_values[i + 1], MIN_CURRENT, MAX_CURRENT, 0, PLOT_HEIGHT);
+            tft.drawLine(PLOT_X_START + i, y_current_prev, PLOT_X_START + i + 1, y_current_current, GRAPH_COLOR_CURRENT);
+        }
+    }
+    // Call the dedicated function to plot voltage with auto-scaling and grid
+   // plotVoltageData();
+}
+
+// Function to display current temperature, voltage, and current values and other labels on the TFT display
+void displayTemperatureLabels(double temp1, double temp2, double tempDiff, float t1_millivolts, float voltage, float current) {
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(LABEL_TEXT_SIZE);
+    int label_line_height = 8;
+
+    // T1 Label
+    tft.setCursor(PLOT_X_START, LABEL_Y_START);
+    tft.print("T1: ");
+    if (!isnan(temp1)) {
+        tft.printf("%.2f C", temp1);
+    } else {
+        tft.print("Error");
+    }
+    tft.setTextColor(GRAPH_COLOR_1, TFT_BLACK);
+    tft.print(" R");
+
+    // Voltage Label
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(LABEL_TEXT_SIZE);
+    tft.setCursor(PLOT_X_START + 100, LABEL_Y_START);
+    tft.print("V: ");
+    if (!isnan(voltage)) {
+        tft.printf("%.3f V", voltage);
+    } else {
+        tft.print("Error");
+    }
+    tft.setTextColor(GRAPH_COLOR_VOLTAGE, TFT_BLACK);
+    tft.print(" Y");
+
+    // Current Label
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(LABEL_TEXT_SIZE);
+    tft.setCursor(PLOT_X_START + 100, LABEL_Y_START+label_line_height * 1);
+    tft.print("I: ");
+    if (!isnan(current)) {
+        tft.printf("%.3f A", current);
+    } else {
+        tft.print("Error");
+    }
+    tft.setTextColor(GRAPH_COLOR_CURRENT, TFT_BLACK);
+    tft.print(" M");
+
+    // VCC Label
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(LABEL_TEXT_SIZE);
+    tft.setCursor(PLOT_X_START + 260, LABEL_Y_START + label_line_height * 0);
+    tft.print("VCC:");
+    if (!isnan(thermistorSensor.getVCC())) {
+        tft.printf("%.2f mV", thermistorSensor.getVCC());
+    } else {
+        tft.print("Error");
+    }
+
+    // T2 Label
+    tft.setCursor(PLOT_X_START, LABEL_Y_START + label_line_height);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.print("T2: ");
+    if (!isnan(temp2)) {
+        tft.printf("%.2f C", temp2);
+    } else {
+        tft.print("Error");
+    }
+    tft.setTextColor(GRAPH_COLOR_2, TFT_BLACK);
+    tft.print(" G");
+
+    // Raw Millivolts Label
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(LABEL_TEXT_SIZE);
+    tft.setCursor(PLOT_X_START + 260, LABEL_Y_START + label_line_height * 1);
+    tft.print("mV :");
+    if (!isnan(t1_millivolts)) {
+        tft.printf("%.2f mV", t1_millivolts);
+    } else {
+        tft.print("Error");
+    }
+
+     // duty cycle label
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(LABEL_TEXT_SIZE);
+    tft.setCursor(PLOT_X_START + 260, LABEL_Y_START + label_line_height * 2);
+    tft.print("%  :");
+    if (!isnan(dutyCycle)) {
+        tft.printf("%u  ", dutyCycle);
+    } else {
+        tft.print("Error");
+    }
+
+    // Diff Label
+    tft.setCursor(PLOT_X_START, LABEL_Y_START + 2 * label_line_height);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.print("dT: ");
+    if (!isnan(tempDiff)) {
+        tft.printf("%.2f C", tempDiff);
+    } else {
+        tft.print("Error");
+    }
+    tft.setTextColor(GRAPH_COLOR_DIFF, TFT_BLACK);
+    tft.print(" B");
 }
 
 // charge
@@ -3188,6 +3948,18 @@ void loop() {
     // place background tasks below
     
 }
+#ifdef DEBUG_LABELS
+#include <iostream>
+int testGraph() {
+    // Create some dummy data for testing
+    for (int i = 0; i < 100; ++i) {
+        chargeLog.push_back({(unsigned long)i * 1000, 0.2f + 0.1f * sin(i * 0.1f), 1.5f + 0.2f * cos(i * 0.05f), i % 256, 25.0f + 0.5f * i, 20.0f + 0.3f * i, 0.1f + 0.01f * i, 0.2f + 0.02f * i});
+    }
+    drawChargePlot(true, true);
+    return 0;
+}
+#endif // #ifdef DEBUG_LABELS
+
 void handleIRCommand() {
 
       if (IrReceiver.decodedIRData.protocol == SAMSUNG) {
@@ -3217,13 +3989,14 @@ void handleIRCommand() {
         }
 
 #ifdef DEBUG_LABELS
-        case RemoteKeys::KEY_0:{
+
+          case RemoteKeys::KEY_0:{
           testGraph();
-          delay(20000); // wait 20 seconds
+          delay(20000); // wait 10 seconds
           tft.fillScreen(TFT_BLACK); // clear junk afterwards
         break;
         }
-#endif
+#endif // #ifdef DEBUG_LABELS
 
         case RemoteKeys::KEY_POWER:{
         resetAh = true; // reset mAh counter
