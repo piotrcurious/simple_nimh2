@@ -8,7 +8,7 @@
 #define PLOT_WIDTH 320
 #define PLOT_Y_START 0
 #define PLOT_HEIGHT (216 - 3)
-extern void startMHElectrodeMeasurement(int testDutyCycle, unsigned long stabilization_delay = 1000, unsigned long unloaded_delay = 1000);
+extern void startMHElectrodeMeasurement(int testDutyCycle, unsigned long stabilization_delay, unsigned long unloaded_delay);
 
 // --- State Machine Definitions ---
 AppState currentAppState = APP_STATE_IDLE;
