@@ -37,7 +37,7 @@ float minCurrentDifference = 0;
 int measureStep = 0;
 std::vector<float> voltagesLoaded;
 std::vector<float> currentsLoaded;
-std::vector<float> dutyCycles;
+std::vector<float> ir_dutyCycles;
 std::vector<float> consecutiveInternalResistances;
 
 
@@ -221,7 +221,7 @@ void measureInternalResistanceStep() {
                 } else if (measureStep == 1) {
                     voltagesLoaded.push_back(currentMeasurement.voltage);
                     currentsLoaded.push_back(currentMeasurement.current);
-                    dutyCycles.push_back(static_cast<float>(currentMeasurement.dutyCycle));
+                    ir_dutyCycles.push_back(static_cast<float>(currentMeasurement.dutyCycle));
                     getSingleMeasurement(0, IR_STATE_MEASURE_L_UL);
                     measureStep = 2;
                 } else if (measureStep == 2) {

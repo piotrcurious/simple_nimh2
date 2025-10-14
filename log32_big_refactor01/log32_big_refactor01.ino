@@ -21,11 +21,6 @@ extern void plotVoltageData();
 extern void plotTemperatureData();
 extern void updateTemperatureHistory(double temp1, double temp2, double tempDiff, float voltage, float current);
 extern void printThermistorSerial(double temp1, double temp2, double tempDiff, float t1_millivolts, float voltage, float current);
-float temp1_values[PLOT_WIDTH];
-float temp2_values[PLOT_WIDTH];
-float diff_values[PLOT_WIDTH];
-float voltage_values[PLOT_WIDTH];
-float current_values[PLOT_WIDTH];
 CurrentModel currentModel;
 SHT4xSensor sht4Sensor;
 
