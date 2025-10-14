@@ -380,8 +380,11 @@ void loop() {
             }
             break;
         case APP_STATE_CHARGING:
-            if (!chargeBattery()) {
-                currentAppState = APP_STATE_IDLE;
+            if (now - lastChargingHouseTime >= CHARGING_HOUSEKEEP_INTERVAL) {
+                lastChargingHouseTime = now;
+                if (!chargeBattery()) {
+                    currentAppState = APP_STATE_IDLE;
+                }
             }
             break;
     }
