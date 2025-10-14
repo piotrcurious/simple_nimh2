@@ -8,7 +8,6 @@ extern float estimateCurrent(int dutyCycle);
 extern AppState currentAppState;
 
 uint32_t chargingStartTime = 0;
-bool isCharging = false;
 ChargingState chargingState = CHARGE_IDLE;
 int cachedOptimalDuty = MAX_CHARGE_DUTY_CYCLE;
 unsigned long chargePhaseStartTime = 0;
@@ -308,20 +307,8 @@ bool findOptimalChargingDutyCycleStepAsync() {
                     Serial.println("Not enough data points for linear regression of paired resistance.");
                 }
 
-               float Rint_est = (finalData.current > 0.01f)
-                                 ? fabs((finalData.unloadedVoltage - finalData.loadedVoltage) / finalData.current)
-                                 : 0.0f;
-
-                float unclampedTarget = findOpt.initialUnloadedVoltage +
+                findOpt.targetVoltage = findOpt.initialUnloadedVoltage +
                                         (finalData.loadedVoltage - findOpt.initialUnloadedVoltage) * MH_ELECTRODE_RATIO;
-
-                if (Rint_est > 0 && maximumCurrent > 0) {
-                    float maxDrop = Rint_est * maximumCurrent;
-                    float maxAllowedVoltage = findOpt.initialUnloadedVoltage + maxDrop;
-                    findOpt.targetVoltage = constrain(unclampedTarget, findOpt.initialUnloadedVoltage, maxAllowedVoltage);
-                } else {
-                    findOpt.targetVoltage = unclampedTarget;
-                }
 
                 Serial.printf("FindOpt complete: optimalDC=%d loaded=%.3f target=%.3f diff=%.3f\n",
                               findOpt.optimalDC, finalData.loadedVoltage, findOpt.targetVoltage,
@@ -406,88 +393,75 @@ bool chargeBattery() {
     static int lastOptimalDutyCycle = MAX_CHARGE_DUTY_CYCLE;
     unsigned long now = millis();
 
-    if (isCharging && (now - chargingStartTime >= TOTAL_TIMEOUT)) {
+    if (chargingState != CHARGE_IDLE && chargingState != CHARGE_STOPPED && (now - chargingStartTime >= TOTAL_TIMEOUT)) {
         Serial.println("Charging timeout, stopping charging for safety reasons.");
-        dutyCycle = 0;
-        analogWrite(pwmPin, 0);
         chargingState = CHARGE_STOPPED;
-        return false;
     }
 
-    if (!isCharging) {
-        Serial.println("Starting battery charging process...");
-        isCharging = true;
-        chargingStartTime = now;
-        lastChargeEvaluationTime = now;
-        overtemp_trip_counter = 0;
-        lastOptimalDutyCycle = MAX_CHARGE_DUTY_CYCLE;
-
-        MeasurementData initialData;
-        getThermistorReadings(initialData.temp1, initialData.temp2, initialData.tempDiff,
-                              initialData.t1_millivolts, initialData.voltage, initialData.current);
-        processThermistorData(initialData, "initial readings");
-        Serial.printf("Charging started - Duty Cycle: %d, Current: %.3fA, T1: %.2f°C, T2: %.2f°C, Diff: %.2f°C\n",
-                      MAX_CHARGE_DUTY_CYCLE, initialData.current, initialData.temp1, initialData.temp2, initialData.tempDiff);
-
-        ChargeLogData startLog;
-        startLog.timestamp = now;
-        startLog.current = initialData.current;
-        startLog.voltage = initialData.voltage;
-        startLog.ambientTemperature = initialData.temp1;
-        startLog.batteryTemperature = initialData.temp2;
-        startLog.dutyCycle = MAX_CHARGE_DUTY_CYCLE;
-        startLog.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
-        startLog.internalResistancePairs = regressedInternalResistancePairsIntercept;
-        logChargeData(startLog);
-
-        startFindOptimalManagerAsync(MAX_CHARGE_DUTY_CYCLE, MIN_CHARGE_DUTY_CYCLE, false);
-        chargingState = CHARGE_FIND_OPT;
-        return true;
-    }
-
-    // If a find operation is running, let it finish. Don't do anything else.
-    if (findOptimalChargingDutyCycleStepAsync()) {
-        return true;
-    }
-
-    // The find operation is not running. We can now act based on the current state.
     switch (chargingState) {
-        case CHARGE_FIND_OPT: {
-            // This case is entered when the find operation has just completed.
-            int appliedDC = findOpt.optimalDC;
-
-            if (appliedDC < MIN_CHARGE_DUTY_CYCLE) appliedDC = MIN_CHARGE_DUTY_CYCLE;
-            if (appliedDC > MAX_CHARGE_DUTY_CYCLE) appliedDC = MAX_CHARGE_DUTY_CYCLE;
-
-            dutyCycle = appliedDC;
-            analogWrite(pwmPin, dutyCycle);
-            lastOptimalDutyCycle = dutyCycle;
+        case CHARGE_IDLE: {
+            Serial.println("Starting battery charging process...");
+            chargingStartTime = now;
             lastChargeEvaluationTime = now;
+            overtemp_trip_counter = 0;
+            lastOptimalDutyCycle = MAX_CHARGE_DUTY_CYCLE;
 
-            Serial.printf("Applied optimal duty cycle: %d\n", dutyCycle);
+            MeasurementData initialData;
+            getThermistorReadings(initialData.temp1, initialData.temp2, initialData.tempDiff,
+                                  initialData.t1_millivolts, initialData.voltage, initialData.current);
+            processThermistorData(initialData, "initial readings");
+            Serial.printf("Charging started - Duty Cycle: %d, Current: %.3fA, T1: %.2f°C, T2: %.2f°C, Diff: %.2f°C\n",
+                          MAX_CHARGE_DUTY_CYCLE, initialData.current, initialData.temp1, initialData.temp2, initialData.tempDiff);
 
-            MeasurementData afterApply;
-            getThermistorReadings(afterApply.temp1, afterApply.temp2, afterApply.tempDiff,
-                                  afterApply.t1_millivolts, afterApply.voltage, afterApply.current);
-            ChargeLogData entry;
-            entry.timestamp = now;
-            entry.current = afterApply.current;
-            entry.voltage = afterApply.voltage;
-            entry.ambientTemperature = afterApply.temp1;
-            entry.batteryTemperature = afterApply.temp2;
-            entry.dutyCycle = dutyCycle;
-            entry.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
-            entry.internalResistancePairs = regressedInternalResistancePairsIntercept;
-            logChargeData(entry);
+            ChargeLogData startLog;
+            startLog.timestamp = now;
+            startLog.current = initialData.current;
+            startLog.voltage = initialData.voltage;
+            startLog.ambientTemperature = initialData.temp1;
+            startLog.batteryTemperature = initialData.temp2;
+            startLog.dutyCycle = MAX_CHARGE_DUTY_CYCLE;
+            startLog.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
+            startLog.internalResistancePairs = regressedInternalResistancePairsIntercept;
+            logChargeData(startLog);
 
-            chargingState = CHARGE_MONITOR; // Transition to the monitoring state
+            startFindOptimalManagerAsync(MAX_CHARGE_DUTY_CYCLE, MIN_CHARGE_DUTY_CYCLE, false);
+            chargingState = CHARGE_FIND_OPT;
+            break;
+        }
+        case CHARGE_FIND_OPT: {
+            if (!findOptimalChargingDutyCycleStepAsync()) {
+                // The async function has completed.
+                int appliedDC = findOpt.optimalDC;
+                if (appliedDC < MIN_CHARGE_DUTY_CYCLE) appliedDC = MIN_CHARGE_DUTY_CYCLE;
+                if (appliedDC > MAX_CHARGE_DUTY_CYCLE) appliedDC = MAX_CHARGE_DUTY_CYCLE;
+
+                dutyCycle = appliedDC;
+                analogWrite(pwmPin, dutyCycle);
+                lastOptimalDutyCycle = dutyCycle;
+                lastChargeEvaluationTime = now;
+
+                Serial.printf("Applied optimal duty cycle: %d\n", dutyCycle);
+
+                MeasurementData afterApply;
+                getThermistorReadings(afterApply.temp1, afterApply.temp2, afterApply.tempDiff,
+                                      afterApply.t1_millivolts, afterApply.voltage, afterApply.current);
+                ChargeLogData entry;
+                entry.timestamp = now;
+                entry.current = afterApply.current;
+                entry.voltage = afterApply.voltage;
+                entry.ambientTemperature = afterApply.temp1;
+                entry.batteryTemperature = afterApply.temp2;
+                entry.dutyCycle = dutyCycle;
+                entry.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
+                entry.internalResistancePairs = regressedInternalResistancePairsIntercept;
+                logChargeData(entry);
+
+                chargingState = CHARGE_MONITOR;
+            }
             break;
         }
 
         case CHARGE_MONITOR: {
-            // This is the normal charging state.
-
-            // 1. Current limiting logic
             double temp1, temp2, tempDiff;
             float t1_mV, voltage, current;
             getThermistorReadings(temp1, temp2, tempDiff, t1_mV, voltage, current);
@@ -498,17 +472,14 @@ bool chargeBattery() {
               }
             }
 
-            // 2. Re-evaluation logic
             if (now - lastChargeEvaluationTime >= CHARGE_EVALUATION_INTERVAL_MS) {
                 Serial.println("end of charge by temperature delta check...");
-
                 float tempRise = estimateTempDiff(voltage, voltage, current,
                                                   regressedInternalResistancePairsIntercept,
                                                   temp1, now, lastChargeEvaluationTime, temp2);
                 Serial.print("Estimated temperature rise due to Rint heating: ");
                 Serial.print(tempRise);
                 Serial.println(" °C");
-
                 MAX_DIFF_TEMP = (MAX_TEMP_DIFF_THRESHOLD + tempRise);
 
                 if (tempDiff > (MAX_TEMP_DIFF_THRESHOLD + tempRise)) {
@@ -523,16 +494,12 @@ bool chargeBattery() {
                     }
                 }
 
-                if (chargingState == CHARGE_MONITOR) { // Check if not already stopped
+                if (chargingState == CHARGE_MONITOR) {
                     Serial.println("Re-evaluating charging parameters (non-blocking)...");
-                    dutyCycle = 0;
-                    analogWrite(pwmPin, 0);
-
                     int suggestedStartDutyCycle = min(lastOptimalDutyCycle + (int)(1.0 * lastOptimalDutyCycle),
                                                      MAX_CHARGE_DUTY_CYCLE);
-
                     startFindOptimalManagerAsync(MAX_CHARGE_DUTY_CYCLE, suggestedStartDutyCycle, true);
-                    chargingState = CHARGE_FIND_OPT; // Go back to finding optimal DC
+                    chargingState = CHARGE_FIND_OPT;
                 }
             }
             break;
@@ -541,26 +508,20 @@ bool chargeBattery() {
         case CHARGE_STOPPED: {
             dutyCycle = 0;
             analogWrite(pwmPin, 0);
-            isCharging = false;
-            tft.setTextColor(TFT_GREEN);
-            tft.setTextSize(1);
-            tft.setCursor(14*7, PLOT_Y_START + PLOT_HEIGHT + 20);
-            tft.printf("COMPLETE");
-            return false; // Signal to main loop that charging is done.
+            return false; // Signal that charging is complete.
         }
 
         default:
             break;
     }
 
-    return isCharging;
+    return true; // Signal that charging is ongoing.
 }
-
 
 void startCharging() {
     if (currentAppState != APP_STATE_CHARGING) {
         currentAppState = APP_STATE_CHARGING;
-        isCharging = false; // Reset charging state
+        chargingState = CHARGE_IDLE;
         Serial.println("Initiating battery charging...");
         tft.setTextColor(TFT_RED,TFT_BLACK);
         tft.setTextSize(1);
@@ -572,11 +533,11 @@ void startCharging() {
 }
 
 void stopCharging() {
-  if (isCharging) {
+  if (currentAppState == APP_STATE_CHARGING && chargingState != CHARGE_STOPPED) {
     Serial.println("Manually stopping charging");
+    chargingState = CHARGE_STOPPED;
     dutyCycle = 0;
     analogWrite(pwmPin, 0);
-    isCharging = false;
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(1);
     tft.setCursor(14*7, PLOT_Y_START + PLOT_HEIGHT + 20);
