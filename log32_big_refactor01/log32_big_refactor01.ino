@@ -278,7 +278,7 @@ void handleIRCommand() {
                 currentIRState = IR_STATE_START;
                 break;
             case RemoteKeys::KEY_INFO:
-                if (currentAppState == APP_STATE_IDLE) {
+                if (currentAppState == APP_STATE_IDLE || currentAppState == APP_STATE_CHARGING ) {    
                     currentDisplayState = DISPLAY_STATE_IR_GRAPH;
                     displayInternalResistanceGraph();
                     displayStateChangeTime = millis();
