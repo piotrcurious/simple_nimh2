@@ -1,6 +1,46 @@
 #include "internal_resistance.h"
 #include "definitions.h"
 
+extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
+extern void processThermistorData(const MeasurementData& data, const String& measurementType);
+
+IRState currentIRState = IR_STATE_IDLE;
+unsigned long irStateChangeTime = 0;
+MeasurementData currentMeasurement;
+IRState nextIRState;
+
+void getSingleMeasurement(int dc, IRState nextState) {
+    dutyCycle = dc;
+    analogWrite(pwmPin, dutyCycle);
+    irStateChangeTime = millis();
+    nextIRState = nextState;
+    currentIRState = IR_STATE_GET_MEASUREMENT;
+}
+int irDutyCycle = 0;
+int minDutyCycle = 0;
+int findMinDcLow = 0;
+int findMinDcHigh = 0;
+int findMinDcMid = 0;
+int minimalDutyCycle = 0;
+std::vector<std::pair<int, int>> dutyCyclePairs;
+int pairIndex = 0;
+float minCurrent = 0;
+float maxCurrent = 0;
+int lowDc = 0;
+int previousHighDc = 0;
+int pairGenerationStep = 0;
+int pairGenerationSubStep = 0;
+int lowBound = 0;
+int highBound = 0;
+int bestHighDc = 0;
+float minCurrentDifference = 0;
+int measureStep = 0;
+std::vector<float> voltagesLoaded;
+std::vector<float> currentsLoaded;
+std::vector<float> dutyCycles;
+std::vector<float> consecutiveInternalResistances;
+
+
 float internalResistanceData[MAX_RESISTANCE_POINTS][2];
 int resistanceDataCount = 0;
 float internalResistanceDataPairs[MAX_RESISTANCE_POINTS][2];
@@ -10,6 +50,263 @@ float regressedInternalResistanceIntercept = 0.0f;
 float regressedInternalResistancePairsSlope = 0.0f;
 float regressedInternalResistancePairsIntercept = 0.0f;
 bool isMeasuringResistance = false;
+
+void measureInternalResistanceStep() {
+    unsigned long now = millis();
+
+    switch (currentIRState) {
+        case IR_STATE_IDLE:
+            // Do nothing
+            break;
+
+        case IR_STATE_START:
+            Serial.println("Starting improved internal resistance measurement...");
+            resistanceDataCount = 0;
+            resistanceDataCountPairs = 0;
+            voltagesLoaded.clear();
+            currentsLoaded.clear();
+            dutyCycles.clear();
+            consecutiveInternalResistances.clear();
+            dutyCyclePairs.clear();
+            pairIndex = 0;
+            currentIRState = IR_STATE_STOP_LOAD_WAIT;
+            irStateChangeTime = now;
+            break;
+
+        case IR_STATE_STOP_LOAD_WAIT:
+            dutyCycle = 0;
+            analogWrite(pwmPin, 0);
+            if (now - irStateChangeTime >= UNLOADED_VOLTAGE_DELAY_MS) {
+                currentIRState = IR_STATE_GET_UNLOADED_VOLTAGE;
+            }
+            break;
+
+        case IR_STATE_GET_UNLOADED_VOLTAGE:
+            {
+                MeasurementData initialUnloaded;
+                getThermistorReadings(initialUnloaded.temp1, initialUnloaded.temp2, initialUnloaded.tempDiff, initialUnloaded.t1_millivolts, initialUnloaded.voltage, initialUnloaded.current);
+                Serial.printf("Initial Unloaded Voltage: %.3f V\n", initialUnloaded.voltage);
+                currentIRState = IR_STATE_FIND_MIN_DC;
+            }
+            break;
+
+        case IR_STATE_FIND_MIN_DC:
+            if (findMinDcLow == 0) {
+                Serial.println("Finding minimal duty cycle for measurable current using binary search...");
+                tft.fillScreen(TFT_BLACK);
+                tft.setTextColor(TFT_WHITE);
+                tft.setTextSize(2);
+                tft.drawString("Finding Min Duty Cycle", 10, 10);
+                findMinDcLow = MIN_DUTY_CYCLE_START;
+                findMinDcHigh = MAX_DUTY_CYCLE;
+                minimalDutyCycle = 0;
+            }
+
+            if (findMinDcLow == 0) {
+                Serial.println("Finding minimal duty cycle for measurable current using binary search...");
+                tft.fillScreen(TFT_BLACK);
+                tft.setTextColor(TFT_WHITE);
+                tft.setTextSize(2);
+                tft.drawString("Finding Min Duty Cycle", 10, 10);
+                findMinDcLow = MIN_DUTY_CYCLE_START;
+                findMinDcHigh = MAX_DUTY_CYCLE;
+                minimalDutyCycle = 0;
+            }
+
+            if (findMinDcLow <= findMinDcHigh) {
+                findMinDcMid = findMinDcLow + (findMinDcHigh - findMinDcLow) / 2;
+                getSingleMeasurement(findMinDcMid, IR_STATE_FIND_MIN_DC);
+            } else {
+                tft.fillScreen(TFT_BLACK);
+                tft.setTextColor(TFT_WHITE);
+                tft.setTextSize(2);
+
+                if (minimalDutyCycle > 0) {
+                    Serial.printf("Minimal duty cycle found: %d\n", minimalDutyCycle);
+                    tft.printf("Minimal Duty Cycle Found:\n%d%%\n", minimalDutyCycle);
+                    minDutyCycle = minimalDutyCycle;
+                    currentIRState = IR_STATE_GENERATE_PAIRS;
+                } else {
+                    Serial.println("Warning: Could not find a duty cycle producing measurable current.");
+                    tft.println("Warning: Could not find\nmeasurable current.");
+                    currentIRState = IR_STATE_IDLE;
+                }
+            }
+
+            if (currentMeasurement.dutyCycle == findMinDcMid) {
+                if (currentMeasurement.current >= MEASURABLE_CURRENT_THRESHOLD) {
+                    minimalDutyCycle = findMinDcMid;
+                    findMinDcHigh = findMinDcMid - 1;
+                } else {
+                    findMinDcLow = findMinDcMid + 1;
+                }
+            }
+            break;
+
+        case IR_STATE_GENERATE_PAIRS:
+            if (pairGenerationStep == 0) {
+                Serial.println("Generating duty cycle pairs...");
+                if (minDutyCycle == 0) {
+                    currentIRState = IR_STATE_IDLE;
+                    break;
+                }
+                dutyCycle = minDutyCycle;
+                analogWrite(pwmPin, dutyCycle);
+                irStateChangeTime = now;
+                pairGenerationStep = 1;
+            } else if (pairGenerationStep == 1) {
+                getSingleMeasurement(minDutyCycle, IR_STATE_GENERATE_PAIRS);
+                pairGenerationStep = 2;
+            } else if (pairGenerationStep == 2) {
+                minCurrent = currentMeasurement.current;
+                getSingleMeasurement(MAX_DUTY_CYCLE, IR_STATE_GENERATE_PAIRS);
+                pairGenerationStep = 3;
+            } else if (pairGenerationStep == 3) {
+                maxCurrent = currentMeasurement.current;
+                lowDc = minDutyCycle;
+                previousHighDc = MAX_DUTY_CYCLE;
+                pairIndex = 0;
+                pairGenerationStep = 4;
+            } else if (pairGenerationStep == 4) {
+                if (pairGenerationSubStep == 0) {
+                    if (pairIndex < MAX_RESISTANCE_POINTS / 2) {
+                        float targetHighCurrent = maxCurrent - (pairIndex * (maxCurrent - minCurrent) / (MAX_RESISTANCE_POINTS / 2));
+                        bestHighDc = -1;
+                        minCurrentDifference = 1e9;
+                        lowBound = minDutyCycle;
+                        highBound = previousHighDc;
+                        pairGenerationSubStep = 1;
+                    } else {
+                        currentIRState = IR_STATE_MEASURE_L_UL;
+                        pairIndex = 0;
+                    }
+                } else if (pairGenerationSubStep == 1) {
+                    if (lowBound <= highBound) {
+                        int midDc = lowBound + (highBound - lowBound) / 2;
+                        getSingleMeasurement(midDc, IR_STATE_GENERATE_PAIRS);
+                        pairGenerationSubStep = 2;
+                    } else {
+                        int currentHighDc = bestHighDc != -1 ? bestHighDc : previousHighDc;
+                        if (currentHighDc < minDutyCycle) currentHighDc = minDutyCycle;
+                        dutyCyclePairs.push_back({lowDc, currentHighDc});
+                        previousHighDc = currentHighDc - 1;
+                        pairIndex++;
+                        pairGenerationSubStep = 0;
+                    }
+                } else if (pairGenerationSubStep == 2) {
+                    float targetHighCurrent = maxCurrent - (pairIndex * (maxCurrent - minCurrent) / (MAX_RESISTANCE_POINTS / 2));
+                    float currentDifference = std::fabs(currentMeasurement.current - targetHighCurrent);
+
+                    if (currentDifference < minCurrentDifference) {
+                        minCurrentDifference = currentDifference;
+                        bestHighDc = currentMeasurement.dutyCycle;
+                    }
+
+                    if (currentMeasurement.current > targetHighCurrent) {
+                        highBound = currentMeasurement.dutyCycle - 1;
+                    } else {
+                        lowBound = currentMeasurement.dutyCycle + 1;
+                    }
+                    pairGenerationSubStep = 1;
+                }
+            }
+            break;
+
+        case IR_STATE_MEASURE_L_UL:
+            if (pairIndex < dutyCyclePairs.size()) {
+                if (measureStep == 0) {
+                    int dc = dutyCyclePairs[pairIndex].second;
+                    getSingleMeasurement(dc, IR_STATE_MEASURE_L_UL);
+                    measureStep = 1;
+                } else if (measureStep == 1) {
+                    voltagesLoaded.push_back(currentMeasurement.voltage);
+                    currentsLoaded.push_back(currentMeasurement.current);
+                    dutyCycles.push_back(static_cast<float>(currentMeasurement.dutyCycle));
+                    getSingleMeasurement(0, IR_STATE_MEASURE_L_UL);
+                    measureStep = 2;
+                } else if (measureStep == 2) {
+                    if (currentsLoaded.back() > 0.01f) {
+                        float internalResistance = (currentMeasurement.voltage - voltagesLoaded.back()) / currentsLoaded.back();
+                        storeResistanceData(currentsLoaded.back(), std::fabs(internalResistance), internalResistanceData, resistanceDataCount);
+                    } else {
+                        storeResistanceData(currentsLoaded.back(), -1.0f, internalResistanceData, resistanceDataCount);
+                    }
+                    pairIndex++;
+                    measureStep = 0;
+                }
+            } else {
+                currentIRState = IR_STATE_MEASURE_PAIRS;
+                pairIndex = 0;
+                measureStep = 0;
+            }
+            break;
+
+        case IR_STATE_MEASURE_PAIRS:
+            if (pairIndex < dutyCyclePairs.size()) {
+                if (measureStep == 0) {
+                    int dcLow = dutyCyclePairs[pairIndex].first;
+                    getSingleMeasurement(dcLow, IR_STATE_MEASURE_PAIRS);
+                    measureStep = 1;
+                } else if (measureStep == 1) {
+                    voltagesLoaded.push_back(currentMeasurement.voltage);
+                    currentsLoaded.push_back(currentMeasurement.current);
+                    int dcHigh = dutyCyclePairs[pairIndex].second;
+                    getSingleMeasurement(dcHigh, IR_STATE_MEASURE_PAIRS);
+                    measureStep = 2;
+                } else if (measureStep == 2) {
+                    if (currentMeasurement.current > currentsLoaded.back() + MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
+                        float internalResistanceConsecutive = (voltagesLoaded.back() - currentMeasurement.voltage) / (currentMeasurement.current - currentsLoaded.back());
+                        consecutiveInternalResistances.push_back(std::fabs(internalResistanceConsecutive));
+                        storeResistanceData(currentMeasurement.current, std::fabs(internalResistanceConsecutive), internalResistanceDataPairs, resistanceDataCountPairs);
+                    } else {
+                        consecutiveInternalResistances.push_back(-1.0f);
+                        storeResistanceData(currentMeasurement.current, -1.0f, internalResistanceDataPairs, resistanceDataCountPairs);
+                    }
+                    pairIndex++;
+                    measureStep = 0;
+                }
+            } else {
+                currentIRState = IR_STATE_COMPLETE;
+            }
+            break;
+
+        case IR_STATE_GET_MEASUREMENT:
+            if (now - irStateChangeTime >= STABILIZATION_DELAY_MS) {
+                getThermistorReadings(currentMeasurement.temp1, currentMeasurement.temp2, currentMeasurement.tempDiff, currentMeasurement.t1_millivolts, currentMeasurement.voltage, currentMeasurement.current);
+                currentMeasurement.dutyCycle = dutyCycle;
+                currentMeasurement.timestamp = millis();
+                currentIRState = nextIRState;
+            }
+            break;
+
+        case IR_STATE_COMPLETE:
+            bubbleSort(internalResistanceData, resistanceDataCount);
+            bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
+
+            if (resistanceDataCount >= 2) {
+                if (performLinearRegression(internalResistanceData, resistanceDataCount, regressedInternalResistanceSlope, regressedInternalResistanceIntercept)) {
+                    Serial.printf("Regressed Internal Resistance (Loaded/Unloaded): Slope = %.4f, Intercept = %.4f\n",
+                                  regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
+                }
+            } else {
+                Serial.println("Not enough data points for linear regression of Loaded/Unloaded resistance.");
+            }
+
+            if (resistanceDataCountPairs >= 2) {
+                if (performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept)) {
+                    Serial.printf("Regressed Internal Resistance (Pairs): Slope = %.4f, Intercept = %.4f\n",
+                                  regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
+                }
+            } else {
+                Serial.println("Not enough data points for linear regression of paired resistance.");
+            }
+
+            Serial.printf("Internal resistance measurement complete. %d loaded/unloaded points, %d pair points collected.\n", resistanceDataCount, resistanceDataCountPairs);
+            isMeasuringResistance = false;
+            currentIRState = IR_STATE_IDLE;
+            break;
+    }
+}
 
 void bubbleSort(float data[][2], int n) {
     for (int i = 0; i < n - 1; i++) {
@@ -32,21 +329,6 @@ void storeResistanceData(float current, float resistance, float dataArray[MAX_RE
         dataArray[count][1] = resistance;
         count++;
     }
-}
-
-void stopLoad() {
-    dutyCycle = 0;
-    analogWrite(pwmPin, 0);
-    delay(UNLOADED_VOLTAGE_DELAY_MS);
-}
-
-MeasurementData getUnloadedVoltageMeasurement() {
-    stopLoad();
-    MeasurementData data;
-    getThermistorReadings(data.temp1, data.temp2, data.tempDiff, data.t1_millivolts, data.voltage, data.current);
-    data.dutyCycle = 0;
-    data.timestamp = millis();
-    return data;
 }
 
 void drawDutyCycleBar(int low, int high, int mid, float current, float threshold) {
@@ -118,289 +400,6 @@ void drawGraph(int* dutyCycles, float* currents, int numPoints, float maxCurrent
   tft.setTextSize(2);
 }
 
-int findMinimalDutyCycle() {
-  Serial.println("Finding minimal duty cycle for measurable current using binary search...");
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(2);
-  tft.drawString("Finding Min Duty Cycle", 10, 10);
-
-  int low = MIN_DUTY_CYCLE_START;
-  int high = MAX_DUTY_CYCLE;
-  int minimalDutyCycle = 0;
-  int iteration = 0;
-
-  const int GRAPH_X = 30;
-  const int GRAPH_Y = 50;
-  const int GRAPH_WIDTH = SCREEN_WIDTH - 2;
-  const int GRAPH_HEIGHT = SCREEN_HEIGHT-90;
-  const int MAX_GRAPH_POINTS = 100;
-  int dutyCyclePoints[MAX_GRAPH_POINTS];
-  float currentPoints[MAX_GRAPH_POINTS];
-  int numPoints = 0;
-  float maxCurrent = 0.0;
-
-  while (low <= high) {
-    iteration++;
-    int mid = low + (high - low) / 2;
-
-    Serial.printf("Iteration: %d, Testing duty cycle: %d\n", iteration, mid);
-    MeasurementData data = takeMeasurement(mid, STABILIZATION_DELAY_MS);
-    Serial.printf("Measured current at %d%% duty cycle: %.3f A\n", mid, data.current);
-    stopLoad();
-
-    tft.fillRect(0, 10, SCREEN_WIDTH-30, SCREEN_HEIGHT - 10, TFT_BLACK);
-    drawDutyCycleBar(low, high, mid, data.current, MEASURABLE_CURRENT_THRESHOLD);
-
-    if (numPoints < MAX_GRAPH_POINTS) {
-      dutyCyclePoints[numPoints] = mid;
-      currentPoints[numPoints] = data.current;
-      numPoints++;
-      if (data.current > maxCurrent) {
-        maxCurrent = data.current;
-      }
-    } else {
-      for (int i = 0; i < MAX_GRAPH_POINTS - 1; i++) {
-        dutyCyclePoints[i] = dutyCyclePoints[i + 1];
-        currentPoints[i] = currentPoints[i + 1];
-      }
-      dutyCyclePoints[MAX_GRAPH_POINTS - 1] = mid;
-      currentPoints[MAX_GRAPH_POINTS - 1] = data.current;
-      if (data.current > maxCurrent) {
-        maxCurrent = data.current;
-      } else {
-        maxCurrent = 0.0;
-        for (int i = 0; i < MAX_GRAPH_POINTS; i++) {
-          if (currentPoints[i] > maxCurrent) {
-            maxCurrent = currentPoints[i];
-          }
-        }
-      }
-    }
-    drawGraph(dutyCyclePoints, currentPoints, numPoints, maxCurrent, GRAPH_X, GRAPH_Y, GRAPH_WIDTH, GRAPH_HEIGHT);
-
-    if (data.current >= MEASURABLE_CURRENT_THRESHOLD) {
-      minimalDutyCycle = mid;
-      high = mid - 1;
-      Serial.printf("Found measurable current at %d%%, trying lower values.\n", mid);
-    } else {
-      low = mid + 1;
-      Serial.printf("Current too low at %d%%, trying higher values.\n", mid);
-    }
-  }
-
-  tft.fillScreen(TFT_BLACK);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(2);
-
-  if (minimalDutyCycle > 0) {
-    Serial.printf("Minimal duty cycle found: %d\n", minimalDutyCycle);
-    tft.printf("Minimal Duty Cycle Found:\n%d%%\n", minimalDutyCycle);
-    return minimalDutyCycle;
-  } else {
-    Serial.println("Warning: Could not find a duty cycle producing measurable current.");
-    tft.println("Warning: Could not find\nmeasurable current.");
-    return 0;
-  }
-}
-
-std::vector<std::pair<int, int>> generateDutyCyclePairs(int minDutyCycle) {
-    Serial.println("Generating duty cycle pairs (improved for linear current spacing using binary search)...");
-    std::vector<std::pair<int, int>> pairs;
-    if (minDutyCycle == 0) {
-        return pairs;
-    }
-
-    int numPairs = MAX_RESISTANCE_POINTS / 2;
-    if (numPairs < 1) {
-        Serial.println("MAX_RESISTANCE_POINTS should be at least 2 for paired measurement.");
-        return pairs;
-    }
-
-    MeasurementData minCurrentData = takeMeasurement(minDutyCycle, STABILIZATION_DELAY_MS);
-    processThermistorData(minCurrentData, "Estimating Min Current");
-    float minCurrent = minCurrentData.current;
-
-    MeasurementData maxCurrentData = takeMeasurement(MAX_DUTY_CYCLE, STABILIZATION_DELAY_MS);
-    processThermistorData(maxCurrentData, "Estimating Max Current");
-    float maxCurrent = maxCurrentData.current;
-
-    if (maxCurrent <= minCurrent) {
-        Serial.println("Warning: Maximum current is not greater than minimum current. Cannot ensure linear spacing. Falling back to a simpler approach.");
-        int highDc = MAX_DUTY_CYCLE;
-        int lowDc = minDutyCycle;
-        int dutyCycleStep = (MAX_DUTY_CYCLE - minDutyCycle) / numPairs;
-        for (int i = 0; i < numPairs; ++i) {
-            if (highDc < lowDc) break;
-            MeasurementData lowData = takeMeasurement(lowDc, STABILIZATION_DELAY_MS);
-            processThermistorData(lowData, "Generating Pairs (Fallback)");
-            if (lowData.current < MEASURABLE_CURRENT_THRESHOLD && lowDc < highDc) {
-                int adjustedLowDc = lowDc;
-                for (int j = 0; j < 10; ++j) {
-                    adjustedLowDc += MIN_DUTY_CYCLE_ADJUSTMENT_STEP;
-                    if (adjustedLowDc > MAX_DUTY_CYCLE) break;
-                    MeasurementData checkData = takeMeasurement(adjustedLowDc, STABILIZATION_DELAY_MS);
-                    if (checkData.current >= MEASURABLE_CURRENT_THRESHOLD) {
-                        lowDc = adjustedLowDc;
-                        Serial.printf("Adjusting low duty cycle to %d due to low current (fallback).\n", lowDc);
-                        break;
-                    }
-                }
-                if (lowData.current < MEASURABLE_CURRENT_THRESHOLD) {
-                    Serial.println("Warning: Could not adjust low duty cycle to achieve measurable current (fallback).");
-                }
-            } else if (lowDc > MAX_DUTY_CYCLE) {
-                Serial.println("Warning: Low duty cycle exceeded maximum value (fallback).");
-                break;
-            }
-            pairs.push_back({lowDc, highDc});
-            highDc -= dutyCycleStep;
-            lowDc += dutyCycleStep;
-            if (highDc < minDutyCycle) highDc = minDutyCycle + 1;
-            if (lowDc > MAX_DUTY_CYCLE) lowDc = MAX_DUTY_CYCLE - 1;
-        }
-        Serial.printf("Generated %zu duty cycle pairs (fallback).\n", pairs.size());
-        return pairs;
-    }
-
-    float totalCurrentRange = maxCurrent - minCurrent;
-    float desiredCurrentIncrement = totalCurrentRange / numPairs;
-
-    int lowDc = minDutyCycle;
-    int previousHighDc = MAX_DUTY_CYCLE;
-
-    for (int i = 0; i < numPairs; ++i) {
-        float targetHighCurrent = maxCurrent - (i * desiredCurrentIncrement);
-        int bestHighDc = -1;
-        float minCurrentDifference = 1e9;
-
-        int lowBound = minDutyCycle;
-        int highBound = previousHighDc;
-
-        while (lowBound <= highBound) {
-            int midDc = lowBound + (highBound - lowBound) / 2;
-            MeasurementData midData = takeMeasurement(midDc, STABILIZATION_PAIRS_FIND_DELAY_MS);
-            processThermistorData(midData, "Binary Searching High DC");
-            float currentDifference = std::fabs(midData.current - targetHighCurrent);
-
-            if (currentDifference < minCurrentDifference) {
-                minCurrentDifference = currentDifference;
-                bestHighDc = midDc;
-            }
-
-            if (midData.current > targetHighCurrent) {
-                highBound = midDc - 1;
-            } else {
-                lowBound = midDc + 1;
-            }
-        }
-
-        int currentHighDc = bestHighDc != -1 ? bestHighDc : previousHighDc;
-        if (currentHighDc < minDutyCycle) currentHighDc = minDutyCycle;
-
-        MeasurementData lowData = takeMeasurement(lowDc, STABILIZATION_DELAY_MS);
-        processThermistorData(lowData, "Generating Pairs");
-             tft.setCursor(PLOT_X_START + 5, PLOT_Y_START + PLOT_HEIGHT / 2 - 30);
-             tft.printf("progress: %.0f ", ((float)i / numPairs) * 100.0);
-
-        if (lowData.current < MEASURABLE_CURRENT_THRESHOLD && lowDc < currentHighDc) {
-            int adjustedLowDc = lowDc;
-            for (int j = 0; j < 5; ++j) {
-                adjustedLowDc += MIN_DUTY_CYCLE_ADJUSTMENT_STEP;
-                if (adjustedLowDc > MAX_DUTY_CYCLE) break;
-                MeasurementData checkData = takeMeasurement(adjustedLowDc, STABILIZATION_DELAY_MS);
-                if (checkData.current >= MEASURABLE_CURRENT_THRESHOLD) {
-                    lowDc = adjustedLowDc;
-                    Serial.printf("Adjusting low duty cycle to %d due to low current.\n", lowDc);
-                    break;
-                }
-            }
-            if (lowData.current < MEASURABLE_CURRENT_THRESHOLD) {
-                Serial.println("Warning: Could not adjust low duty cycle to achieve measurable current.");
-            }
-        } else if (lowDc > MAX_DUTY_CYCLE) {
-            Serial.println("Warning: Low duty cycle exceeded maximum value.");
-            break;
-        }
-
-        if (currentHighDc < lowDc) {
-            currentHighDc = lowDc + 1;
-            break;
-        };
-
-        pairs.push_back({lowDc, currentHighDc});
-        previousHighDc = currentHighDc - 1;
-
-        if (previousHighDc < minDutyCycle) break;
-    }
-
-    Serial.printf("Generated %zu duty cycle pairs (for linear current spacing using binary search).\n", pairs.size());
-    return pairs;
-}
-
-void measureInternalResistanceLoadedUnloaded(const std::vector<std::pair<int, int>>& dutyCyclePairs, std::vector<float>& voltagesLoaded, std::vector<float>& currentsLoaded, std::vector<float>& dutyCycles) {
-    Serial.println("\n--- Measuring Internal Resistance (Loaded/Unloaded) ---");
-    for (const auto& pair : dutyCyclePairs) {
-        int dc = pair.second;
-        Serial.printf("--- Duty Cycle (Loaded/Unloaded): %d ---\n", dc);
-
-        MeasurementData loadedData = takeMeasurement(dc,STABILIZATION_DELAY_MS);
-        processThermistorData(loadedData, "Rint L/UL");
-
-        voltagesLoaded.push_back(loadedData.voltage);
-        currentsLoaded.push_back(loadedData.current);
-        dutyCycles.push_back(static_cast<float>(dc));
-
-        Serial.printf("Duty Cycle ON (%d): Voltage: %.3f V, Current: %.3f A\n", dc, loadedData.voltage, loadedData.current);
-
-        MeasurementData unloadedData = getUnloadedVoltageMeasurement();
-        Serial.printf("Duty Cycle OFF: Voltage: %.3f V, Current: %.3f A\n", unloadedData.voltage, unloadedData.current);
-
-        if (loadedData.current > 0.01f) {
-            float internalResistance = (unloadedData.voltage - loadedData.voltage) / loadedData.current;
-            storeResistanceData(loadedData.current, std::fabs(internalResistance), internalResistanceData, resistanceDataCount);
-            Serial.printf("Calculated Internal Resistance (Loaded-Unloaded): %.3f Ohm\n", std::fabs(internalResistance));
-            tft.setCursor(PLOT_X_START + 5, PLOT_Y_START + PLOT_HEIGHT / 2 - 30);
-            tft.printf("(L/UL): %.3f ", std::fabs(internalResistance));
-        } else {
-            Serial.println("Warning: Current is too low to reliably calculate internal resistance (Loaded-Unloaded).");
-            storeResistanceData(loadedData.current, -1.0f, internalResistanceData, resistanceDataCount);
-        }
-        Serial.println("---------------------------\n");
-    }
-}
-
-void measureInternalResistancePairs(const std::vector<std::pair<int, int>>& dutyCyclePairs, std::vector<float>& consecutiveInternalResistances) {
-    Serial.println("\n--- Measuring Internal Resistance using Duty Cycle Pairs ---");
-    for (const auto& pair : dutyCyclePairs) {
-        int dcLow = pair.first;
-        int dcHigh = pair.second;
-
-        Serial.printf("--- Duty Cycle Pair: Low=%d, High=%d ---\n", dcLow, dcHigh);
-
-        MeasurementData lowData = takeMeasurement(dcLow,STABILIZATION_DELAY_MS);
-        Serial.printf("Duty Cycle Low (%d): Voltage: %.3f V, Current: %.3f A\n", dcLow, lowData.voltage, lowData.current);
-
-        MeasurementData highData = takeMeasurement(dcHigh,STABILIZATION_DELAY_MS);
-        processThermistorData(highData, "Rint Pair");
-        Serial.printf("Duty Cycle High (%d): Voltage: %.3f V, Current: %.3f A\n", dcHigh, highData.voltage, highData.current);
-
-        if (highData.current > lowData.current + MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
-            float internalResistanceConsecutive = (lowData.voltage - highData.voltage) / (highData.current - lowData.current);
-            consecutiveInternalResistances.push_back(std::fabs(internalResistanceConsecutive));
-            storeResistanceData(highData.current, std::fabs(internalResistanceConsecutive), internalResistanceDataPairs, resistanceDataCountPairs);
-            Serial.printf("Calculated Internal Resistance (Pair): %.3f Ohm\n", std::fabs(internalResistanceConsecutive));
-            tft.setCursor(PLOT_X_START + 5, PLOT_Y_START + PLOT_HEIGHT / 2 - 50);
-            tft.printf("(Pair): %.3f ", std::fabs(internalResistanceConsecutive));
-        } else {
-            Serial.println("Warning: Current difference is too small to reliably calculate internal resistance (Pair).");
-            consecutiveInternalResistances.push_back(-1.0f);
-            storeResistanceData(highData.current, -1.0f, internalResistanceDataPairs, resistanceDataCountPairs);
-        }
-        Serial.println("---------------------------\n");
-    }
-}
-
 float calculateAverageInternalResistance(const std::vector<float>& resistances) {
     float sum = 0;
     int count = 0;
@@ -449,64 +448,6 @@ void performLinearRegression(const std::vector<float>& voltages, const std::vect
     }
 }
 
-void measureInternalResistance() {
-    if (!isMeasuringResistance) return;
-
-    Serial.println("Starting improved internal resistance measurement...");
-
-    resistanceDataCount = 0;
-    resistanceDataCountPairs = 0;
-
-    std::vector<float> voltagesLoaded;
-    std::vector<float> currentsLoaded;
-    std::vector<float> dutyCycles;
-    std::vector<float> consecutiveInternalResistances;
-    std::vector<float> unloadedVoltagesHistory;
-    std::vector<unsigned long> unloadedVoltageTimestamps;
-
-    MeasurementData initialUnloaded = getUnloadedVoltageMeasurement();
-    unloadedVoltagesHistory.push_back(initialUnloaded.voltage);
-    unloadedVoltageTimestamps.push_back(initialUnloaded.timestamp);
-    Serial.printf("Initial Unloaded Voltage: %.3f V\n", initialUnloaded.voltage);
-
-    int minDutyCycle = findMinimalDutyCycle();
-    if (minDutyCycle == 0) {
-        return;
-    }
-
-    std::vector<std::pair<int, int>> dutyCyclePairs = generateDutyCyclePairs(minDutyCycle);
-    measureInternalResistanceLoadedUnloaded(dutyCyclePairs, voltagesLoaded, currentsLoaded, dutyCycles);
-    measureInternalResistancePairs(dutyCyclePairs, consecutiveInternalResistances);
-
-    MeasurementData finalUnloaded = getUnloadedVoltageMeasurement();
-    unloadedVoltagesHistory.push_back(finalUnloaded.voltage);
-    unloadedVoltageTimestamps.push_back(finalUnloaded.timestamp);
-    Serial.printf("Final Unloaded Voltage: %.3f V\n", finalUnloaded.voltage);
-
-    bubbleSort(internalResistanceData, resistanceDataCount);
-    bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
-
-    if (resistanceDataCount >= 2) {
-        if (performLinearRegression(internalResistanceData, resistanceDataCount, regressedInternalResistanceSlope, regressedInternalResistanceIntercept)) {
-            Serial.printf("Regressed Internal Resistance (Loaded/Unloaded): Slope = %.4f, Intercept = %.4f\n",
-                          regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
-        }
-    } else {
-        Serial.println("Not enough data points for linear regression of Loaded/Unloaded resistance.");
-    }
-
-    if (resistanceDataCountPairs >= 2) {
-        if (performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept)) {
-            Serial.printf("Regressed Internal Resistance (Pairs): Slope = %.4f, Intercept = %.4f\n",
-                          regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
-        }
-    } else {
-        Serial.println("Not enough data points for linear regression of paired resistance.");
-    }
-
-    Serial.printf("Internal resistance measurement complete. %d loaded/unloaded points, %d pair points collected.\n", resistanceDataCount, resistanceDataCountPairs);
-    isMeasuringResistance = false;
-}
 
 int findClosestIndex(float data[][2], int count, float targetCurrent) {
     if (count == 0) return 0;

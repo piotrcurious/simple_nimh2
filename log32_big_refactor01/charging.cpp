@@ -2,6 +2,11 @@
 #include "definitions.h"
 #include "logging.h"
 
+extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
+extern void processThermistorData(const MeasurementData& data, const String& measurementType);
+extern float estimateCurrent(int dutyCycle);
+extern AppState currentAppState;
+
 uint32_t chargingStartTime = 0;
 bool isCharging = false;
 ChargingState chargingState = CHARGE_IDLE;
@@ -551,17 +556,17 @@ bool chargeBattery() {
 
 
 void startCharging() {
-  if (!isCharging) {
-    Serial.println("Initiating battery charging...");
-    tft.setTextColor(TFT_RED,TFT_BLACK);
-    tft.setTextSize(1);
-    tft.setCursor(14*7, PLOT_Y_START + PLOT_HEIGHT + 20);
-    tft.printf("CHARGING");
-    overtemp_trip_counter = 0;
-    chargeBattery();
-  } else {
-    Serial.println("Charging already in progress");
-  }
+    if (currentAppState != APP_STATE_CHARGING) {
+        currentAppState = APP_STATE_CHARGING;
+        isCharging = false; // Reset charging state
+        Serial.println("Initiating battery charging...");
+        tft.setTextColor(TFT_RED,TFT_BLACK);
+        tft.setTextSize(1);
+        tft.setCursor(14*7, PLOT_Y_START + PLOT_HEIGHT + 20);
+        tft.printf("CHARGING");
+    } else {
+        Serial.println("Charging already in progress");
+    }
 }
 
 void stopCharging() {
@@ -574,19 +579,5 @@ void stopCharging() {
     tft.setTextSize(1);
     tft.setCursor(14*7, PLOT_Y_START + PLOT_HEIGHT + 20);
     tft.printf("STOPPED");
-  }
-}
-
-void handleBatteryCharging() {
-  if (isCharging) {
-    if (!chargeBattery()) {
-      dutyCycle = 0;
-      analogWrite(pwmPin, 0);
-      isCharging = false;
-      tft.setTextColor(TFT_GREEN);
-      tft.setTextSize(1);
-      tft.setCursor(14*7, PLOT_Y_START + PLOT_HEIGHT + 20);
-      tft.printf("COMPLETE");
-    }
   }
 }

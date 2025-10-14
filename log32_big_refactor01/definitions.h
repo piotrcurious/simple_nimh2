@@ -47,6 +47,7 @@
 #define PWM_MAX 255
 #define TOTAL_TIMEOUT (20UL * 60 * 60 * 1000)
 #define PLOT_UPDATE_INTERVAL_MS 1000
+#define PLOT_DATA_UPDATE_INTERVAL 500
 #define CHARGING_HOUSEKEEP_INTERVAL 100
 #define IR_HANDLE_INTERVAL_MS 200
 #define MAIN_VCC_RATIO 2.0
@@ -118,6 +119,13 @@ const float MIN_CURRENT = 0.0f;
 const float MAX_CURRENT = 0.40f;
 
 // --- Enums and Structs ---
+
+enum AppState {
+    APP_STATE_IDLE,
+    APP_STATE_BUILDING_MODEL,
+    APP_STATE_MEASURING_IR,
+    APP_STATE_CHARGING
+};
 
 struct MeasurementData {
     float voltage;

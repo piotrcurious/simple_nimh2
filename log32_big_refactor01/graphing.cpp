@@ -2,6 +2,7 @@
 #include "definitions.h"
 #include <cfloat>
 
+DisplayState currentDisplayState = DISPLAY_STATE_MAIN;
 TFT_eSPI tft = TFT_eSPI();
 
 float temp1_values[PLOT_WIDTH];

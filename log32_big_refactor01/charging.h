@@ -5,7 +5,6 @@
 
 void startCharging();
 void stopCharging();
-void handleBatteryCharging();
 bool chargeBattery();
 MHElectrodeData measureMHElectrodeVoltage(int testDutyCycle);
 int findOptimalChargingDutyCycle(int maxChargeDutyCycle, int suggestedStartDutyCycle);
