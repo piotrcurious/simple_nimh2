@@ -65,7 +65,7 @@ void measureInternalResistanceStep() {
             resistanceDataCountPairs = 0;
             voltagesLoaded.clear();
             currentsLoaded.clear();
-            dutyCycles.clear();
+            ir_dutyCycles.clear();
             consecutiveInternalResistances.clear();
             dutyCyclePairs.clear();
             pairIndex = 0;
