@@ -217,7 +217,7 @@ bool findOptimalChargingDutyCycleStepAsync() {
                     cur.current = estimateCurrent(cur.dutyCycle);
                 }
 
-                if (cur.current > 0.01f) {
+                if (cur.current > 0.001f) { // to avoid division by 0 
                     float internalResistanceLU = (cur.unloadedVoltage - cur.loadedVoltage) / cur.current;
                     storeOrAverageResistanceData(cur.current, std::fabs(internalResistanceLU), internalResistanceData, resistanceDataCount);
                     bubbleSort(internalResistanceData, resistanceDataCount);
@@ -496,8 +496,8 @@ bool chargeBattery() {
 
                 if (chargingState == CHARGE_MONITOR) {
                     Serial.println("Re-evaluating charging parameters (non-blocking)...");
-                    int suggestedStartDutyCycle = min(lastOptimalDutyCycle + (int)(1.0 * lastOptimalDutyCycle),
-                                                     MAX_CHARGE_DUTY_CYCLE);
+ //                   int suggestedStartDutyCycle = min(lastOptimalDutyCycle + (int)(1.0 * lastOptimalDutyCycle),MAX_CHARGE_DUTY_CYCLE);
+                    int suggestedStartDutyCycle = min( (int)(0.5 * lastOptimalDutyCycle),MAX_CHARGE_DUTY_CYCLE);
                     startFindOptimalManagerAsync(MAX_CHARGE_DUTY_CYCLE, suggestedStartDutyCycle, true);
                     chargingState = CHARGE_FIND_OPT;
                 }
