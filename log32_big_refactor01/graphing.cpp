@@ -579,10 +579,10 @@ void drawChargePlot(bool autoscaleX, bool autoscaleY) {
 
     tft.fillScreen(TFT_BLACK);
 
-    int plotAreaWidth  = tft.width() - 40;
-    int plotAreaHeight = tft.height() - 60;
-    int marginX        = 20;
-    int marginYTop     = 20;
+    int plotAreaWidth  = tft.width() - 2;
+    int plotAreaHeight = tft.height() - 25;
+    int marginX        = 0;
+    int marginYTop     = 10;
 
     unsigned long startTime = chargeLog.front().timestamp;
     unsigned long endTime   = chargeLog.back().timestamp;
@@ -794,9 +794,9 @@ void drawChargePlot(bool autoscaleX, bool autoscaleY) {
     int textSpacing = 0;
     int tickLength = 10;
     int supplementaryTickLength = 5;
-    int labelPadding = 3;
-    int labelMarkingScore = 5;
-    int labelDisplayThreshold = 4;
+    int labelPadding = 2;
+    int labelMarkingScore = 4;
+    int labelDisplayThreshold = 3;
 
     std::map<std::string, std::pair<float, float>> hardcodedRanges = {
         {"Current", {0.0f, 0.4f}},
@@ -1030,7 +1030,7 @@ void drawChargePlot(bool autoscaleX, bool autoscaleY) {
     }
 
     tft.setTextColor(TFT_WHITE);
-    tft.setTextDatum(TL_DATUM);
+    tft.setTextDatum(BL_DATUM);
     if (autoscaleX && endTime > startTime) {
         for (int i = 0; i <= 5; ++i) {
             unsigned long timePoint = startTime + (endTime - startTime) * i / 5;
@@ -1039,43 +1039,51 @@ void drawChargePlot(bool autoscaleX, bool autoscaleY) {
             char buffer[6];
             strftime(buffer, sizeof(buffer), "%H:%M", tm_info);
             int x = marginX + plotAreaWidth * i / 5;
-            tft.drawLine(x, marginYTop, x, marginYTop - 5, TFT_DARKGREY);
-            tft.drawString(buffer, x, marginYTop - 20, 1);
+            tft.drawLine(x, marginYTop+2, x, marginYTop - 5, TFT_DARKGREY);
+            tft.drawString(buffer, x, marginYTop , 1);
         }
     }
 
-    int legendY = marginYTop + plotAreaHeight + 10;
+    int legendY = marginYTop + plotAreaHeight + 5;
     int legendX = marginX;
-    int colorSize = 9;
-    int textOffset = 15;
+    int colorSize = 8;
+    int textOffset = 12;
     tft.setTextDatum(TL_DATUM);
     tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_MAGENTA);
-    tft.setTextColor(TFT_WHITE);
+    tft.setTextColor(TFT_MAGENTA);
     tft.drawString("I", legendX + textOffset, legendY, 1);
-    legendX += 40;
+    legendX += 20;
 
     tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_YELLOW);
+    tft.setTextColor(TFT_YELLOW);
     tft.drawString("V", legendX + textOffset, legendY, 1);
-    legendX += 40;
+    legendX += 20;
 
     tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_DARKGREY);
+    tft.setTextColor(TFT_DARKGREY);
     tft.drawString("%", legendX + textOffset, legendY, 1);
-    legendX += 40;
+    legendX += 25;
 
     tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_BLUE);
+    tft.setTextColor(TFT_BLUE);
     tft.drawString("dT", legendX + textOffset, legendY, 1);
-    legendX += 40;
+    legendX += 25;
 
     tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_RED);
-    tft.drawString("dT/", legendX + textOffset, legendY, 1);
+    tft.setTextColor(TFT_RED);
+    tft.drawString("/dT", legendX + textOffset, legendY, 1);
 
-    legendX = marginX;
-    legendY += 12;
+//    legendX = marginX;
+//    legendY += 12;
+
+    legendX += 40;
 
     tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_ORANGE);
-    tft.drawString("iR(L/UL)", legendX + textOffset, legendY, 1);
-    legendX += 90;
+    tft.setTextColor(TFT_ORANGE);
+    tft.drawString("RiMH", legendX + textOffset, legendY, 1);
+    legendX += 40;
 
     tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_CYAN);
-    tft.drawString("iR(Pairs)", legendX + textOffset, legendY, 1);
+    tft.setTextColor(TFT_CYAN);
+    tft.drawString("Ri", legendX + textOffset, legendY, 1);
 }
