@@ -57,18 +57,18 @@
 #define BUILD_CURRENT_MODEL_DELAY 200
 
 // Physical defaults
-static const float DEFAULT_CELL_MASS_KG       = 0.015f;
+static const float DEFAULT_CELL_MASS_KG       = 0.012f;
 static const float DEFAULT_SPECIFIC_HEAT      = 1000.0f;
 static const float DEFAULT_SURFACE_AREA_M2    = 0.001477f;
-static const float DEFAULT_CONVECTIVE_H       = 4.4f;
+static const float DEFAULT_CONVECTIVE_H       = 0.2f;
 static const float DEFAULT_EMISSIVITY         = 0.9f;
 static const float STEFAN_BOLTZMANN           = 5.670374419e-8f;
 
 // Charging constants
-const float MAX_TEMP_DIFF_THRESHOLD = 0.25f;
+const float MAX_TEMP_DIFF_THRESHOLD = 0.5f;
 const uint8_t OVERTEMP_TRIP_TRESHOLD = 3;
 extern float maximumCurrent;
-const float MH_ELECTRODE_RATIO = 0.40f;
+const float MH_ELECTRODE_RATIO = 0.60f;
 const uint32_t CHARGE_EVALUATION_INTERVAL_MS = 120000;
 const int CHARGE_CURRENT_STEP = 1;
 const int MAX_CHARGE_DUTY_CYCLE = 254;
@@ -82,7 +82,7 @@ const int MAX_DUTY_CYCLE = 255;
 const int DUTY_CYCLE_INCREMENT_FIND_MIN = 5;
 const int STABILIZATION_DELAY_MS = 2000;
 const int STABILIZATION_PAIRS_FIND_DELAY_MS = 1000;
-const int UNLOADED_VOLTAGE_DELAY_MS = 5000;
+const int UNLOADED_VOLTAGE_DELAY_MS = 6000;
 const int MIN_DUTY_CYCLE_ADJUSTMENT_STEP = 5;
 const float MIN_CURRENT_DIFFERENCE_FOR_PAIR = 0.02f;
 const float MIN_VALID_RESISTANCE = 0.0f;

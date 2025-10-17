@@ -408,10 +408,15 @@ void loop() {
     // --- IR Remote Handling ---
     if (now - lastIRHandleTime >= IR_HANDLE_INTERVAL_MS) {
         lastIRHandleTime = now;
-        if (IrReceiver.decode()) {
+        portMUX_TYPE ir_mux = portMUX_INITIALIZER_UNLOCKED;
+        portENTER_CRITICAL(&ir_mux);
+        bool is_ir_data = IrReceiver.decode();
+        portEXIT_CRITICAL(&ir_mux);
+        if (is_ir_data) {
             handleIRCommand();
             IrReceiver.resume();
         }
+        
     }
 }
 

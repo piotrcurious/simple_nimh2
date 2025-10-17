@@ -14,9 +14,176 @@ unsigned long chargePhaseStartTime = 0;
 uint8_t overtemp_trip_counter = 0;
 unsigned long lastChargeEvaluationTime = 0;
 float maximumCurrent = 0.150;
+float currentRampTarget = 0.0f; 
 
 AsyncMeasure meas;
 FindOptManager findOpt;
+
+
+// --- new configurable parameters for temprise absolute/blending ---
+#ifndef TEMPRISE_ABS_MAX_DEPTH
+#define TEMPRISE_ABS_MAX_DEPTH 8   // hard upper bound for memory
+#endif
+
+// Defaults (change at runtime if needed)
+int temprise_abs_depth = 4;        // how many recent log entries to use
+float temprise_balance = 0.3f;     // final = balance*relative + (1-balance)*absolute (0..1)
+
+// recent log circular buffer (keeps last TEMPRISE_ABS_MAX_DEPTH entries)
+static ChargeLogData recentChargeLogs[TEMPRISE_ABS_MAX_DEPTH];
+static int recentChargeLogsCount = 0;     // number of valid entries currently stored (0..TEMPRISE_ABS_MAX_DEPTH)
+static int recentChargeLogsHead = 0;      // next write position (0..TEMPRISE_ABS_MAX_DEPTH-1)
+
+
+//absolute temp rise helpers
+
+void pushRecentChargeLog(const ChargeLogData &entry) {
+    recentChargeLogs[recentChargeLogsHead] = entry;
+    recentChargeLogsHead = (recentChargeLogsHead + 1) % TEMPRISE_ABS_MAX_DEPTH;
+    if (recentChargeLogsCount < TEMPRISE_ABS_MAX_DEPTH) {
+        ++recentChargeLogsCount;
+    }
+    // note: when full, head overwrites the oldest element and count stays capped
+}
+
+int indexOfOldestEntry() {
+    if (recentChargeLogsCount == 0) return -1;
+    // oldest = head - count (mod capacity)
+    int idx = recentChargeLogsHead - recentChargeLogsCount;
+    if (idx < 0) idx += TEMPRISE_ABS_MAX_DEPTH;
+    return idx;
+}
+
+// -------------------------------
+// Replay: compute temp rise over historical data
+// -------------------------------
+// depth = number of last entries to replay (1..count)
+// RETURNS:
+//   - NAN    -> invalid (depth<=0 or no history)
+//   - 0.0f   -> depth==1 (no elapsed intervals) or no net change
+//   - >0.0f  -> positive absolute rise in °C
+//   - <0.0f  -> negative (cooling) — possible if ambient rises faster than heating
+float computeAbsoluteTempRiseFromHistory(int depth) {
+    if (depth <= 0) return NAN;
+    if (recentChargeLogsCount == 0) return NAN;
+
+    // clamp depth
+    int use = depth;
+    if (use > recentChargeLogsCount) use = recentChargeLogsCount;
+
+    // find chronological oldest entry among the used set
+    int oldestIndex = indexOfOldestEntry();
+    if (oldestIndex < 0 || oldestIndex >= TEMPRISE_ABS_MAX_DEPTH) {
+    Serial.printf("Invalid oldestIndex=%d count=%d head=%d\n",
+                  oldestIndex, recentChargeLogsCount, recentChargeLogsHead);
+    return NAN;
+    }
+    
+    if (use < recentChargeLogsCount) {
+        // we only want the most recent 'use' entries -> compute their oldest index
+        oldestIndex = recentChargeLogsHead - use;
+        while (oldestIndex < 0) oldestIndex += TEMPRISE_ABS_MAX_DEPTH;
+        oldestIndex %= TEMPRISE_ABS_MAX_DEPTH;
+    }
+
+    // Rooting point: batteryTemperature of oldest entry (absolute)
+    const ChargeLogData &root = recentChargeLogs[oldestIndex];
+    double T_sim = root.batteryTemperature;       // simulated absolute battery temperature
+    uint32_t prev_ts = root.timestamp;
+    float final_ambient = 25 ; // final replay ambient temperature for return value
+    // If only one entry used -> no time to integrate -> zero rise
+    if (use == 1) return 0.0f;
+
+    // iterate chronologically oldestIndex+1 .. up to newest used
+    int idx = (oldestIndex + 1) % TEMPRISE_ABS_MAX_DEPTH;
+    for (int i = 1; i < use; ++i) {
+        const ChargeLogData &e = recentChargeLogs[idx];
+        // ensure non-decreasing timestamps to avoid unsigned underflow
+        uint32_t ts = e.timestamp;
+        uint32_t dt_ms = ts - prev_ts; // handles wrap correctly
+        if (dt_ms == 0) {
+            // minimal positive dt to avoid zero-division or no-op
+          dt_ms = 1U;
+          ts = prev_ts + 1U;
+         }
+  
+  //      if (dt_ms == 0) { // shouldn't happen, but skip defensively
+  //          prev_ts = ts;
+  //          idx = (idx + 1) % TEMPRISE_ABS_MAX_DEPTH;
+  //          continue;
+  //      }
+
+        // Validate physical inputs and select resistance parameters:
+        float cur = e.current;
+        if (!isfinite(cur) || cur < 0.0f) cur = 0.0f;
+
+        float Rparam = e.internalResistancePairs;
+        if (!isfinite(Rparam) || Rparam <= 1e-12f) {
+            Rparam = regressedInternalResistancePairsIntercept;
+            if (!isfinite(Rparam) || Rparam <= 1e-12f) Rparam = 0.0f;
+        }
+
+        float vUnderLoad = e.voltage;
+        if (!isfinite(vUnderLoad)) vUnderLoad = 0.0f;
+
+/*
+        float Rlu = e.internalResistanceLoadedUnloaded;
+        if (!isfinite(Rlu) || Rlu <= 1e-12f) {
+            Rlu = regressedInternalResistanceIntercept;
+            if (!isfinite(Rlu) || Rlu <= 1e-12f) Rlu = 0.0f;
+        }
+        float vNoLoad = vUnderLoad + cur * Rlu;
+*/
+        float vNoLoad = vUnderLoad ; // onnly Rint simulated, not total MH 
+
+        float ambient = e.ambientTemperature;
+        if (!isfinite(ambient)) ambient = 25.0f;
+        final_ambient = ambient ; // update final ambient temperature 
+        
+        // CRUCIAL: estimateTempDiff returns theta_new = T_bat_after - ambient
+        // We must pass the *absolute* battery temperature at the start of the interval,
+        // i.e. T_sim (not theta).
+        float theta_new = estimateTempDiff(
+            vUnderLoad,
+            vNoLoad,
+            cur,
+            Rparam,
+            ambient,
+            ts,        // currentTime (end of interval)
+            prev_ts,   // lastChargeEvaluationTime (start)
+            T_sim      // BatteryTempC at start (absolute)
+        );
+
+        // Defensive checks:
+        if (!isfinite(theta_new)) {
+            // skip applying this interval (treat as no change), but advance timestamps
+            // Serial.println("Replay: estimateTempDiff returned NaN for interval, skipping.");
+        } else {
+            // convert theta_new to absolute battery temp at end of interval:
+            double T_after = theta_new + ambient;
+
+//            // clamp per-interval jump to avoid single-bad-entry explosion
+            double delta = T_after - T_sim;
+            const float MAX_DELTA_PER_INTERVAL = 50.0f; // °C conservative clamp
+            if (delta > MAX_DELTA_PER_INTERVAL) delta = MAX_DELTA_PER_INTERVAL;
+            if (delta < -MAX_DELTA_PER_INTERVAL) delta = -MAX_DELTA_PER_INTERVAL;
+
+//            T_sim += theta_new; // advance simulated absolute battery temp
+            T_sim += delta; // advance simulated absolute battery temp
+
+        }
+
+        prev_ts = ts;
+        idx = (idx + 1) % TEMPRISE_ABS_MAX_DEPTH;
+    }
+
+    // absolute temperature rise relative to rooting battery temperature:
+//    float absoluteRise = T_sim - root.batteryTemperature;
+//    float absoluteRise = T_sim - root.ambientTemperature;
+    float vs_ambient = T_sim - final_ambient;
+    return vs_ambient;
+}
+
 
 
 // Start an MH electrode measurement: non-blocking
@@ -365,7 +532,7 @@ float estimateTempDiff(
 ) {
   uint32_t dt_ms = (uint32_t)(currentTime - lastChargeEvaluationTime);
   float dt_s = (float)dt_ms * 0.001f;
-  if (dt_s <= 0.0f) return BatteryTempC;
+  if (dt_s <= 0.0f) return BatteryTempC- ambientTempC;
 
   float P = computeDissipatedPower(voltageUnderLoad, voltageNoLoad, current, internalResistanceParam);
 
@@ -376,13 +543,13 @@ float estimateTempDiff(
   float Cth = cellMassKg * specificHeat;
 
   const float tiny = 1e-12f;
+  float theta0 = BatteryTempC - ambientTempC; // initial relative temperature
   if (G <= tiny) {
     float deltaT = (P * dt_s) / Cth;
-    return BatteryTempC + deltaT;
+    return theta0 + deltaT;
   }
 
   float theta_ss = P / G;
-  float theta0 = BatteryTempC - ambientTempC;
   float tau = Cth / G;
   float expo = expf(-dt_s / tau);
   float theta_new = theta_ss + (theta0 - theta_ss) * expo;
@@ -405,6 +572,7 @@ bool chargeBattery() {
             lastChargeEvaluationTime = now;
             overtemp_trip_counter = 0;
             lastOptimalDutyCycle = MAX_CHARGE_DUTY_CYCLE;
+            currentRampTarget = 0.0f;
 
             MeasurementData initialData;
             getThermistorReadings(initialData.temp1, initialData.temp2, initialData.tempDiff,
@@ -423,6 +591,7 @@ bool chargeBattery() {
             startLog.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
             startLog.internalResistancePairs = regressedInternalResistancePairsIntercept;
             logChargeData(startLog);
+            pushRecentChargeLog(startLog);
 
             startFindOptimalManagerAsync(MAX_CHARGE_DUTY_CYCLE, MIN_CHARGE_DUTY_CYCLE, false);
             chargingState = CHARGE_FIND_OPT;
@@ -441,7 +610,7 @@ bool chargeBattery() {
                 lastChargeEvaluationTime = now;
 
                 Serial.printf("Applied optimal duty cycle: %d\n", dutyCycle);
-
+/*  // do not log after applying optimal duty cycle as this is not final current and voltage of each charging cycle after evaluation
                 MeasurementData afterApply;
                 getThermistorReadings(afterApply.temp1, afterApply.temp2, afterApply.tempDiff,
                                       afterApply.t1_millivolts, afterApply.voltage, afterApply.current);
@@ -455,6 +624,7 @@ bool chargeBattery() {
                 entry.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
                 entry.internalResistancePairs = regressedInternalResistancePairsIntercept;
                 logChargeData(entry);
+*/
 
                 chargingState = CHARGE_MONITOR;
             }
@@ -465,7 +635,7 @@ bool chargeBattery() {
             double temp1, temp2, tempDiff;
             float t1_mV, voltage, current;
             getThermistorReadings(temp1, temp2, tempDiff, t1_mV, voltage, current);
-            if (current > maximumCurrent) {
+            if (current > currentRampTarget) {
               if (dutyCycle > 0){
                 dutyCycle--;
                 analogWrite(pwmPin, dutyCycle);
@@ -473,17 +643,89 @@ bool chargeBattery() {
             }
 
             if (now - lastChargeEvaluationTime >= CHARGE_EVALUATION_INTERVAL_MS) {
+                currentRampTarget += maximumCurrent * 0.10f; // Increase by 10% of the max current
+                if (currentRampTarget > maximumCurrent) {
+                    currentRampTarget = maximumCurrent; // Clamp to the absolute maximum
+                } else { 
+                  Serial.printf("Ramping up. New current target: %.3f A\n", currentRampTarget);
+                }
+
+
+              
                 Serial.println("end of charge by temperature delta check...");
-                float tempRise = estimateTempDiff(voltage, voltage, current,
+                float tempRise_relative = estimateTempDiff(voltage, voltage, current,
                                                   regressedInternalResistancePairsIntercept,
                                                   temp1, now, lastChargeEvaluationTime, temp2);
-                Serial.print("Estimated temperature rise due to Rint heating: ");
-                Serial.print(tempRise);
+                Serial.print("Estimated temperature rise due to Rint heating (relative): ");
+                Serial.print(tempRise_relative);
                 Serial.println(" °C");
-                MAX_DIFF_TEMP = (MAX_TEMP_DIFF_THRESHOLD + tempRise);
 
-                if (tempDiff > (MAX_TEMP_DIFF_THRESHOLD + tempRise)) {
-                    Serial.printf("Temperature difference (%.2f°C) exceeds threshold (%.2f°C).\n", tempDiff, MAX_TEMP_DIFF_THRESHOLD);
+                
+            //    MAX_DIFF_TEMP = (MAX_TEMP_DIFF_THRESHOLD + tempRise);
+
+// logging 
+                MeasurementData afterApply;
+                getThermistorReadings(afterApply.temp1, afterApply.temp2, afterApply.tempDiff,
+                                      afterApply.t1_millivolts, afterApply.voltage, afterApply.current);
+                ChargeLogData entry;
+                entry.timestamp = now;
+                entry.current = afterApply.current;
+                entry.voltage = afterApply.voltage;
+                entry.ambientTemperature = afterApply.temp1;
+                entry.batteryTemperature = afterApply.temp2;
+                entry.dutyCycle = dutyCycle;
+                entry.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
+                entry.internalResistancePairs = regressedInternalResistancePairsIntercept;
+                logChargeData(entry);
+                pushRecentChargeLog(entry);
+
+// --- compute absolute temprise by replaying history ---
+    float temprise_absolute = NAN;
+    if (recentChargeLogsCount >= 1) {
+        // use requested depth but cap to available count
+        int depthToUse = temprise_abs_depth;
+        if (depthToUse > recentChargeLogsCount) depthToUse = recentChargeLogsCount;
+
+        temprise_absolute = computeAbsoluteTempRiseFromHistory(depthToUse);
+
+        if (!isnan(temprise_absolute)) {
+            Serial.print("Estimated temperature rise (absolute, replay of last ");
+            Serial.print(depthToUse);
+            Serial.print(" entries): ");
+            Serial.print(temprise_absolute);
+            Serial.println(" °C");
+        } else {
+            Serial.println("computeAbsoluteTempRiseFromHistory returned NAN — not enough or invalid history.");
+        }
+    } else {
+        Serial.println("No recent log history available to compute absolute temprise.");
+    }
+
+    // Fallback: if absolute computation failed, use relative
+    if (isnan(temprise_absolute)) temprise_absolute = tempRise_relative;
+
+    // clamp negligible negatives -> zero (optional)
+    if (temprise_absolute < 0.0f && fabs(temprise_absolute) < 1e-4f) temprise_absolute = 0.0f;
+    if (tempRise_relative < 0.0f && fabs(tempRise_relative) < 1e-4f) tempRise_relative = 0.0f;
+
+    // Blend according to temprise_balance
+    if (temprise_balance < 0.0f) temprise_balance = 0.0f;
+    if (temprise_balance > 1.0f) temprise_balance = 1.0f;
+    float finalTempRise = temprise_balance * tempRise_relative + (1.0f - temprise_balance) * temprise_absolute;
+
+    Serial.print("Final temprise (blended, balance=");
+    Serial.print(temprise_balance);
+    Serial.print("): ");
+    Serial.print(finalTempRise);
+    Serial.println(" °C");
+
+    // apply final blended value to threshold
+    MAX_DIFF_TEMP = (MAX_TEMP_DIFF_THRESHOLD + finalTempRise);
+
+
+
+                if (tempDiff > (MAX_TEMP_DIFF_THRESHOLD + finalTempRise)) {
+                    Serial.printf("Temperature difference (%.2f°C) exceeds threshold (%.2f°C).\n", tempDiff, MAX_DIFF_TEMP);
                     if (overtemp_trip_counter++ >= OVERTEMP_TRIP_TRESHOLD) {
                         overtemp_trip_counter = 0;
                         chargingState = CHARGE_STOPPED;
@@ -498,7 +740,8 @@ bool chargeBattery() {
                     Serial.println("Re-evaluating charging parameters (non-blocking)...");
  //                   int suggestedStartDutyCycle = min(lastOptimalDutyCycle + (int)(1.0 * lastOptimalDutyCycle),MAX_CHARGE_DUTY_CYCLE);
                     int suggestedStartDutyCycle = min( (int)(0.5 * lastOptimalDutyCycle),MAX_CHARGE_DUTY_CYCLE);
-                    startFindOptimalManagerAsync(MAX_CHARGE_DUTY_CYCLE, suggestedStartDutyCycle, true);
+                    int suggestedEndDutyCycle   = max( (int)(2 * lastOptimalDutyCycle),MIN_CHARGE_DUTY_CYCLE);
+                    startFindOptimalManagerAsync(suggestedEndDutyCycle, suggestedStartDutyCycle, true);
                     chargingState = CHARGE_FIND_OPT;
                 }
             }
