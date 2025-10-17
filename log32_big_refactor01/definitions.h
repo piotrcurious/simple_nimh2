@@ -46,9 +46,10 @@
 #define CHARGING_UPDATE_INTERVAL_MS 2000
 #define PWM_MAX 255
 #define TOTAL_TIMEOUT (20UL * 60 * 60 * 1000)
-#define PLOT_UPDATE_INTERVAL_MS 1000
-#define CHARGING_HOUSEKEEP_INTERVAL 100
-#define IR_HANDLE_INTERVAL_MS 200
+#define PLOT_UPDATE_INTERVAL_MS 2000
+#define PLOT_DATA_UPDATE_INTERVAL 1000
+#define CHARGING_HOUSEKEEP_INTERVAL 150
+#define IR_HANDLE_INTERVAL_MS 500
 #define MAIN_VCC_RATIO 2.0
 #define CURRENT_SHUNT_RESISTANCE 2.5f
 #define CURRENT_SHUNT_PIN_ZERO_OFFSET 75
@@ -56,21 +57,21 @@
 #define BUILD_CURRENT_MODEL_DELAY 200
 
 // Physical defaults
-static const float DEFAULT_CELL_MASS_KG       = 0.015f;
+static const float DEFAULT_CELL_MASS_KG       = 0.012f;
 static const float DEFAULT_SPECIFIC_HEAT      = 1000.0f;
 static const float DEFAULT_SURFACE_AREA_M2    = 0.001477f;
-static const float DEFAULT_CONVECTIVE_H       = 4.4f;
+static const float DEFAULT_CONVECTIVE_H       = 0.2f;
 static const float DEFAULT_EMISSIVITY         = 0.9f;
 static const float STEFAN_BOLTZMANN           = 5.670374419e-8f;
 
 // Charging constants
-const float MAX_TEMP_DIFF_THRESHOLD = 0.25f;
+const float MAX_TEMP_DIFF_THRESHOLD = 0.5f;
 const uint8_t OVERTEMP_TRIP_TRESHOLD = 3;
 extern float maximumCurrent;
-const float MH_ELECTRODE_RATIO = 0.40f;
+const float MH_ELECTRODE_RATIO = 0.60f;
 const uint32_t CHARGE_EVALUATION_INTERVAL_MS = 120000;
 const int CHARGE_CURRENT_STEP = 1;
-const int MAX_CHARGE_DUTY_CYCLE = 255;
+const int MAX_CHARGE_DUTY_CYCLE = 254;
 const int MIN_CHARGE_DUTY_CYCLE = 5;
 #define ISOLATION_THRESHOLD 0.02f
 
@@ -81,7 +82,7 @@ const int MAX_DUTY_CYCLE = 255;
 const int DUTY_CYCLE_INCREMENT_FIND_MIN = 5;
 const int STABILIZATION_DELAY_MS = 2000;
 const int STABILIZATION_PAIRS_FIND_DELAY_MS = 1000;
-const int UNLOADED_VOLTAGE_DELAY_MS = 5000;
+const int UNLOADED_VOLTAGE_DELAY_MS = 6000;
 const int MIN_DUTY_CYCLE_ADJUSTMENT_STEP = 5;
 const float MIN_CURRENT_DIFFERENCE_FOR_PAIR = 0.02f;
 const float MIN_VALID_RESISTANCE = 0.0f;
@@ -118,6 +119,13 @@ const float MIN_CURRENT = 0.0f;
 const float MAX_CURRENT = 0.40f;
 
 // --- Enums and Structs ---
+
+enum AppState {
+    APP_STATE_IDLE,
+    APP_STATE_BUILDING_MODEL,
+    APP_STATE_MEASURING_IR,
+    APP_STATE_CHARGING
+};
 
 struct MeasurementData {
     float voltage;
