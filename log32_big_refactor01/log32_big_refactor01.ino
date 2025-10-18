@@ -1,43 +1,35 @@
 #include "definitions.h"
 #include "logging.h"
-#include "graphing.h"
-#include "charging.h"
+#include "DataPlotter.h"
+#include "Charger.h"
 #include "internal_resistance.h"
 #include <IRremote.h>
+#include <TFT_eSPI.h>
 
-#define PLOT_WIDTH 320
-#define PLOT_Y_START 0
-#define PLOT_HEIGHT (216 - 3)
-extern void startMHElectrodeMeasurement(int testDutyCycle, unsigned long stabilization_delay, unsigned long unloaded_delay);
+// --- Global Objects ---
+TFT_eSPI tft = TFT_eSPI();
+DataPlotter dataPlotter(tft);
+SHT4xSensor sht4Sensor;
+ThermistorSensor thermistorSensor(THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, THERMISTOR_1_OFFSET);
+Charger charger(PWM_PIN, dataPlotter);
 
 // --- State Machine Definitions ---
 AppState currentAppState = APP_STATE_IDLE;
 extern IRState currentIRState;
 
 // --- Global Variable Definitions ---
-extern void displayTemperatureLabels(double temp1, double temp2, double tempDiff, float t1_millivolts, float voltage, float current);
-extern void prepareTemperaturePlot();
-extern void plotVoltageData();
-extern void plotTemperatureData();
-extern void updateTemperatureHistory(double temp1, double temp2, double tempDiff, float voltage, float current);
-extern void printThermistorSerial(double temp1, double temp2, double tempDiff, float t1_millivolts, float voltage, float current);
-CurrentModel currentModel;
-SHT4xSensor sht4Sensor;
-
-extern void displayInternalResistanceGraph();
-extern void drawChargePlot(bool autoscaleX, bool autoscaleY);
-ThermistorSensor thermistorSensor(THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, THERMISTOR_1_OFFSET);
+// For thermistor readings shared between data gathering and display
+double latest_temp1, latest_temp2, latest_tempDiff;
+float latest_t1_millivolts, latest_voltage, latest_current;
 
 volatile float voltage_mv = 1000.0f;
 volatile float current_ma = 0.0f;
 volatile float mAh_charged = 0.0f;
 volatile bool resetAh = false;
 volatile uint32_t mAh_last_time = 0;
-uint32_t dutyCycle = 0;
 
 unsigned long lastPlotUpdateTime = 0;
 unsigned long lastDataGatherTime = 0;
-unsigned long lastChargingHouseTime = 0;
 unsigned long lastIRHandleTime = 0;
 unsigned long displayStateChangeTime = 0;
 
@@ -49,14 +41,6 @@ volatile uint32_t voltage_last_time;
 volatile uint32_t voltage_update_interval = 250;
 
 // --- Function Implementations ---
-
-void setupPWM() {
-    analogWriteResolution(pwmPin,pwmResolutionBits);
-    analogWriteFrequency(pwmPin,PWM_FREQUENCY);
-    pinMode(pwmPin, OUTPUT);
-    dutyCycle = 0;
-    analogWrite(pwmPin, 0);
-}
 
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current) {
     while (thermistorSensor.isLocked()) {
@@ -70,129 +54,7 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
     current = current_ma / 1000.0f;
 }
 
-// --- Non-blocking buildCurrentModel ---
-int buildModelStep = 0;
-int buildModelDutyCycle = 0;
-unsigned long buildModelLastStepTime = 0;
-std::vector<float> dutyCycles;
-std::vector<float> currents;
-
-void processThermistorData(const MeasurementData& data, const String& measurementType) {
-    printThermistorSerial(data.temp1, data.temp2, data.tempDiff, data.t1_millivolts, data.voltage, data.current);
-    updateTemperatureHistory(data.temp1, data.temp2, data.tempDiff, data.voltage, data.current);
-    prepareTemperaturePlot();
-    plotVoltageData();
-    plotTemperatureData();
-    displayTemperatureLabels(data.temp1, data.temp2, data.tempDiff, data.t1_millivolts, data.voltage, data.current);
-
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(2);
-    tft.setCursor(PLOT_X_START + 20, PLOT_Y_START + PLOT_HEIGHT / 2 - 10);
-    tft.print(measurementType);
-}
-
-void buildCurrentModelStep() {
-    unsigned long now = millis();
-
-    if (buildModelStep == 0) {
-        Serial.println("Starting fresh model building.");
-        dutyCycles.clear();
-        currents.clear();
-        dutyCycles.push_back(0.0f);
-        currents.push_back(0.0f);
-        buildModelDutyCycle = 1;
-        buildModelStep = 1;
-    }
-
-    if (buildModelStep == 1) {
-        if (buildModelDutyCycle <= MAX_DUTY_CYCLE) {
-            dutyCycle = buildModelDutyCycle;
-            analogWrite(pwmPin, dutyCycle);
-            buildModelLastStepTime = now;
-            buildModelStep = 2;
-        } else {
-            buildModelStep = 3;
-        }
-    }
-
-    if (buildModelStep == 2) {
-        if (now - buildModelLastStepTime >= BUILD_CURRENT_MODEL_DELAY) {
-            MeasurementData data;
-            getThermistorReadings(data.temp1, data.temp2, data.tempDiff, data.t1_millivolts, data.voltage, data.current);
-            data.dutyCycle = buildModelDutyCycle;
-            data.timestamp = millis();
-
-            processThermistorData(data, "Estimating Min Current");
-            if (data.current >= MEASURABLE_CURRENT_THRESHOLD) {
-                dutyCycles.push_back(static_cast<float>(buildModelDutyCycle));
-                currents.push_back(data.current);
-            } else {
-                Serial.printf("Current below threshold (%.3f A) at duty cycle %d. Skipping.\n", data.current, buildModelDutyCycle);
-            }
-            buildModelDutyCycle += 5;
-            buildModelStep = 1;
-        }
-    }
-
-    if (buildModelStep == 3) {
-        if (dutyCycles.size() < 2) {
-            Serial.println("Not enough data points to build a reliable model.");
-            currentModel.isModelBuilt = false;
-            dutyCycle = 0;
-            analogWrite(pwmPin, dutyCycle);
-            currentAppState = APP_STATE_IDLE;
-            return;
-        }
-
-        int degree = 3;
-        int numPoints = dutyCycles.size();
-        Eigen::MatrixXd A(numPoints, degree + 1);
-        Eigen::VectorXd b(numPoints);
-
-        for (int i = 0; i < numPoints; ++i) {
-            for (int j = 0; j <= degree; ++j) {
-                A(i, j) = std::pow(dutyCycles[i], j);
-            }
-            b(i) = currents[i];
-        }
-
-        Eigen::VectorXd coefficients = A.householderQr().solve(b);
-        if (degree >= 0) {
-            coefficients(0) = 0.0f;
-        }
-        currentModel.coefficients = coefficients;
-        currentModel.isModelBuilt = true;
-
-        Serial.println("Current model built successfully with coefficients:");
-        for (int i = 0; i <= degree; ++i) {
-            Serial.printf("Coefficient for x^%d: %.4f\n", i, coefficients(i));
-        }
-        dutyCycle = 0;
-        analogWrite(pwmPin, dutyCycle);
-        currentAppState = APP_STATE_IDLE;
-        startCharging();
-        buildModelStep = 0;
-    }
-}
-
-float estimateCurrent(int dutyCycle) {
-    if (!currentModel.isModelBuilt) {
-        Serial.println("Warning: Current model has not been built yet. Returning 0.");
-        return 0.0f;
-    }
-
-    float estimatedCurrent = 0.0f;
-    float dutyCycleFloat = static_cast<float>(dutyCycle);
-    for (int i = 0; i < currentModel.coefficients.size(); ++i) {
-        estimatedCurrent += currentModel.coefficients(i) * std::pow(dutyCycleFloat, i);
-    }
-
-    if (estimatedCurrent < MEASURABLE_CURRENT_THRESHOLD && dutyCycle > 0) {
-        Serial.printf("Estimated current (%.3f A) below threshold at duty cycle %d. Inferring.\n", estimatedCurrent, dutyCycle);
-    }
-
-    return std::max(0.0f, estimatedCurrent);
-}
+// Functions related to building the current model and estimating current have been moved to the Charger class.
 
 void task_readSHT4x(void* parameter) {
     while (true) {
@@ -237,8 +99,8 @@ void task_readThermistor(void* parameter) {
         double time_elapsed_hours = (double)time_elapsed / (1000.0 * 3600.0);
         double current_for_mah_calculation_ma;
 
-        if (currentModel.isModelBuilt && (current_ma / 1000.0) < MEASURABLE_CURRENT_THRESHOLD) {
-            current_for_mah_calculation_ma = static_cast<double>(estimateCurrent(dutyCycle) * 1000.0);
+        if (charger.isModelBuilt() && (current_ma / 1000.0) < MEASURABLE_CURRENT_THRESHOLD) {
+            current_for_mah_calculation_ma = static_cast<double>(charger.estimateCurrent(charger.getDutyCycle()) * 1000.0);
         } else {
             current_for_mah_calculation_ma = current_ma;
         }
@@ -259,11 +121,12 @@ void task_readThermistor(void* parameter) {
 #ifdef DEBUG_LABELS
 #include <iostream>
 int testGraph() {
-    // Create some dummy data for testing
+    extern std::vector<ChargeLogEntry> chargeLog;
+    extern float regressedInternalResistancePairsIntercept;
     for (int i = 0; i < 100; ++i) {
-        chargeLog.push_back({(unsigned long)i * 1000, 0.2f + 0.1f * sin(i * 0.1f), 1.5f + 0.2f * cos(i * 0.05f), i % 256, 25.0f + 0.5f * i, 20.0f + 0.3f * i, 0.1f + 0.01f * i, 0.2f + 0.02f * i});
+        chargeLog.push_back({(unsigned long)i * 1000, 0.2f + 0.1f * sin(i * 0.1f), 1.5f + 0.2f * cos(i * 0.05f), (uint8_t)(i % 256), 25.0f + 0.5f * i, 20.0f + 0.3f * i, 0.1f + 0.01f * i, 0.2f + 0.02f * i});
     }
-    drawChargePlot(true, true);
+    dataPlotter.drawChargePlot(true, true, chargeLog, regressedInternalResistancePairsIntercept);
     return 0;
 }
 #endif // #ifdef DEBUG_LABELS
@@ -280,20 +143,30 @@ void handleIRCommand() {
             case RemoteKeys::KEY_INFO:
                  if (currentAppState == APP_STATE_IDLE || currentAppState == APP_STATE_CHARGING ) {
                     currentDisplayState = DISPLAY_STATE_IR_GRAPH;
-                    displayInternalResistanceGraph();
+                    extern float internalResistanceData[MAX_RESISTANCE_SAMPLES][2];
+                    extern int resistanceDataCount;
+                    extern float internalResistanceDataPairs[MAX_RESISTANCE_SAMPLES][2];
+                    extern int resistanceDataCountPairs;
+                    extern float regressedInternalResistanceSlope;
+                    extern float regressedInternalResistanceIntercept;
+                    extern float regressedInternalResistancePairsSlope;
+                    extern float regressedInternalResistancePairsIntercept;
+                    dataPlotter.displayInternalResistanceGraph(internalResistanceData, resistanceDataCount, internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistanceSlope, regressedInternalResistanceIntercept, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
                     displayStateChangeTime = millis();
                 }
                 break;
             case RemoteKeys::KEY_SOURCE:
                 if (currentDisplayState != DISPLAY_STATE_CHARGE_GRAPH) {
                     currentDisplayState = DISPLAY_STATE_CHARGE_GRAPH;
-                    drawChargePlot(true, true);
+                    extern std::vector<ChargeLogEntry> chargeLog;
+                    extern float regressedInternalResistancePairsIntercept;
+                    dataPlotter.drawChargePlot(true, true, chargeLog, regressedInternalResistancePairsIntercept);
                     displayStateChangeTime = millis();
                 }
                 break;
             case RemoteKeys::KEY_POWER:
                 resetAh = true;
-                currentAppState = APP_STATE_BUILDING_MODEL;
+                charger.startModelBuilding();
                 break;
 
 #ifdef DEBUG_LABELS
@@ -316,21 +189,13 @@ void setup() {
     tft.fillScreen(TFT_BLACK);
     IrReceiver.begin(IR_RECEIVE_PIN);
 
-    for (int i = 0; i < PLOT_WIDTH; i++) {
-        temp1_values[i] = 25.0f;
-        temp2_values[i] = 25.0f;
-        diff_values[i] = 0.0f;
-        voltage_values[i] = 1.0f;
-        current_values[i] = 0.0f;
-    }
-
     sht4Sensor.begin();
     thermistorSensor.begin();
 
     xTaskCreate(task_readSHT4x, "SHT4", 4096, NULL, 1, NULL);
     xTaskCreate(task_readThermistor, "THERM", 4096, NULL, 1, NULL);
 
-    setupPWM();
+    charger.begin();
 
     Serial.println("Ni-Cd/Ni-MH battery charger. use samsung DVD remote to control");
     Serial.println("PLAY to measure internal resistance of battery");
@@ -340,20 +205,17 @@ void setup() {
 }
 
 void gatherData() {
-    double temp1, temp2, tempDiff;
-    float t1_millivolts, voltage, current;
-    getThermistorReadings(temp1, temp2, tempDiff, t1_millivolts, voltage, current);
-    printThermistorSerial(temp1, temp2, tempDiff, t1_millivolts, voltage, current);
-    updateTemperatureHistory(temp1, temp2, tempDiff, voltage, current);
+    getThermistorReadings(latest_temp1, latest_temp2, latest_tempDiff, latest_t1_millivolts, latest_voltage, latest_current);
+    dataPlotter.printThermistorSerial(latest_temp1, latest_temp2, latest_tempDiff, latest_t1_millivolts, latest_voltage, latest_current);
+    dataPlotter.updateTemperatureHistory(latest_temp1, latest_temp2, latest_tempDiff, latest_voltage, latest_current);
 }
 
 void updateDisplay() {
     if (currentDisplayState == DISPLAY_STATE_MAIN) {
-        prepareTemperaturePlot();
-        plotVoltageData();
-        plotTemperatureData();
-
-        displayTemperatureLabels(temp1_values[PLOT_WIDTH - 1], temp2_values[PLOT_WIDTH - 1], diff_values[PLOT_WIDTH - 1], 0, voltage_values[PLOT_WIDTH - 1], current_values[PLOT_WIDTH - 1]);
+        dataPlotter.prepareTemperaturePlot();
+        dataPlotter.plotVoltageData();
+        dataPlotter.plotTemperatureData();
+        dataPlotter.displayTemperatureLabels(latest_temp1, latest_temp2, latest_tempDiff, latest_t1_millivolts, latest_voltage, latest_current, thermistorSensor, dutyCycle);
 
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setCursor(19 * 10, PLOT_Y_START + PLOT_HEIGHT + 20);
@@ -365,27 +227,22 @@ void updateDisplay() {
 void loop() {
     unsigned long now = millis();
 
-    // --- State Machine ---
+    charger.update();
+
+    // --- State Machine for non-charging states ---
     switch (currentAppState) {
         case APP_STATE_IDLE:
             // Nothing to do
             break;
-        case APP_STATE_BUILDING_MODEL:
-            buildCurrentModelStep();
-            break;
         case APP_STATE_MEASURING_IR:
+            extern void measureInternalResistanceStep();
             measureInternalResistanceStep();
             if (currentIRState == IR_STATE_IDLE) {
                 currentAppState = APP_STATE_IDLE;
             }
             break;
-        case APP_STATE_CHARGING:
-            if (now - lastChargingHouseTime >= CHARGING_HOUSEKEEP_INTERVAL) {
-                lastChargingHouseTime = now;
-                if (!chargeBattery()) {
-                    currentAppState = APP_STATE_IDLE;
-                }
-            }
+        default:
+            // The charger handles BUILDING_MODEL and CHARGING states.
             break;
     }
 
@@ -399,6 +256,8 @@ void loop() {
         lastPlotUpdateTime = now;
         updateDisplay();
     }
+
+
 
     if (currentDisplayState != DISPLAY_STATE_MAIN && now - displayStateChangeTime > 20000) {
         currentDisplayState = DISPLAY_STATE_MAIN;
@@ -416,8 +275,5 @@ void loop() {
             handleIRCommand();
             IrReceiver.resume();
         }
-        
     }
 }
-
-//inline unsigned long unmanagedCastUL(unsigned long v){ return v; }
