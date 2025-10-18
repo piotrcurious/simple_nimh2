@@ -417,6 +417,119 @@ void DataPlotter::displayInternalResistanceGraph(float (*internalResistanceData)
 constexpr int GRID_SIZE = 18;
 using ScoreType = int8_t;
 
+void DataPlotter::drawChargePlot(bool autoscaleX, bool autoscaleY, const std::vector<ChargeLogData>& chargeLog, float regressedInternalResistancePairsIntercept) {
+    if (chargeLog.empty()) {
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_WHITE);
+        tft.setTextDatum(6);
+        tft.drawString("No charge data to plot", tft.width() / 2, tft.height() / 2, 2);
+        return;
+    }
+    tft.fillScreen(TFT_BLACK);
+    int plotAreaWidth = tft.width() - 2, plotAreaHeight = tft.height() - 25, marginX = 0, marginYTop = 10;
+    unsigned long startTime = chargeLog.front().timestamp, endTime = chargeLog.back().timestamp;
+    double timeScaleX = 1.0;
+    if (autoscaleX && endTime > startTime) timeScaleX = static_cast<double>(plotAreaWidth) / static_cast<double>(endTime - startTime);
+    else if (!autoscaleX) {
+        unsigned long window = 10UL * 60UL * 1000UL;
+        if (endTime > window) startTime = endTime - window;
+        if (endTime > startTime) timeScaleX = static_cast<double>(plotAreaWidth) / static_cast<double>(endTime - startTime);
+    }
+
+    float currentMin = 1000.0f, currentMax = -1000.0f, voltageMin = 1000.0f, voltageMax = -1000.0f, dutyCycleMin = 1000.0f, dutyCycleMax = -1000.0f;
+    float tempDiffMin = 1000.0f, tempDiffMax = -1000.0f, estTempDiffThresholdMin = 1000.0f, estTempDiffThresholdMax = -1000.0f;
+    float irLU_Min = 1000.0f, irLU_Max = -1000.0f, irPairs_Min = 1000.0f, irPairs_Max = -1000.0f;
+
+    if (autoscaleY) {
+        for (const auto &logEntry : chargeLog) {
+            currentMin = std::fmin(currentMin, logEntry.current); currentMax = std::fmax(currentMax, logEntry.current);
+            voltageMin = std::fmin(voltageMin, logEntry.voltage); voltageMax = std::fmax(voltageMax, logEntry.voltage);
+            dutyCycleMin = std::fmin(dutyCycleMin, static_cast<float>(logEntry.dutyCycle)); dutyCycleMax = std::fmax(dutyCycleMax, static_cast<float>(logEntry.dutyCycle));
+            float currentTempDiff = logEntry.batteryTemperature - logEntry.ambientTemperature;
+            tempDiffMin = std::fmin(tempDiffMin, currentTempDiff); tempDiffMax = std::fmax(tempDiffMax, currentTempDiff);
+            float estimatedDiff = currentTempDiff + 3.0f, thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
+            estTempDiffThresholdMin = std::fmin(estTempDiffThresholdMin, currentTempDiff); estTempDiffThresholdMax = std::fmax(estTempDiffThresholdMax, thresholdValue * 0.5f);
+            irLU_Min = std::fmin(irLU_Min, logEntry.internalResistanceLoadedUnloaded); irLU_Max = std::fmax(irLU_Max, logEntry.internalResistanceLoadedUnloaded);
+            irPairs_Min = std::fmin(irPairs_Min, logEntry.internalResistancePairs); irPairs_Max = std::fmax(irPairs_Max, logEntry.internalResistancePairs);
+        }
+        auto padIfEqual = [](float &a, float &b, float pad) { if (a >= b) { a -= pad; b += pad; } };
+        padIfEqual(currentMin, currentMax, 0.1f); padIfEqual(voltageMin, voltageMax, 0.1f); padIfEqual(dutyCycleMin, dutyCycleMax, 1.0f);
+        padIfEqual(tempDiffMin, tempDiffMax, 0.1f); padIfEqual(estTempDiffThresholdMin, estTempDiffThresholdMax, 0.1f);
+        padIfEqual(irLU_Min, irLU_Max, 0.01f); padIfEqual(irPairs_Min, irPairs_Max, 0.01f);
+    } else {
+        currentMin = 0.0f; currentMax = 0.4f; voltageMin = 1.0f; voltageMax = 2.0f; dutyCycleMin = 0.0f; dutyCycleMax = 255.0f;
+        tempDiffMin = -0.5f; tempDiffMax = 1.5f; estTempDiffThresholdMin = -0.5f; estTempDiffThresholdMax = 1.5f;
+        irLU_Min = 0.0f; irLU_Max = 1.5f; irPairs_Min = 0.0f; irPairs_Max = 1.5f;
+    }
+
+    float scaleY = static_cast<float>(plotAreaHeight);
+    auto scaleValue = [&](float val, float minVal, float maxVal) -> int {
+        if (maxVal <= minVal) return marginYTop + static_cast<int>(scaleY/2.0f);
+        return marginYTop + static_cast<int>(std::round((1.0f - (val - minVal) / (maxVal - minVal)) * scaleY));
+    };
+    auto timeToX = [&](unsigned long t) -> int {
+        if (endTime <= startTime) return marginX;
+        return static_cast<int>(std::round(static_cast<double>(marginX) + static_cast<double>(static_cast<long long>(t) - static_cast<long long>(startTime)) * timeScaleX));
+    };
+
+    Eigen::Matrix<ScoreType, GRID_SIZE, GRID_SIZE> grid; grid.setZero();
+    tft.drawLine(marginX, marginYTop, marginX + plotAreaWidth, marginYTop, TFT_DARKGREY);
+    tft.drawLine(marginX, marginYTop, marginX, marginYTop + plotAreaHeight, TFT_DARKGREY);
+
+    for (size_t i = 2; i < chargeLog.size(); ++i) {
+        int x1 = timeToX(chargeLog[i - 1].timestamp), x2 = timeToX(chargeLog[i].timestamp);
+        drawLineAndUpdateGrid(grid, x1, scaleValue(chargeLog[i - 1].current, currentMin, currentMax), x2, scaleValue(chargeLog[i].current, currentMin, currentMax), TFT_MAGENTA, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
+        drawLineAndUpdateGrid(grid, x1, scaleValue(chargeLog[i - 1].voltage, voltageMin, voltageMax), x2, scaleValue(chargeLog[i].voltage, voltageMin, voltageMax), TFT_YELLOW, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
+        drawLineAndUpdateGrid(grid, x1, scaleValue(static_cast<float>(chargeLog[i - 1].dutyCycle), dutyCycleMin, dutyCycleMax), x2, scaleValue(static_cast<float>(chargeLog[i].dutyCycle), dutyCycleMin, dutyCycleMax), TFT_DARKGREY, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
+        drawLineAndUpdateGrid(grid, x1, scaleValue(chargeLog[i - 1].batteryTemperature - chargeLog[i - 1].ambientTemperature, tempDiffMin, tempDiffMax), x2, scaleValue(chargeLog[i].batteryTemperature - chargeLog[i].ambientTemperature, tempDiffMin, tempDiffMax), TFT_BLUE, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
+
+        float estDiffPrev = estimateTempDiff(chargeLog[i-1].voltage, chargeLog[i-1].voltage, chargeLog[i-1].current, regressedInternalResistancePairsIntercept, chargeLog[i-1].ambientTemperature, chargeLog[i-2].timestamp, chargeLog[i-1].timestamp, chargeLog[i-1].batteryTemperature, DEFAULT_CELL_MASS_KG, DEFAULT_SPECIFIC_HEAT, DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY);
+        float estDiffCurr = estimateTempDiff(chargeLog[i].voltage, chargeLog[i].voltage, chargeLog[i].current, regressedInternalResistancePairsIntercept, chargeLog[i].ambientTemperature, chargeLog[i-1].timestamp, chargeLog[i].timestamp, chargeLog[i].batteryTemperature, DEFAULT_CELL_MASS_KG, DEFAULT_SPECIFIC_HEAT, DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY);
+        drawLineAndUpdateGrid(grid, x1, scaleValue(MAX_TEMP_DIFF_THRESHOLD + estDiffPrev, estTempDiffThresholdMin, estTempDiffThresholdMax), x2, scaleValue(MAX_TEMP_DIFF_THRESHOLD + estDiffCurr, estTempDiffThresholdMin, estTempDiffThresholdMax), TFT_RED, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
+
+        drawLineAndUpdateGrid(grid, x1, scaleValue(chargeLog[i - 1].internalResistanceLoadedUnloaded, irLU_Min, irLU_Max), x2, scaleValue(chargeLog[i].internalResistanceLoadedUnloaded, irLU_Min, irLU_Max), TFT_ORANGE, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
+        drawLineAndUpdateGrid(grid, x1, scaleValue(chargeLog[i - 1].internalResistancePairs, irPairs_Min, irPairs_Max), x2, scaleValue(chargeLog[i].internalResistancePairs, irPairs_Min, irPairs_Max), TFT_CYAN, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
+    }
+
+    std::vector<Label> labels;
+    labels.push_back(createLabel("Current", currentMax, currentMin, currentMax, TFT_MAGENTA, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("Current", currentMin, currentMin, currentMax, TFT_MAGENTA, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("Voltage", voltageMax, voltageMin, voltageMax, TFT_YELLOW, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("Voltage", voltageMin, voltageMin, voltageMax, TFT_YELLOW, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("DutyCycle", dutyCycleMax, dutyCycleMin, dutyCycleMax, TFT_DARKGREY, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("DutyCycle", dutyCycleMin, dutyCycleMin, dutyCycleMax, TFT_DARKGREY, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("TempDiff", tempDiffMax, tempDiffMin, tempDiffMax, TFT_BLUE, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("TempDiff", tempDiffMin, tempDiffMin, tempDiffMax, TFT_BLUE, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("EstTempDiffThreshold", estTempDiffThresholdMax, estTempDiffThresholdMin, estTempDiffThresholdMax, TFT_RED, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("EstTempDiffThreshold", estTempDiffThresholdMin, estTempDiffThresholdMin, estTempDiffThresholdMax, TFT_RED, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("IrLU", irLU_Max, irLU_Min, irLU_Max, TFT_ORANGE, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("IrLU", irLU_Min, irLU_Min, irLU_Max, TFT_ORANGE, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("IrPairs", irPairs_Max, irPairs_Min, irPairs_Max, TFT_CYAN, plotAreaWidth, plotAreaHeight, marginYTop));
+    labels.push_back(createLabel("IrPairs", irPairs_Min, irPairs_Min, irPairs_Max, TFT_CYAN, plotAreaWidth, plotAreaHeight, marginYTop));
+
+    for (auto &label : labels) placeLabelAndLine(label, grid, true, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
+
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextDatum(BL_DATUM);
+    if (autoscaleX && endTime > startTime) {
+        for (int i = 0; i <= 5; ++i) {
+            unsigned long timePoint = startTime + (endTime - startTime) * i / 5;
+            time_t t = timePoint / 1000; struct tm* tm_info = localtime(&t); char buffer[6]; strftime(buffer, sizeof(buffer), "%H:%M", tm_info);
+            int x = marginX + plotAreaWidth * i / 5;
+            tft.drawLine(x, marginYTop+2, x, marginYTop - 5, TFT_DARKGREY); tft.drawString(buffer, x, marginYTop , 1);
+        }
+    }
+    int legendY = marginYTop + plotAreaHeight + 5, legendX = marginX, colorSize = 8, textOffset = 12;
+    tft.setTextDatum(TL_DATUM);
+    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_MAGENTA); tft.setTextColor(TFT_MAGENTA); tft.drawString("I", legendX + textOffset, legendY, 1); legendX += 20;
+    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_YELLOW); tft.setTextColor(TFT_YELLOW); tft.drawString("V", legendX + textOffset, legendY, 1); legendX += 20;
+    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_DARKGREY); tft.setTextColor(TFT_DARKGREY); tft.drawString("%", legendX + textOffset, legendY, 1); legendX += 25;
+    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_BLUE); tft.setTextColor(TFT_BLUE); tft.drawString("dT", legendX + textOffset, legendY, 1); legendX += 25;
+    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_RED); tft.setTextColor(TFT_RED); tft.drawString("/dT", legendX + textOffset, legendY, 1); legendX += 40;
+    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_ORANGE); tft.setTextColor(TFT_ORANGE); tft.drawString("RiMH", legendX + textOffset, legendY, 1); legendX += 40;
+    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_CYAN); tft.setTextColor(TFT_CYAN); tft.drawString("Ri", legendX + textOffset, legendY, 1);
+}
+
 std::pair<int,int> DataPlotter::pixelToGrid(int x, int y, int plotAreaWidth, int plotAreaHeight, int marginX, int marginYTop) {
     if (x < marginX || x >= marginX + plotAreaWidth || y < marginYTop || y >= marginYTop + plotAreaHeight) return {-1, -1};
     int row = static_cast<int>((static_cast<float>(y - marginYTop) / static_cast<float>(plotAreaHeight)) * GRID_SIZE);
@@ -555,117 +668,4 @@ float DataPlotter::estimateTempDiff(float v_start, float v_end, float current, f
     float temp_fall_loss = ((q_conv + q_rad) * delta_t_seconds) / (cell_mass_kg * specific_heat);
     float new_batt_temp = last_batt_temp + temp_rise_no_loss - temp_fall_loss;
     return new_batt_temp - ambient_temp;
-}
-
-void DataPlotter::drawChargePlot(bool autoscaleX, bool autoscaleY, const std::vector<ChargeLogEntry>& chargeLog, float regressedInternalResistancePairsIntercept) {
-    if (chargeLog.empty()) {
-        tft.fillScreen(TFT_BLACK);
-        tft.setTextColor(TFT_WHITE);
-        tft.setTextDatum(6);
-        tft.drawString("No charge data to plot", tft.width() / 2, tft.height() / 2, 2);
-        return;
-    }
-    tft.fillScreen(TFT_BLACK);
-    int plotAreaWidth = tft.width() - 2, plotAreaHeight = tft.height() - 25, marginX = 0, marginYTop = 10;
-    unsigned long startTime = chargeLog.front().timestamp, endTime = chargeLog.back().timestamp;
-    double timeScaleX = 1.0;
-    if (autoscaleX && endTime > startTime) timeScaleX = static_cast<double>(plotAreaWidth) / static_cast<double>(endTime - startTime);
-    else if (!autoscaleX) {
-        unsigned long window = 10UL * 60UL * 1000UL;
-        if (endTime > window) startTime = endTime - window;
-        if (endTime > startTime) timeScaleX = static_cast<double>(plotAreaWidth) / static_cast<double>(endTime - startTime);
-    }
-
-    float currentMin = 1000.0f, currentMax = -1000.0f, voltageMin = 1000.0f, voltageMax = -1000.0f, dutyCycleMin = 1000.0f, dutyCycleMax = -1000.0f;
-    float tempDiffMin = 1000.0f, tempDiffMax = -1000.0f, estTempDiffThresholdMin = 1000.0f, estTempDiffThresholdMax = -1000.0f;
-    float irLU_Min = 1000.0f, irLU_Max = -1000.0f, irPairs_Min = 1000.0f, irPairs_Max = -1000.0f;
-
-    if (autoscaleY) {
-        for (const auto &logEntry : chargeLog) {
-            currentMin = std::fmin(currentMin, logEntry.current); currentMax = std::fmax(currentMax, logEntry.current);
-            voltageMin = std::fmin(voltageMin, logEntry.voltage); voltageMax = std::fmax(voltageMax, logEntry.voltage);
-            dutyCycleMin = std::fmin(dutyCycleMin, static_cast<float>(logEntry.dutyCycle)); dutyCycleMax = std::fmax(dutyCycleMax, static_cast<float>(logEntry.dutyCycle));
-            float currentTempDiff = logEntry.batteryTemperature - logEntry.ambientTemperature;
-            tempDiffMin = std::fmin(tempDiffMin, currentTempDiff); tempDiffMax = std::fmax(tempDiffMax, currentTempDiff);
-            float estimatedDiff = currentTempDiff + 3.0f, thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
-            estTempDiffThresholdMin = std::fmin(estTempDiffThresholdMin, currentTempDiff); estTempDiffThresholdMax = std::fmax(estTempDiffThresholdMax, thresholdValue * 0.5f);
-            irLU_Min = std::fmin(irLU_Min, logEntry.internalResistanceLoadedUnloaded); irLU_Max = std::fmax(irLU_Max, logEntry.internalResistanceLoadedUnloaded);
-            irPairs_Min = std::fmin(irPairs_Min, logEntry.internalResistancePairs); irPairs_Max = std::fmax(irPairs_Max, logEntry.internalResistancePairs);
-        }
-        auto padIfEqual = [](float &a, float &b, float pad) { if (a >= b) { a -= pad; b += pad; } };
-        padIfEqual(currentMin, currentMax, 0.1f); padIfEqual(voltageMin, voltageMax, 0.1f); padIfEqual(dutyCycleMin, dutyCycleMax, 1.0f);
-        padIfEqual(tempDiffMin, tempDiffMax, 0.1f); padIfEqual(estTempDiffThresholdMin, estTempDiffThresholdMax, 0.1f);
-        padIfEqual(irLU_Min, irLU_Max, 0.01f); padIfEqual(irPairs_Min, irPairs_Max, 0.01f);
-    } else {
-        currentMin = 0.0f; currentMax = 0.4f; voltageMin = 1.0f; voltageMax = 2.0f; dutyCycleMin = 0.0f; dutyCycleMax = 255.0f;
-        tempDiffMin = -0.5f; tempDiffMax = 1.5f; estTempDiffThresholdMin = -0.5f; estTempDiffThresholdMax = 1.5f;
-        irLU_Min = 0.0f; irLU_Max = 1.5f; irPairs_Min = 0.0f; irPairs_Max = 1.5f;
-    }
-
-    float scaleY = static_cast<float>(plotAreaHeight);
-    auto scaleValue = [&](float val, float minVal, float maxVal) -> int {
-        if (maxVal <= minVal) return marginYTop + static_cast<int>(scaleY/2.0f);
-        return marginYTop + static_cast<int>(std::round((1.0f - (val - minVal) / (maxVal - minVal)) * scaleY));
-    };
-    auto timeToX = [&](unsigned long t) -> int {
-        if (endTime <= startTime) return marginX;
-        return static_cast<int>(std::round(static_cast<double>(marginX) + static_cast<double>(static_cast<long long>(t) - static_cast<long long>(startTime)) * timeScaleX));
-    };
-
-    Eigen::Matrix<ScoreType, GRID_SIZE, GRID_SIZE> grid; grid.setZero();
-    tft.drawLine(marginX, marginYTop, marginX + plotAreaWidth, marginYTop, TFT_DARKGREY);
-    tft.drawLine(marginX, marginYTop, marginX, marginYTop + plotAreaHeight, TFT_DARKGREY);
-
-    for (size_t i = 2; i < chargeLog.size(); ++i) {
-        int x1 = timeToX(chargeLog[i - 1].timestamp), x2 = timeToX(chargeLog[i].timestamp);
-        drawLineAndUpdateGrid(grid, x1, scaleValue(chargeLog[i - 1].current, currentMin, currentMax), x2, scaleValue(chargeLog[i].current, currentMin, currentMax), TFT_MAGENTA, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
-        drawLineAndUpdateGrid(grid, x1, scaleValue(chargeLog[i - 1].voltage, voltageMin, voltageMax), x2, scaleValue(chargeLog[i].voltage, voltageMin, voltageMax), TFT_YELLOW, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
-        drawLineAndUpdateGrid(grid, x1, scaleValue(static_cast<float>(chargeLog[i - 1].dutyCycle), dutyCycleMin, dutyCycleMax), x2, scaleValue(static_cast<float>(chargeLog[i].dutyCycle), dutyCycleMin, dutyCycleMax), TFT_DARKGREY, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
-        drawLineAndUpdateGrid(grid, x1, scaleValue(chargeLog[i - 1].batteryTemperature - chargeLog[i - 1].ambientTemperature, tempDiffMin, tempDiffMax), x2, scaleValue(chargeLog[i].batteryTemperature - chargeLog[i].ambientTemperature, tempDiffMin, tempDiffMax), TFT_BLUE, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
-
-        float estDiffPrev = estimateTempDiff(chargeLog[i-1].voltage, chargeLog[i-1].voltage, chargeLog[i-1].current, regressedInternalResistancePairsIntercept, chargeLog[i-1].ambientTemperature, chargeLog[i-2].timestamp, chargeLog[i-1].timestamp, chargeLog[i-1].batteryTemperature, DEFAULT_CELL_MASS_KG, DEFAULT_SPECIFIC_HEAT, DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY);
-        float estDiffCurr = estimateTempDiff(chargeLog[i].voltage, chargeLog[i].voltage, chargeLog[i].current, regressedInternalResistancePairsIntercept, chargeLog[i].ambientTemperature, chargeLog[i-1].timestamp, chargeLog[i].timestamp, chargeLog[i].batteryTemperature, DEFAULT_CELL_MASS_KG, DEFAULT_SPECIFIC_HEAT, DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY);
-        drawLineAndUpdateGrid(grid, x1, scaleValue(MAX_TEMP_DIFF_THRESHOLD + estDiffPrev, estTempDiffThresholdMin, estTempDiffThresholdMax), x2, scaleValue(MAX_TEMP_DIFF_THRESHOLD + estDiffCurr, estTempDiffThresholdMin, estTempDiffThresholdMax), TFT_RED, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
-
-        drawLineAndUpdateGrid(grid, x1, scaleValue(chargeLog[i - 1].internalResistanceLoadedUnloaded, irLU_Min, irLU_Max), x2, scaleValue(chargeLog[i].internalResistanceLoadedUnloaded, irLU_Min, irLU_Max), TFT_ORANGE, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
-        drawLineAndUpdateGrid(grid, x1, scaleValue(chargeLog[i - 1].internalResistancePairs, irPairs_Min, irPairs_Max), x2, scaleValue(chargeLog[i].internalResistancePairs, irPairs_Min, irPairs_Max), TFT_CYAN, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
-    }
-
-    std::vector<Label> labels;
-    labels.push_back(createLabel("Current", currentMax, currentMin, currentMax, TFT_MAGENTA, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("Current", currentMin, currentMin, currentMax, TFT_MAGENTA, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("Voltage", voltageMax, voltageMin, voltageMax, TFT_YELLOW, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("Voltage", voltageMin, voltageMin, voltageMax, TFT_YELLOW, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("DutyCycle", dutyCycleMax, dutyCycleMin, dutyCycleMax, TFT_DARKGREY, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("DutyCycle", dutyCycleMin, dutyCycleMin, dutyCycleMax, TFT_DARKGREY, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("TempDiff", tempDiffMax, tempDiffMin, tempDiffMax, TFT_BLUE, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("TempDiff", tempDiffMin, tempDiffMin, tempDiffMax, TFT_BLUE, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("EstTempDiffThreshold", estTempDiffThresholdMax, estTempDiffThresholdMin, estTempDiffThresholdMax, TFT_RED, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("EstTempDiffThreshold", estTempDiffThresholdMin, estTempDiffThresholdMin, estTempDiffThresholdMax, TFT_RED, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("IrLU", irLU_Max, irLU_Min, irLU_Max, TFT_ORANGE, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("IrLU", irLU_Min, irLU_Min, irLU_Max, TFT_ORANGE, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("IrPairs", irPairs_Max, irPairs_Min, irPairs_Max, TFT_CYAN, plotAreaWidth, plotAreaHeight, marginYTop));
-    labels.push_back(createLabel("IrPairs", irPairs_Min, irPairs_Min, irPairs_Max, TFT_CYAN, plotAreaWidth, plotAreaHeight, marginYTop));
-
-    for (auto &label : labels) placeLabelAndLine(label, grid, true, plotAreaWidth, plotAreaHeight, marginX, marginYTop);
-
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextDatum(BL_DATUM);
-    if (autoscaleX && endTime > startTime) {
-        for (int i = 0; i <= 5; ++i) {
-            unsigned long timePoint = startTime + (endTime - startTime) * i / 5;
-            time_t t = timePoint / 1000; struct tm* tm_info = localtime(&t); char buffer[6]; strftime(buffer, sizeof(buffer), "%H:%M", tm_info);
-            int x = marginX + plotAreaWidth * i / 5;
-            tft.drawLine(x, marginYTop+2, x, marginYTop - 5, TFT_DARKGREY); tft.drawString(buffer, x, marginYTop , 1);
-        }
-    }
-    int legendY = marginYTop + plotAreaHeight + 5, legendX = marginX, colorSize = 8, textOffset = 12;
-    tft.setTextDatum(TL_DATUM);
-    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_MAGENTA); tft.setTextColor(TFT_MAGENTA); tft.drawString("I", legendX + textOffset, legendY, 1); legendX += 20;
-    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_YELLOW); tft.setTextColor(TFT_YELLOW); tft.drawString("V", legendX + textOffset, legendY, 1); legendX += 20;
-    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_DARKGREY); tft.setTextColor(TFT_DARKGREY); tft.drawString("%", legendX + textOffset, legendY, 1); legendX += 25;
-    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_BLUE); tft.setTextColor(TFT_BLUE); tft.drawString("dT", legendX + textOffset, legendY, 1); legendX += 25;
-    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_RED); tft.setTextColor(TFT_RED); tft.drawString("/dT", legendX + textOffset, legendY, 1); legendX += 40;
-    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_ORANGE); tft.setTextColor(TFT_ORANGE); tft.drawString("RiMH", legendX + textOffset, legendY, 1); legendX += 40;
-    tft.fillRect(legendX, legendY, colorSize, colorSize, TFT_CYAN); tft.setTextColor(TFT_CYAN); tft.drawString("Ri", legendX + textOffset, legendY, 1);
 }

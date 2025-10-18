@@ -10,7 +10,7 @@ extern ThermistorSensor thermistorSensor;
 extern volatile float voltage_mv;
 extern volatile float current_ma;
 extern AppState currentAppState;
-extern std::vector<ChargeLogEntry> chargeLog;
+extern std::vector<ChargeLogData> chargeLog;
 
 
 Charger::Charger(int pwmPin, DataPlotter& plotter)
@@ -93,9 +93,7 @@ void Charger::getThermistorReadings(double& temp1, double& temp2, double& tempDi
 }
 
 void Charger::processThermistorData(const MeasurementData& data, const String& measurementType) {
-    // This function is a bit of a duplicate from the main file.
-    // Ideally, this would be handled more elegantly, but for now, we'll keep it here.
-    printThermistorSerial(data.temp1, data.temp2, data.tempDiff, data.t1_millivolts, data.voltage, data.current);
+    _plotter.printThermistorSerial(data.temp1, data.temp2, data.tempDiff, data.t1_millivolts, data.voltage, data.current);
     _plotter.updateTemperatureHistory(data.temp1, data.temp2, data.tempDiff, data.voltage, data.current);
     _plotter.prepareTemperaturePlot();
     _plotter.plotVoltageData();
@@ -207,7 +205,6 @@ float Charger::estimateCurrent(int dutyCycle) {
 
     return std::max(0.0f, estimatedCurrent);
 }
-
 
 extern ChargingState chargingState;
 extern uint32_t chargingStartTime;

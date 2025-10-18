@@ -87,6 +87,7 @@ const int MIN_DUTY_CYCLE_ADJUSTMENT_STEP = 5;
 const float MIN_CURRENT_DIFFERENCE_FOR_PAIR = 0.02f;
 const float MIN_VALID_RESISTANCE = 0.0f;
 const int MAX_RESISTANCE_POINTS = 100;
+const int MAX_RESISTANCE_SAMPLES = 100;
 
 // Plotting parameters
 #define PLOT_WIDTH          320
@@ -125,6 +126,12 @@ enum AppState {
     APP_STATE_BUILDING_MODEL,
     APP_STATE_MEASURING_IR,
     APP_STATE_CHARGING
+};
+
+enum DisplayState {
+    DISPLAY_STATE_MAIN,
+    DISPLAY_STATE_IR_GRAPH,
+    DISPLAY_STATE_CHARGE_GRAPH
 };
 
 struct MeasurementData {
@@ -276,6 +283,7 @@ extern ThermistorSensor thermistorSensor;
 extern CurrentModel currentModel;
 extern AsyncMeasure meas;
 extern FindOptManager findOpt;
+extern DisplayState currentDisplayState;
 
 extern float temp1_values[PLOT_WIDTH];
 extern float temp2_values[PLOT_WIDTH];

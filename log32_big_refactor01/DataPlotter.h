@@ -6,33 +6,10 @@
 #include <vector>
 #include <string>
 #include <utility>
-#include "esp32-hal-log.h"
-#include <Eigen/Dense>
+#include <ArduinoEigenDense.h>
 
 // Forward declaration
 class ThermistorSensor;
-
-enum class LabelVerticalPlacement {
-    CENTER,
-    ABOVE,
-    BELOW
-};
-
-struct Label {
-    std::string text;
-    int x;
-    int y;
-    uint16_t color;
-    int textWidth;
-    int textHeight;
-    int lineStartX;
-    int lineEndX;
-    int lineY;
-    int y_initial;
-    float minValue;
-    float maxValue;
-    LabelVerticalPlacement verticalPlacement;
-};
 
 class DataPlotter {
 public:
@@ -44,7 +21,7 @@ public:
     void displayTemperatureLabels(double temp1, double temp2, double tempDiff, float t1_millivolts, float voltage, float current, ThermistorSensor& thermistorSensor, uint8_t dutyCycle);
     void updateTemperatureHistory(double temp1, double temp2, double tempDiff, float voltage, float current);
     void displayInternalResistanceGraph(float (*internalResistanceData)[2], int resistanceDataCount, float (*internalResistanceDataPairs)[2], int resistanceDataCountPairs, float regressedInternalResistanceSlope, float regressedInternalResistanceIntercept, float regressedInternalResistancePairsSlope, float regressedInternalResistancePairsIntercept);
-    void drawChargePlot(bool autoscaleX, bool autoscaleY, const std::vector<ChargeLogEntry>& chargeLog, float regressedInternalResistancePairsIntercept);
+    void drawChargePlot(bool autoscaleX, bool autoscaleY, const std::vector<ChargeLogData>& chargeLog, float regressedInternalResistancePairsIntercept);
     void bigUglyMessage(const String& measurementType);
     void printThermistorSerial(double temp1, double temp2, double tempDiff, float t1_millivolts, float voltage, float current);
 
@@ -59,7 +36,7 @@ private:
     float current_values[PLOT_WIDTH];
     float MAX_DIFF_TEMP = 1.5;
 
-    float mapf(float value, float in_min, float in_max, float out_min, float out_max);
+    static float mapf(float value, float in_min, float in_max, float out_min, float out_max);
     uint16_t darkerColor(uint16_t color, float darkeningFactor);
 
     // Charge plot helpers

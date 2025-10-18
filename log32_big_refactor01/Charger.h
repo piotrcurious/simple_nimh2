@@ -3,7 +3,7 @@
 
 #include "definitions.h"
 #include <vector>
-#include <Eigen/Dense>
+#include <ArduinoEigenDense.h>
 
 class DataPlotter; // Forward declaration
 

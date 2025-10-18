@@ -15,6 +15,7 @@ Charger charger(PWM_PIN, dataPlotter);
 
 // --- State Machine Definitions ---
 AppState currentAppState = APP_STATE_IDLE;
+DisplayState currentDisplayState = DISPLAY_STATE_MAIN;
 extern IRState currentIRState;
 
 // --- Global Variable Definitions ---
@@ -33,9 +34,6 @@ unsigned long lastDataGatherTime = 0;
 unsigned long lastIRHandleTime = 0;
 unsigned long displayStateChangeTime = 0;
 
-const int pwmPin = PWM_PIN;
-const int pwmResolutionBits = 8;
-const int pwmMaxDutyCycle = (1 << pwmResolutionBits) - 1;
 double THERMISTOR_1_OFFSET = 0.0;
 volatile uint32_t voltage_last_time;
 volatile uint32_t voltage_update_interval = 250;
@@ -53,8 +51,6 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
     voltage = voltage_mv / 1000.0f;
     current = current_ma / 1000.0f;
 }
-
-// Functions related to building the current model and estimating current have been moved to the Charger class.
 
 void task_readSHT4x(void* parameter) {
     while (true) {
@@ -121,7 +117,7 @@ void task_readThermistor(void* parameter) {
 #ifdef DEBUG_LABELS
 #include <iostream>
 int testGraph() {
-    extern std::vector<ChargeLogEntry> chargeLog;
+    extern std::vector<ChargeLogData> chargeLog;
     extern float regressedInternalResistancePairsIntercept;
     for (int i = 0; i < 100; ++i) {
         chargeLog.push_back({(unsigned long)i * 1000, 0.2f + 0.1f * sin(i * 0.1f), 1.5f + 0.2f * cos(i * 0.05f), (uint8_t)(i % 256), 25.0f + 0.5f * i, 20.0f + 0.3f * i, 0.1f + 0.01f * i, 0.2f + 0.02f * i});
@@ -158,7 +154,7 @@ void handleIRCommand() {
             case RemoteKeys::KEY_SOURCE:
                 if (currentDisplayState != DISPLAY_STATE_CHARGE_GRAPH) {
                     currentDisplayState = DISPLAY_STATE_CHARGE_GRAPH;
-                    extern std::vector<ChargeLogEntry> chargeLog;
+                    extern std::vector<ChargeLogData> chargeLog;
                     extern float regressedInternalResistancePairsIntercept;
                     dataPlotter.drawChargePlot(true, true, chargeLog, regressedInternalResistancePairsIntercept);
                     displayStateChangeTime = millis();
@@ -215,7 +211,7 @@ void updateDisplay() {
         dataPlotter.prepareTemperaturePlot();
         dataPlotter.plotVoltageData();
         dataPlotter.plotTemperatureData();
-        dataPlotter.displayTemperatureLabels(latest_temp1, latest_temp2, latest_tempDiff, latest_t1_millivolts, latest_voltage, latest_current, thermistorSensor, dutyCycle);
+        dataPlotter.displayTemperatureLabels(latest_temp1, latest_temp2, latest_tempDiff, latest_t1_millivolts, latest_voltage, latest_current, thermistorSensor, charger.getDutyCycle());
 
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setCursor(19 * 10, PLOT_Y_START + PLOT_HEIGHT + 20);
