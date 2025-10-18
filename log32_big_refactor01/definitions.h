@@ -21,26 +21,10 @@
 #include "SHT4xSensor.h"
 #include "ThermistorSensor.h"
 #include "analog.h"
+#include "config.h"
+#include "Shared.h"
 
 #define DEBUG_LABELS
-
-// --- Pin Definitions ---
-#define SCREEN_WIDTH 320
-#define SCREEN_HEIGHT 240
-#define THERMISTOR_PIN_1 36
-#define THERMISTOR_PIN_1_ATTENUATION ADC_ATTEN_DB_11
-#define THERMISTOR_PIN_1_OVERSAMPLING 16
-#define THERMISTOR_VCC_PIN 35
-#define THERMISTOR_VCC_ATTENUATION ADC_ATTEN_DB_11
-#define THERMISTOR_VCC_OVERSAMPLING 16
-#define VOLTAGE_READ_PIN 39
-#define VOLTAGE_ATTENUATION ADC_ATTEN_DB_11
-#define VOLTAGE_OVERSAMPLING 16
-#define CURRENT_SHUNT_PIN 34
-#define CURRENT_SHUNT_ATTENUATION ADC_ATTEN_DB_0
-#define CURRENT_SHUNT_OVERSAMPLING 16
-#define PWM_PIN 19
-#define IR_RECEIVE_PIN 15
 
 // --- Constants ---
 #define CHARGING_UPDATE_INTERVAL_MS 2000
@@ -50,10 +34,6 @@
 #define PLOT_DATA_UPDATE_INTERVAL 1000
 #define CHARGING_HOUSEKEEP_INTERVAL 150
 #define IR_HANDLE_INTERVAL_MS 500
-#define MAIN_VCC_RATIO 2.0
-#define CURRENT_SHUNT_RESISTANCE 2.5f
-#define CURRENT_SHUNT_PIN_ZERO_OFFSET 75
-#define PWM_FREQUENCY 1000
 #define BUILD_CURRENT_MODEL_DELAY 200
 
 // Physical defaults
@@ -87,7 +67,6 @@ const int MIN_DUTY_CYCLE_ADJUSTMENT_STEP = 5;
 const float MIN_CURRENT_DIFFERENCE_FOR_PAIR = 0.02f;
 const float MIN_VALID_RESISTANCE = 0.0f;
 const int MAX_RESISTANCE_POINTS = 100;
-const int MAX_RESISTANCE_SAMPLES = 100;
 
 // Plotting parameters
 #define PLOT_WIDTH          320
@@ -126,12 +105,6 @@ enum AppState {
     APP_STATE_BUILDING_MODEL,
     APP_STATE_MEASURING_IR,
     APP_STATE_CHARGING
-};
-
-enum DisplayState {
-    DISPLAY_STATE_MAIN,
-    DISPLAY_STATE_IR_GRAPH,
-    DISPLAY_STATE_CHARGE_GRAPH
 };
 
 struct MeasurementData {
@@ -283,7 +256,6 @@ extern ThermistorSensor thermistorSensor;
 extern CurrentModel currentModel;
 extern AsyncMeasure meas;
 extern FindOptManager findOpt;
-extern DisplayState currentDisplayState;
 
 extern float temp1_values[PLOT_WIDTH];
 extern float temp2_values[PLOT_WIDTH];
