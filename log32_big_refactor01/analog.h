@@ -49,4 +49,10 @@ static inline int get_adc1_channel(int pin) {
  */
 int analogReadMillivolts(int pin, adc_atten_t attenuation, int oversampling);
 
+// --- Function Prototypes ---
+// These functions are defined in analog.cpp and used by other modules.
+float readCurrent();
+float readVoltage(float vcc);
+
+
 #endif // ANALOG_H
