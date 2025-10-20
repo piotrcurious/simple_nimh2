@@ -1,203 +1,163 @@
 #include "Power.h"
-#include "internal_resistance.h"
-#include "DataStore.h"
+#include "config.h"
+#include <Arduino.h>
 
-Power::Power() :
-    buildModelStep(0),
-    buildModelDutyCycle(0),
-    buildModelLastStepTime(0),
-    chargingState(CHARGE_IDLE),
-    chargingStartTime(0),
-    overtemp_trip_counter(0),
-    lastChargeEvaluationTime(0),
-    maximumCurrent(0.150),
-    currentRampTarget(0.0f),
-    lastOptimalDutyCycle(MAX_CHARGE_DUTY_CYCLE)
+// --- Constructor ---
+Power::Power(DataStore* data_store) :
+    _data_store(data_store),
+    _build_model_step(0),
+    _build_model_duty_cycle(0),
+    _build_model_last_step_time(0),
+    _last_charging_housekeeping_time(0)
 {}
 
+// --- Public Methods ---
+
 void Power::begin() {
+    analogWriteResolution(PWM_RESOLUTION_BITS);
+    analogWriteFrequency(PWM_PIN, PWM_FREQUENCY);
     pinMode(PWM_PIN, OUTPUT);
-    setDutyCycle(0);
+    set_duty_cycle(0);
 }
 
-void Power::setDutyCycle(uint32_t duty) {
-    dutyCycle = duty;
-    analogWrite(PWM_PIN, dutyCycle);
+void Power::update() {
+    unsigned long now = millis();
+    switch (_data_store->app_state) {
+        case AppState::BUILDING_MODEL:
+            _build_current_model_step();
+            break;
+        case AppState::CHARGING:
+            if (now - _last_charging_housekeeping_time >= CHARGING_HOUSEKEEP_INTERVAL) {
+                _last_charging_housekeeping_time = now;
+                if (!_charge_battery()) {
+                    stop_charging();
+                }
+            }
+            break;
+        default:
+            // Do nothing
+            break;
+    }
 }
 
-void Power::buildCurrentModel(DataStore& data) {
+void Power::set_duty_cycle(int duty_cycle) {
+    int clamped_duty = constrain(duty_cycle, 0, MAX_DUTY_CYCLE);
+    _data_store->latest_measurement.duty_cycle = clamped_duty;
+    analogWrite(PWM_PIN, clamped_duty);
+}
+
+void Power::start_charging() {
+    if (_data_store->current_model.is_built) {
+        _data_store->app_state = AppState::CHARGING;
+        Serial.println("Starting charge cycle.");
+    } else {
+        Serial.println("Current model not built. Please build the model first.");
+        start_model_build();
+    }
+}
+
+void Power::stop_charging() {
+    set_duty_cycle(0);
+    _data_store->app_state = AppState::IDLE;
+    Serial.println("Charging stopped.");
+}
+
+void Power::start_model_build() {
+    _data_store->app_state = AppState::BUILDING_MODEL;
+    _build_model_step = 0; // Reset state machine
+    Serial.println("Starting current model build process.");
+}
+
+// --- Private Helper Methods ---
+
+void Power::_build_current_model_step() {
     unsigned long now = millis();
 
-    if (buildModelStep == 0) {
+    if (_build_model_step == 0) {
         Serial.println("Starting fresh model building.");
-        dutyCycles.clear();
-        currents.clear();
-        dutyCycles.push_back(0.0f);
-        currents.push_back(0.0f);
-        buildModelDutyCycle = 1;
-        buildModelStep = 1;
+        _model_duty_cycles.clear();
+        _model_currents.clear();
+        _model_duty_cycles.push_back(0.0f);
+        _model_currents.push_back(0.0f);
+        _build_model_duty_cycle = 1;
+        _build_model_step = 1;
     }
 
-    if (buildModelStep == 1) {
-        if (buildModelDutyCycle <= MAX_DUTY_CYCLE) {
-            setDutyCycle(buildModelDutyCycle);
-            buildModelLastStepTime = now;
-            buildModelStep = 2;
+    if (_build_model_step == 1) {
+        if (_build_model_duty_cycle <= MAX_DUTY_CYCLE) {
+            set_duty_cycle(_build_model_duty_cycle);
+            _build_model_last_step_time = now;
+            _build_model_step = 2;
         } else {
-            buildModelStep = 3;
+            _build_model_step = 3; // Finished collecting data
         }
     }
 
-    if (buildModelStep == 2) {
-        if (now - buildModelLastStepTime >= BUILD_CURRENT_MODEL_DELAY) {
-            MeasurementData meas_data;
-            meas_data.voltage = data.voltage_values[PLOT_WIDTH - 1];
-            meas_data.current = data.current_values[PLOT_WIDTH - 1];
-            meas_data.dutyCycle = buildModelDutyCycle;
-            meas_data.timestamp = millis();
-
-            if (meas_data.current >= MEASURABLE_CURRENT_THRESHOLD) {
-                dutyCycles.push_back(static_cast<float>(buildModelDutyCycle));
-                currents.push_back(meas_data.current);
-            } else {
-                Serial.printf("Current below threshold (%.3f A) at duty cycle %d. Skipping.\n", meas_data.current, buildModelDutyCycle);
+    if (_build_model_step == 2) { // Wait for stabilization and measure
+        if (now - _build_model_last_step_time >= BUILD_CURRENT_MODEL_DELAY) {
+            Measurement data = _data_store->latest_measurement;
+            if (data.current_A >= MEASURABLE_CURRENT_THRESHOLD) {
+                _model_duty_cycles.push_back(static_cast<float>(_build_model_duty_cycle));
+                _model_currents.push_back(data.current_A);
             }
-            buildModelDutyCycle += 5;
-            buildModelStep = 1;
+            _build_model_duty_cycle += 5;
+            _build_model_step = 1; // Go to next duty cycle
         }
     }
 
-    if (buildModelStep == 3) {
-        if (dutyCycles.size() < 2) {
+    if (_build_model_step == 3) { // Calculate model
+        if (_model_duty_cycles.size() < 2) {
             Serial.println("Not enough data points to build a reliable model.");
-            currentModel.isModelBuilt = false;
-            setDutyCycle(0);
-            data.currentAppState = APP_STATE_IDLE;
+            _data_store->current_model.is_built = false;
+            stop_charging();
             return;
         }
 
         int degree = 3;
-        int numPoints = dutyCycles.size();
+        int numPoints = _model_duty_cycles.size();
         Eigen::MatrixXd A(numPoints, degree + 1);
         Eigen::VectorXd b(numPoints);
 
         for (int i = 0; i < numPoints; ++i) {
             for (int j = 0; j <= degree; ++j) {
-                A(i, j) = std::pow(dutyCycles[i], j);
+                A(i, j) = std::pow(_model_duty_cycles[i], j);
             }
-            b(i) = currents[i];
+            b(i) = _model_currents[i];
         }
 
-        Eigen::VectorXd coefficients = A.householderQr().solve(b);
-        if (degree >= 0) {
-            coefficients(0) = 0.0f;
-        }
-        currentModel.coefficients = coefficients;
-        currentModel.isModelBuilt = true;
+        Eigen::VectorXd coeffs = A.householderQr().solve(b);
+        if (degree >= 0) coeffs(0) = 0.0f;
 
-        Serial.println("Current model built successfully with coefficients:");
-        for (int i = 0; i <= degree; ++i) {
-            Serial.printf("Coefficient for x^%d: %.4f\n", i, coefficients(i));
-        }
-        setDutyCycle(0);
-        data.currentAppState = APP_STATE_IDLE;
-        startCharging(data);
-        buildModelStep = 0;
+        _data_store->current_model.coefficients = coeffs;
+        _data_store->current_model.is_built = true;
+
+        Serial.println("Current model built successfully.");
+        set_duty_cycle(0);
+        _data_store->app_state = AppState::IDLE;
+        start_charging(); // Automatically start charging after model is built
+        _build_model_step = 0; // Reset for next time
     }
 }
 
-bool Power::chargeBattery(DataStore& data) {
-    unsigned long now = millis();
+bool Power::_charge_battery() {
+    // This is a placeholder for the charging logic.
+    // A real implementation would monitor temperature, voltage, etc.
+    // and adjust the duty cycle accordingly.
+    // For now, we'll just set a constant duty cycle.
+    set_duty_cycle(128); // Example: 50% duty cycle
 
-    if (chargingState != CHARGE_IDLE && chargingState != CHARGE_STOPPED && (now - chargingStartTime >= TOTAL_TIMEOUT)) {
-        Serial.println("Charging timeout, stopping charging for safety reasons.");
-        chargingState = CHARGE_STOPPED;
-    }
-
-    switch (chargingState) {
-        case CHARGE_IDLE: {
-            Serial.println("Starting battery charging process...");
-            chargingStartTime = now;
-            lastChargeEvaluationTime = now;
-            overtemp_trip_counter = 0;
-            lastOptimalDutyCycle = MAX_CHARGE_DUTY_CYCLE;
-            currentRampTarget = 0.0f;
-            currentIRState = IR_STATE_START;
-            chargingState = CHARGE_FIND_OPT;
-            break;
-        }
-        case CHARGE_FIND_OPT: {
-            measureInternalResistanceStep(data);
-            if (currentIRState == IR_STATE_IDLE) {
-                int appliedDC = dutyCycle;
-                if (appliedDC < MIN_CHARGE_DUTY_CYCLE) appliedDC = MIN_CHARGE_DUTY_CYCLE;
-                if (appliedDC > MAX_CHARGE_DUTY_CYCLE) appliedDC = MAX_CHARGE_DUTY_CYCLE;
-
-                setDutyCycle(appliedDC);
-                lastOptimalDutyCycle = dutyCycle;
-                lastChargeEvaluationTime = now;
-
-                Serial.printf("Applied optimal duty cycle: %d\n", dutyCycle);
-
-                chargingState = CHARGE_MONITOR;
-            }
-            break;
-        }
-
-        case CHARGE_MONITOR: {
-            if ((data.voltage_values[PLOT_WIDTH - 1]) > currentRampTarget) {
-              if (dutyCycle > 0){
-                setDutyCycle(dutyCycle - 1);
-              }
-            }
-
-            if (now - lastChargeEvaluationTime >= CHARGE_EVALUATION_INTERVAL_MS) {
-                currentRampTarget += maximumCurrent * 0.10f;
-                if (currentRampTarget > maximumCurrent) {
-                    currentRampTarget = maximumCurrent;
-                } else {
-                  Serial.printf("Ramping up. New current target: %.3f A\n", currentRampTarget);
-                }
-
-                Serial.println("end of charge by temperature delta check...");
-
-                if (chargingState == CHARGE_MONITOR) {
-                    Serial.println("Re-evaluating charging parameters (non-blocking)...");
-                    int suggestedStartDutyCycle = min( (int)(0.5 * lastOptimalDutyCycle),MAX_CHARGE_DUTY_CYCLE);
-                    int suggestedEndDutyCycle   = max( (int)(2 * lastOptimalDutyCycle),MIN_CHARGE_DUTY_CYCLE);
-                    currentIRState = IR_STATE_START;
-                    chargingState = CHARGE_FIND_OPT;
-                }
-            }
-            break;
-        }
-
-        case CHARGE_STOPPED: {
-            setDutyCycle(0);
-            return false; // Signal that charging is complete.
-        }
-
-        default:
-            break;
-    }
-
-    return true; // Signal that charging is ongoing.
+    // Return true to continue charging, false to stop.
+    // A real implementation would have conditions to stop (e.g., battery full, over-temp).
+    return true;
 }
 
-void Power::startCharging(DataStore& data) {
-    if (data.currentAppState != APP_STATE_CHARGING) {
-        data.currentAppState = APP_STATE_CHARGING;
-        chargingState = CHARGE_IDLE;
-        Serial.println("Initiating battery charging...");
-    } else {
-        Serial.println("Charging already in progress");
-    }
-}
+float Power::_estimate_current(int duty_cycle) {
+    if (!_data_store->current_model.is_built) return 0.0f;
 
-void Power::stopCharging(DataStore& data) {
-  if (chargingState != CHARGE_STOPPED) {
-    Serial.println("Manually stopping charging");
-    chargingState = CHARGE_STOPPED;
-    setDutyCycle(0);
-  }
+    float estimated_current = 0.0f;
+    float duty_cycle_float = static_cast<float>(duty_cycle);
+    for (int i = 0; i < _data_store->current_model.coefficients.size(); ++i) {
+        estimated_current += _data_store->current_model.coefficients(i) * std::pow(duty_cycle_float, i);
+    }
+    return std::max(0.0f, estimated_current);
 }

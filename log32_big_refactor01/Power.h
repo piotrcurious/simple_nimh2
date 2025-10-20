@@ -1,34 +1,42 @@
 #ifndef POWER_H
 #define POWER_H
 
-#include "Shared.h"
 #include "DataStore.h"
 
+// The Power class manages all aspects of power delivery. This includes
+// controlling the PWM output, building the current estimation model,
+// and running the main battery charging state machine.
 class Power {
 public:
-    Power();
-    void begin();
-    void setDutyCycle(uint32_t duty);
-    void buildCurrentModel(DataStore& data);
-    bool chargeBattery(DataStore& data);
-    void startCharging(DataStore& data);
-    void stopCharging(DataStore& data);
+    // --- Constructor ---
+    Power(DataStore* data_store);
+
+    // --- Public Methods ---
+    void begin();                               // Initializes PWM hardware.
+    void update();                              // Main update loop for the power state machine.
+    void set_duty_cycle(int duty_cycle);        // Sets the PWM duty cycle.
+    void start_charging();                      // Initiates the charging process.
+    void stop_charging();                       // Stops the charging process.
+    void start_model_build();                   // Begins the current model estimation process.
 
 private:
-    CurrentModel currentModel;
-    int buildModelStep;
-    int buildModelDutyCycle;
-    unsigned long buildModelLastStepTime;
-    std::vector<float> dutyCycles;
-    std::vector<float> currents;
+    // --- Private Members ---
+    DataStore* _data_store;                     // Pointer to the central data repository.
 
-    ChargingState chargingState;
-    uint32_t chargingStartTime;
-    uint8_t overtemp_trip_counter;
-    unsigned long lastChargeEvaluationTime;
-    float maximumCurrent;
-    float currentRampTarget;
-    int lastOptimalDutyCycle;
+    // --- State Machine for Building the Current Model ---
+    int _build_model_step;
+    int _build_model_duty_cycle;
+    unsigned long _build_model_last_step_time;
+    std::vector<float> _model_duty_cycles;
+    std::vector<float> _model_currents;
+    void _build_current_model_step();
+
+    // --- State Machine for Battery Charging ---
+    unsigned long _last_charging_housekeeping_time;
+    bool _charge_battery();
+
+    // --- Private Helper Methods ---
+    float _estimate_current(int duty_cycle);
 };
 
 #endif // POWER_H
