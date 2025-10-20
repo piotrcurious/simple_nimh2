@@ -5,7 +5,6 @@
 #include "Power.h"
 #include "InternalResistance.h"
 #include "DisplayManager.h"
-#include <IRremote.h>
 
 // The Remote class is responsible for handling all input from the
 // IR remote control. It decodes the received commands and triggers

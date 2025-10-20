@@ -1,5 +1,6 @@
 #include "Remote.h"
 #include "config.h"
+#include <IRremote.h>
 
 // --- Constructor ---
 Remote::Remote(DataStore* data_store, Power* power, InternalResistance* ir_tester, DisplayManager* display_manager) :

@@ -29,6 +29,7 @@
 #include "InternalResistance.h"
 #include "DisplayManager.h"
 #include "Remote.h"
+#include <IRremote.h>
 
 // --- Global Objects ---
 // These objects instantiate the main components of the application.
