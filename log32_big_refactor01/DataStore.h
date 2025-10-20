@@ -2,55 +2,88 @@
 #define DATASTORE_H
 
 #include "Shared.h"
-#include "config.h"
-#include <vector>
-#include <TFT_eSPI.h> // For color definitions
 
-// The DataStore class acts as a central repository for all application state,
-// sensor readings, and historical data. This helps to eliminate global variables
-// and provides a single source of truth for the entire application.
 class DataStore {
 public:
-    // --- Constructor ---
-    DataStore();
-
-    // --- State Management ---
+    // State Management
     AppState app_state;
-    DisplayState display_state;
-    IRState ir_state;
-    unsigned long display_state_change_time;
 
-    // --- Real-time Sensor Data ---
-    Measurement latest_measurement;
+    // Real-time Sensor Data
+    volatile float voltage_mv;
+    volatile float current_ma;
     volatile float mAh_charged;
 
-    // --- Current Estimation Model ---
+    // Current Estimation Model
     CurrentModel current_model;
 
-    // --- Data History for Plotting ---
-    std::vector<float> temp_surface_history;
-    std::vector<float> temp_ambient_history;
-    std::vector<float> temp_diff_history;
-    std::vector<float> voltage_history;
-    std::vector<float> current_history;
-    void add_history_point(const Measurement& measurement);
+    // Flags and Timers
+    volatile bool resetAh;
+    volatile uint32_t mAh_last_time;
+    uint32_t dutyCycle;
+    bool isCharging;
+    bool isMeasuringResistance;
+    ChargingState chargingState;
+    int cachedOptimalDuty;
+    unsigned long lastPlotUpdateTime;
+    unsigned long lastChargingHouseTime;
+    unsigned long lastIRHandleTime;
+    uint8_t overtemp_trip_counter;
+    unsigned long chargePhaseStartTime;
+    unsigned long chargingStartTime;
+    unsigned long lastChargeEvaluationTime;
 
-    // --- Charge Logging ---
-    std::vector<ChargeLogEntry> charge_log;
-    void log_charge_data(const Measurement& measurement, float internal_resistance);
+    // Data Arrays and History
+    float temp1_values[320]; // PLOT_WIDTH
+    float temp2_values[320];
+    float diff_values[320];
+    float voltage_values[320];
+    float current_values[320];
+    float internalResistanceData[100][2]; // MAX_RESISTANCE_POINTS
+    int resistanceDataCount;
+    float internalResistanceDataPairs[100][2];
+    int resistanceDataCountPairs;
+    float regressedInternalResistanceSlope;
+    float regressedInternalResistanceIntercept;
+    float regressedInternalResistancePairsSlope;
+    float regressedInternalResistancePairsIntercept;
+    std::vector<ChargeLogData> chargeLog;
 
-    // --- Internal Resistance (IR) Data ---
-    std::vector<ResistanceDataPoint> ir_data_points;
-    float ir_slope;
-    float ir_intercept;
-    void clear_ir_data();
 
-    // --- Public Methods ---
-    void reset_mAh();
-
-private:
-    // --- Private Helper Methods ---
-    void resize_history_vectors();
+    DataStore() :
+        app_state(APP_STATE_IDLE),
+        voltage_mv(1000.0f),
+        current_ma(0.0f),
+        mAh_charged(0.0f),
+        resetAh(false),
+        mAh_last_time(0),
+        dutyCycle(0),
+        isCharging(false),
+        isMeasuringResistance(false),
+        chargingState(CHARGE_IDLE),
+        cachedOptimalDuty(0),
+        resistanceDataCount(0),
+        resistanceDataCountPairs(0),
+        regressedInternalResistanceSlope(0.0f),
+        regressedInternalResistanceIntercept(0.0f),
+        regressedInternalResistancePairsSlope(0.0f),
+        regressedInternalResistancePairsIntercept(0.0f),
+        lastPlotUpdateTime(0),
+        lastChargingHouseTime(0),
+        lastIRHandleTime(0),
+        overtemp_trip_counter(0),
+        chargePhaseStartTime(0),
+        chargingStartTime(0),
+        lastChargeEvaluationTime(0)
+    {
+        // Initialize arrays
+        for (int i = 0; i < 320; ++i) {
+            temp1_values[i] = 25.0f;
+            temp2_values[i] = 25.0f;
+            diff_values[i] = 0.0f;
+            voltage_values[i] = 1.0f;
+            current_values[i] = 0.0f;
+        }
+    }
 };
 
 #endif // DATASTORE_H
