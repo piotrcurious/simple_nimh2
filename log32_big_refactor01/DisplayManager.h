@@ -30,7 +30,6 @@ private:
 
     void _draw_temperature_plot();
     void _draw_voltage_plot();
-    void _draw_current_plot();
     void _display_temperature_labels();
     void _display_main_labels();
 };

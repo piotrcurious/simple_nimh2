@@ -4,6 +4,7 @@
 #include "DataStore.h"
 #include "SHT4xSensor.h"
 #include "ThermistorSensor.h"
+#include "analog.h" // Use the existing analog reading functions
 
 // The Sensors class is responsible for managing all hardware sensors.
 // It initializes them and provides a single method (`read()`) to
@@ -29,9 +30,7 @@ private:
     uint32_t _last_mah_update_time;
 
     // --- Private Helper Methods ---
-    void _read_sht4x();
-    void _read_thermistor();
-    void _read_voltage_and_current();
+    void _read_and_update_all_sensors();
     void _update_mah_charged();
 };
 

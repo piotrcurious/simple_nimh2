@@ -35,7 +35,7 @@ void Remote::_process_command(uint16_t command) {
     switch (command) {
         case RemoteKeys::KEY_POWER:
             _data_store->reset_mAh();
-            _power->start_model_build(); // This will then chain to start_charging()
+            _power->start_charging();
             break;
 
         case RemoteKeys::KEY_PLAY:
@@ -49,10 +49,11 @@ void Remote::_process_command(uint16_t command) {
             break;
 
         case RemoteKeys::KEY_SOURCE:
-            _display_manager->set_display_state(DisplayState::CHARGE_GRAPH);
+             if (_data_store->app_state == AppState::IDLE || _data_store->app_state == AppState::CHARGING) {
+                _display_manager->set_display_state(DisplayState::CHARGE_GRAPH);
+            }
             break;
 
-        // Add other cases as needed
         default:
             Serial.println("Unknown command.");
             break;

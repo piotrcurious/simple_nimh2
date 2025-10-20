@@ -49,9 +49,6 @@ Remote remote(&dataStore, &power, &ir_tester, &displayManager);
 void task_readSensors(void* parameter) {
     while (true) {
         sensors.read();
-        // The delay inside sensors.read() is sufficient,
-        // but a small vTaskDelay can prevent watchdog issues if that loop changes.
-        vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
 
@@ -105,7 +102,6 @@ void loop() {
     // Poll for and handle incoming IR commands
     remote.handle();
 
-    // A small delay to be a good citizen, though the display update
-    // interval largely controls the loop rate.
+    // A small delay to be a good citizen.
     delay(10);
 }

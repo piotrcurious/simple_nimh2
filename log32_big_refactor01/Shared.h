@@ -30,7 +30,7 @@ enum class IRState {
     FIND_MIN_CURRENT,
     MEASURE_PAIRS,
     CALCULATE,
-    DISPLAY,
+    DISPLAY_RESULTS, // Renamed from DISPLAY to avoid macro conflict
     COMPLETE,
     ABORTED
 };

@@ -26,7 +26,6 @@ private:
     // --- State Machine ---
     unsigned long _state_start_time;
     int _find_min_current_duty_cycle;
-    std::vector<ResistanceDataPoint> _measured_pairs;
     void _run_state_machine();
 
     // --- Private Helper Methods ---

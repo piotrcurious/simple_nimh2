@@ -43,7 +43,6 @@ void InternalResistance::_reset() {
     _data_store->app_state = AppState::IDLE;
     _data_store->ir_state = IRState::IDLE;
     _data_store->clear_ir_data();
-    _measured_pairs.clear();
     _state_start_time = 0;
 }
 
@@ -78,35 +77,35 @@ void InternalResistance::_run_state_machine() {
             break;
 
         case IRState::MEASURE_PAIRS:
-            // In a real implementation, this state would step through various duty cycles,
-            // wait for stabilization, and record voltage/current pairs.
-            // For this refactoring, we'll simulate this with a simple delay and then calculate.
-            if (now - _state_start_time > 5000) { // Simulate 5s of measurements
-                 // Add some dummy data for calculation
-                _data_store->ir_data_points.push_back({0.1f, 1.25f});
-                _data_store->ir_data_points.push_back({0.2f, 1.28f});
-                _data_store->ir_data_points.push_back({0.3f, 1.31f});
-
-                Serial.println("IR: Measurement pairs collected.");
-                _data_store->ir_state = IRState::CALCULATE;
+            // This state steps through various duty cycles to collect V-I pairs.
+            // For simplicity, we'll add a few points and move on.
+             if (now - _state_start_time > 2000) { // Wait 2s between measurements
+                int current_dc = _data_store->latest_measurement.duty_cycle;
+                if (current_dc > MAX_DUTY_CYCLE / 2) { // Stop after a few points
+                    _data_store->ir_state = IRState::CALCULATE;
+                    break;
+                }
+                _data_store->ir_data_points.push_back({_data_store->latest_measurement.current_A, _data_store->latest_measurement.voltage_V});
+                 Serial.printf("IR Pair: %.3fV, %.3fA\n", _data_store->latest_measurement.voltage_V, _data_store->latest_measurement.current_A);
+                _power->set_duty_cycle(current_dc + 20);
+                _state_start_time = now;
             }
             break;
 
         case IRState::CALCULATE:
             Serial.println("IR: Calculating internal resistance...");
             if (_perform_linear_regression(_data_store->ir_slope, _data_store->ir_intercept)) {
-                 // The slope of the V-I plot is the internal resistance.
                 Serial.printf("IR: Calculation complete. Resistance: %.4f Ohms\n", _data_store->ir_slope);
             } else {
                 Serial.println("IR: Linear regression failed. Not enough data.");
             }
-            _data_store->ir_state = IRState::DISPLAY;
+            // Use the corrected enum value here
+            _data_store->ir_state = IRState::DISPLAY_RESULTS;
             _state_start_time = now;
             break;
 
-        case IRState::DISPLAY:
+        case IRState::DISPLAY_RESULTS:
             // This state is a placeholder. The DisplayManager will handle showing the results.
-            // We'll just wait for a bit before returning to idle.
             if (now - _state_start_time > 10000) { // Display results for 10s
                 _data_store->ir_state = IRState::COMPLETE;
             }
@@ -137,7 +136,7 @@ bool InternalResistance::_perform_linear_regression(float& slope, float& interce
     }
 
     float denominator = n * sumX2 - sumX * sumX;
-    if (abs(denominator) < 1e-6) return false; // Avoid division by zero
+    if (abs(denominator) < 1e-6) return false;
 
     slope = (n * sumXY - sumX * sumY) / denominator;
     intercept = (sumY * sumX2 - sumX * sumXY) / denominator;

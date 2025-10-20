@@ -14,7 +14,8 @@ Power::Power(DataStore* data_store) :
 // --- Public Methods ---
 
 void Power::begin() {
-    analogWriteResolution(PWM_RESOLUTION_BITS);
+    // Correctly initialize PWM with pin and resolution
+    analogWriteResolution(PWM_PIN, PWM_RESOLUTION_BITS);
     analogWriteFrequency(PWM_PIN, PWM_FREQUENCY);
     pinMode(PWM_PIN, OUTPUT);
     set_duty_cycle(0);
@@ -51,7 +52,7 @@ void Power::start_charging() {
         _data_store->app_state = AppState::CHARGING;
         Serial.println("Starting charge cycle.");
     } else {
-        Serial.println("Current model not built. Please build the model first.");
+        Serial.println("Current model not built. Building model first...");
         start_model_build();
     }
 }
@@ -73,17 +74,17 @@ void Power::start_model_build() {
 void Power::_build_current_model_step() {
     unsigned long now = millis();
 
-    if (_build_model_step == 0) {
+    if (_build_model_step == 0) { // Initialization
         Serial.println("Starting fresh model building.");
         _model_duty_cycles.clear();
         _model_currents.clear();
         _model_duty_cycles.push_back(0.0f);
         _model_currents.push_back(0.0f);
-        _build_model_duty_cycle = 1;
+        _build_model_duty_cycle = 5; // Start at a low duty cycle
         _build_model_step = 1;
     }
 
-    if (_build_model_step == 1) {
+    if (_build_model_step == 1) { // Set duty cycle and wait
         if (_build_model_duty_cycle <= MAX_DUTY_CYCLE) {
             set_duty_cycle(_build_model_duty_cycle);
             _build_model_last_step_time = now;
@@ -99,6 +100,7 @@ void Power::_build_current_model_step() {
             if (data.current_A >= MEASURABLE_CURRENT_THRESHOLD) {
                 _model_duty_cycles.push_back(static_cast<float>(_build_model_duty_cycle));
                 _model_currents.push_back(data.current_A);
+                 Serial.printf("Model point: %d, %.3fA\n", _build_model_duty_cycle, data.current_A);
             }
             _build_model_duty_cycle += 5;
             _build_model_step = 1; // Go to next duty cycle
@@ -141,13 +143,7 @@ void Power::_build_current_model_step() {
 
 bool Power::_charge_battery() {
     // This is a placeholder for the charging logic.
-    // A real implementation would monitor temperature, voltage, etc.
-    // and adjust the duty cycle accordingly.
-    // For now, we'll just set a constant duty cycle.
     set_duty_cycle(128); // Example: 50% duty cycle
-
-    // Return true to continue charging, false to stop.
-    // A real implementation would have conditions to stop (e.g., battery full, over-temp).
     return true;
 }
 
