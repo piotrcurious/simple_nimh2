@@ -2,26 +2,17 @@
 #define SHARED_H
 
 #include <cstdint>
+#include <vector>
+#include <string>
+#include <ArduinoEigenDense.h>
 
-// This file will be populated with shared enums and data structures.
+// --- Enums and Structs ---
 
 enum AppState {
     APP_STATE_IDLE,
     APP_STATE_BUILDING_MODEL,
     APP_STATE_MEASURING_IR,
     APP_STATE_CHARGING
-};
-
-// Represents the state of the internal resistance measurement process
-enum class IRState {
-    IDLE,
-    START,
-    FIND_MIN_CURRENT,
-    MEASURE_PAIRS,
-    CALCULATE,
-    DISPLAY_RESULTS, // Renamed from DISPLAY to avoid macro conflict
-    COMPLETE,
-    ABORTED
 };
 
 struct MeasurementData {
@@ -111,7 +102,7 @@ struct FindOptManager {
     int maxDC = 0;
     int lowDC = 0;
     int highDC = 0;
-    int optimalDC; // MIN_CHARGE_DUTY_CYCLE
+    int optimalDC; // Initialized with MIN_CHARGE_DUTY_CYCLE in original code
     float closestVoltageDifference = 1000.0f;
     float targetVoltage = 0.0f;
     float initialUnloadedVoltage = 0.0f;

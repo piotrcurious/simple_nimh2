@@ -1,18 +1,18 @@
 #include "graphing.h"
 #include "definitions.h"
+#include "config.h"
+#include "Shared.h"
 #include <cfloat>
 
-extern DataStore dataStore;
-// DisplayState currentDisplayState = DISPLAY_STATE_MAIN; // Moved to dataStore
+DisplayState currentDisplayState = DISPLAY_STATE_MAIN;
 TFT_eSPI tft = TFT_eSPI();
 
-// All of these arrays and MAX_DIFF_TEMP are now in dataStore.
-// float temp1_values[PLOT_WIDTH];
-// float temp2_values[PLOT_WIDTH];
-// float diff_values[PLOT_WIDTH];
-// float voltage_values[PLOT_WIDTH];
-// float current_values[PLOT_WIDTH];
-// float MAX_DIFF_TEMP = 1.5;
+float temp1_values[PLOT_WIDTH];
+float temp2_values[PLOT_WIDTH];
+float diff_values[PLOT_WIDTH];
+float voltage_values[PLOT_WIDTH];
+float current_values[PLOT_WIDTH];
+float MAX_DIFF_TEMP = 1.5;
 
 
 // Float version of map function for better precision in scaling
@@ -28,22 +28,32 @@ void bigUglyMessage(const String& measurementType) {
 }
 
 // Function to print thermistor, voltage, and current data to the serial monitor
-// MOVED to DisplayManager class
+void printThermistorSerial(double temp1, double temp2, double tempDiff, float t1_millivolts, float voltage, float current) {
+    Serial.print("Thermistor 1 (Top, SHT4x): ");
+    if (isnan(temp1)) Serial.print("Error"); else Serial.printf("%.3f °C", temp1);
+    Serial.print(", Thermistor 2 (Bottom): ");
+    if (isnan(temp2)) Serial.print("Error"); else Serial.printf("%.3f °C", temp2);
+    Serial.print(", Diff (T1-T2): ");
+    if (isnan(tempDiff)) Serial.print("Error"); else Serial.printf("%.3f °C", tempDiff);
+    Serial.printf(", Voltage : %.3f V", voltage);
+    Serial.printf(", Current : %.3f A", current);
+    Serial.println(" °C");
+}
 
 // Function to update the temperature, voltage, and current history arrays for plotting
 void updateTemperatureHistory(double temp1, double temp2, double tempDiff, float voltage, float current) {
     for (int i = 0; i < PLOT_WIDTH - 1; i++) {
-        dataStore.temp1_values[i] = dataStore.temp1_values[i + 1];
-        dataStore.temp2_values[i] = dataStore.temp2_values[i + 1];
-        dataStore.diff_values[i] = dataStore.diff_values[i + 1];
-        dataStore.voltage_values[i] = dataStore.voltage_values[i + 1]; // Update voltage history
-        dataStore.current_values[i] = dataStore.current_values[i + 1];     // Update current history
+        temp1_values[i] = temp1_values[i + 1];
+        temp2_values[i] = temp2_values[i + 1];
+        diff_values[i] = diff_values[i + 1];
+        voltage_values[i] = voltage_values[i + 1]; // Update voltage history
+        current_values[i] = current_values[i + 1];     // Update current history
     }
-    dataStore.temp1_values[PLOT_WIDTH - 1] = temp1;
-    dataStore.temp2_values[PLOT_WIDTH - 1] = temp2;
-    dataStore.diff_values[PLOT_WIDTH - 1] = tempDiff;
-    dataStore.voltage_values[PLOT_WIDTH - 1] = voltage; // Add new voltage reading
-    dataStore.current_values[PLOT_WIDTH - 1] = current;     // Add new current reading
+    temp1_values[PLOT_WIDTH - 1] = temp1;
+    temp2_values[PLOT_WIDTH - 1] = temp2;
+    diff_values[PLOT_WIDTH - 1] = tempDiff;
+    voltage_values[PLOT_WIDTH - 1] = voltage; // Add new voltage reading
+    current_values[PLOT_WIDTH - 1] = current;     // Add new current reading
 }
 
 // Improved function to get a darker and more gray shade of a color
@@ -93,7 +103,7 @@ void prepareTemperaturePlot() {
     tft.fillRect(PLOT_X_START, PLOT_Y_START, PLOT_WIDTH, PLOT_HEIGHT, TFT_BLACK);
 
     // Calculate the Y-coordinate for the zero line of the temperature difference graph
-    float zero_diff_mapped = mapf(0, MIN_DIFF_TEMP, dataStore.MAX_DIFF_TEMP, 0, PLOT_HEIGHT);
+    float zero_diff_mapped = mapf(0, MIN_DIFF_TEMP, MAX_DIFF_TEMP, 0, PLOT_HEIGHT);
     int zero_diff_y = PLOT_Y_START + PLOT_HEIGHT - (int)zero_diff_mapped;
 
     // Draw the zero line for the temperature difference graph
@@ -109,14 +119,14 @@ void plotVoltageData() {
     bool first_valid_voltage = true;
 
     for (int i = 0; i < PLOT_WIDTH; i++) {
-        if (!isnan(dataStore.voltage_values[i])) {
+        if (!isnan(voltage_values[i])) {
             if (first_valid_voltage) {
-                min_voltage = dataStore.voltage_values[i];
-                max_voltage = dataStore.voltage_values[i];
+                min_voltage = voltage_values[i];
+                max_voltage = voltage_values[i];
                 first_valid_voltage = false;
             } else {
-                min_voltage = fmin(min_voltage, dataStore.voltage_values[i]);
-                max_voltage = fmax(max_voltage, dataStore.voltage_values[i]);
+                min_voltage = fmin(min_voltage, voltage_values[i]);
+                max_voltage = fmax(max_voltage, voltage_values[i]);
             }
         }
     }
@@ -163,9 +173,9 @@ void plotVoltageData() {
     }
 
     for (int i = 0; i < PLOT_WIDTH - 1; i++) {
-        if (!isnan(dataStore.voltage_values[i]) && !isnan(dataStore.voltage_values[i + 1])) {
-            int y_voltage_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(dataStore.voltage_values[i], min_voltage, max_voltage, 0, PLOT_HEIGHT);
-            int y_voltage_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(dataStore.voltage_values[i + 1], min_voltage, max_voltage, 0, PLOT_HEIGHT);
+        if (!isnan(voltage_values[i]) && !isnan(voltage_values[i + 1])) {
+            int y_voltage_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(voltage_values[i], min_voltage, max_voltage, 0, PLOT_HEIGHT);
+            int y_voltage_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(voltage_values[i + 1], min_voltage, max_voltage, 0, PLOT_HEIGHT);
             tft.drawLine(PLOT_X_START + i, y_voltage_prev, PLOT_X_START + i + 1, y_voltage_current, GRAPH_COLOR_VOLTAGE);
         }
     }
@@ -178,24 +188,24 @@ void plotVoltageData() {
 
 void plotTemperatureData() {
     for (int i = 0; i < PLOT_WIDTH - 1; i++) {
-        if (!isnan(dataStore.temp1_values[i]) && !isnan(dataStore.temp1_values[i + 1])) {
-            int y1_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(dataStore.temp1_values[i], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
-            int y1_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(dataStore.temp1_values[i + 1], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
+        if (!isnan(temp1_values[i]) && !isnan(temp1_values[i + 1])) {
+            int y1_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(temp1_values[i], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
+            int y1_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(temp1_values[i + 1], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
             tft.drawLine(PLOT_X_START + i, y1_prev, PLOT_X_START + i + 1, y1_current, GRAPH_COLOR_1);
         }
-        if (!isnan(dataStore.temp2_values[i]) && !isnan(dataStore.temp2_values[i + 1])) {
-            int y2_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(dataStore.temp2_values[i], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
-            int y2_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(dataStore.temp2_values[i + 1], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
+        if (!isnan(temp2_values[i]) && !isnan(temp2_values[i + 1])) {
+            int y2_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(temp2_values[i], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
+            int y2_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(temp2_values[i + 1], MIN_TEMP, MAX_TEMP, 0, PLOT_HEIGHT);
             tft.drawLine(PLOT_X_START + i, y2_prev, PLOT_X_START + i + 1, y2_current, GRAPH_COLOR_2);
         }
-        if (!isnan(dataStore.diff_values[i]) && !isnan(dataStore.diff_values[i + 1])) {
-            int y_diff_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(dataStore.diff_values[i], MIN_DIFF_TEMP, dataStore.MAX_DIFF_TEMP, 0, PLOT_HEIGHT);
-            int y_diff_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(dataStore.diff_values[i + 1], MIN_DIFF_TEMP, dataStore.MAX_DIFF_TEMP, 0, PLOT_HEIGHT);
+        if (!isnan(diff_values[i]) && !isnan(diff_values[i + 1])) {
+            int y_diff_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(diff_values[i], MIN_DIFF_TEMP, MAX_DIFF_TEMP, 0, PLOT_HEIGHT);
+            int y_diff_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(diff_values[i + 1], MIN_DIFF_TEMP, MAX_DIFF_TEMP, 0, PLOT_HEIGHT);
             tft.drawLine(PLOT_X_START + i, y_diff_prev, PLOT_X_START + i + 1, y_diff_current, GRAPH_COLOR_DIFF);
         }
-        if (!isnan(dataStore.current_values[i]) && !isnan(dataStore.current_values[i + 1])) {
-            int y_current_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(dataStore.current_values[i], MIN_CURRENT, MAX_CURRENT, 0, PLOT_HEIGHT);
-            int y_current_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(dataStore.current_values[i + 1], MIN_CURRENT, MAX_CURRENT, 0, PLOT_HEIGHT);
+        if (!isnan(current_values[i]) && !isnan(current_values[i + 1])) {
+            int y_current_prev = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(current_values[i], MIN_CURRENT, MAX_CURRENT, 0, PLOT_HEIGHT);
+            int y_current_current = PLOT_Y_START + PLOT_HEIGHT - (int)mapf(current_values[i + 1], MIN_CURRENT, MAX_CURRENT, 0, PLOT_HEIGHT);
             tft.drawLine(PLOT_X_START + i, y_current_prev, PLOT_X_START + i + 1, y_current_current, GRAPH_COLOR_CURRENT);
         }
     }
@@ -282,8 +292,8 @@ void displayTemperatureLabels(double temp1, double temp2, double tempDiff, float
     tft.setTextSize(LABEL_TEXT_SIZE);
     tft.setCursor(PLOT_X_START + 260, LABEL_Y_START + label_line_height * 2);
     tft.print("%  :");
-    if (!isnan(dataStore.dutyCycle)) {
-        tft.printf("%u  ", dataStore.dutyCycle);
+    if (!isnan(dutyCycle)) {
+        tft.printf("%u  ", dutyCycle);
     } else {
         tft.print("Error");
     }
@@ -358,8 +368,8 @@ void displayInternalResistanceGraph() {
     tft.fillRect(PLOT_X_START, PLOT_Y_START, PLOT_WIDTH, PLOT_HEIGHT, TFT_BLACK);
 
     // --- Extract valid data ---
-    auto validResistanceData       = extractValidData(dataStore.internalResistanceData, dataStore.resistanceDataCount);
-    auto validResistanceDataPairs  = extractValidData(dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs);
+    auto validResistanceData       = extractValidData(internalResistanceData, resistanceDataCount);
+    auto validResistanceDataPairs  = extractValidData(internalResistanceDataPairs, resistanceDataCountPairs);
 
     // --- No data handling ---
     if (validResistanceData.size() < 2 && validResistanceDataPairs.size() < 2) {
@@ -490,20 +500,20 @@ void displayInternalResistanceGraph() {
     };
 
     // --- Draw regression lines ---
-    if (dataStore.resistanceDataCount >= 2)
-        drawRegression(dataStore.regressedInternalResistanceSlope, dataStore.regressedInternalResistanceIntercept,
+    if (resistanceDataCount >= 2)
+        drawRegression(regressedInternalResistanceSlope, regressedInternalResistanceIntercept,
                        TFT_WHITE, "Rint(LU)", minCurrent, maxCurrent, false);
-    else if (dataStore.resistanceDataCount == 1)
-        tft.drawCircle(mapf(dataStore.internalResistanceData[0][0], minCurrent, maxCurrent, graphXStart, graphXEnd),
-                       mapf(dataStore.internalResistanceData[0][1], minResistance, maxResistance, graphYEnd, graphYStart),
+    else if (resistanceDataCount == 1)
+        tft.drawCircle(mapf(internalResistanceData[0][0], minCurrent, maxCurrent, graphXStart, graphXEnd),
+                       mapf(internalResistanceData[0][1], minResistance, maxResistance, graphYEnd, graphYStart),
                        2, TFT_WHITE);
 
-    if (dataStore.resistanceDataCountPairs >= 2)
-        drawRegression(dataStore.regressedInternalResistancePairsSlope, dataStore.regressedInternalResistancePairsIntercept,
+    if (resistanceDataCountPairs >= 2)
+        drawRegression(regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept,
                        TFT_GREEN, "Rint(Pair)", minCurrent, maxCurrent, true);
-    else if (dataStore.resistanceDataCountPairs == 1)
-        tft.drawCircle(mapf(dataStore.internalResistanceDataPairs[0][0], minCurrent, maxCurrent, graphXStart, graphXEnd),
-                       mapf(dataStore.internalResistanceDataPairs[0][1], minResistance, maxResistance, graphYEnd, graphYStart),
+    else if (resistanceDataCountPairs == 1)
+        tft.drawCircle(mapf(internalResistanceDataPairs[0][0], minCurrent, maxCurrent, graphXStart, graphXEnd),
+                       mapf(internalResistanceDataPairs[0][1], minResistance, maxResistance, graphYEnd, graphYStart),
                        2, TFT_GREEN);
 
     // --- Legend (no overlap) ---
@@ -561,7 +571,7 @@ int calculateVerticalPosition(int yInitial, int textHeight, LabelVerticalPlaceme
 }
 
 void drawChargePlot(bool autoscaleX, bool autoscaleY) {
-    if (dataStore.chargeLog.empty()) {
+    if (chargeLog.empty()) {
         tft.fillScreen(TFT_BLACK);
         tft.setTextColor(TFT_WHITE);
         tft.setTextDatum(6);
@@ -576,8 +586,8 @@ void drawChargePlot(bool autoscaleX, bool autoscaleY) {
     int marginX        = 0;
     int marginYTop     = 10;
 
-    unsigned long startTime = dataStore.chargeLog.front().timestamp;
-    unsigned long endTime   = dataStore.chargeLog.back().timestamp;
+    unsigned long startTime = chargeLog.front().timestamp;
+    unsigned long endTime   = chargeLog.back().timestamp;
     double timeScaleX = 1.0;
     if (autoscaleX && endTime > startTime) {
         timeScaleX = static_cast<double>(plotAreaWidth) / static_cast<double>(endTime - startTime);
@@ -601,7 +611,7 @@ void drawChargePlot(bool autoscaleX, bool autoscaleY) {
     float irPairs_Min = 1000.0f, irPairs_Max = -1000.0f;
 
     if (autoscaleY) {
-        for (const auto &logEntry : dataStore.chargeLog) {
+        for (const auto &logEntry : chargeLog) {
             currentMin = std::fmin(currentMin, logEntry.current);
             currentMax = std::fmax(currentMax, logEntry.current);
 
@@ -699,28 +709,28 @@ void drawChargePlot(bool autoscaleX, bool autoscaleY) {
         }
     };
 
-    for (size_t i = 2; i < dataStore.chargeLog.size(); ++i) {
-        int x1 = timeToX(dataStore.chargeLog[i - 1].timestamp);
-        int x2 = timeToX(dataStore.chargeLog[i].timestamp);
+    for (size_t i = 2; i < chargeLog.size(); ++i) {
+        int x1 = timeToX(chargeLog[i - 1].timestamp);
+        int x2 = timeToX(chargeLog[i].timestamp);
 
         {
-            int y1 = scaleValue(dataStore.chargeLog[i - 1].current, currentMin, currentMax);
-            int y2 = scaleValue(dataStore.chargeLog[i].current, currentMin, currentMax);
+            int y1 = scaleValue(chargeLog[i - 1].current, currentMin, currentMax);
+            int y2 = scaleValue(chargeLog[i].current, currentMin, currentMax);
             drawLineAndUpdateGrid(x1, y1, x2, y2, TFT_MAGENTA);
         }
         {
-            int y1 = scaleValue(dataStore.chargeLog[i - 1].voltage, voltageMin, voltageMax);
-            int y2 = scaleValue(dataStore.chargeLog[i].voltage, voltageMin, voltageMax);
+            int y1 = scaleValue(chargeLog[i - 1].voltage, voltageMin, voltageMax);
+            int y2 = scaleValue(chargeLog[i].voltage, voltageMin, voltageMax);
             drawLineAndUpdateGrid(x1, y1, x2, y2, TFT_YELLOW);
         }
         {
-            int y1 = scaleValue(static_cast<float>(dataStore.chargeLog[i - 1].dutyCycle), dutyCycleMin, dutyCycleMax);
-            int y2 = scaleValue(static_cast<float>(dataStore.chargeLog[i].dutyCycle), dutyCycleMin, dutyCycleMax);
+            int y1 = scaleValue(static_cast<float>(chargeLog[i - 1].dutyCycle), dutyCycleMin, dutyCycleMax);
+            int y2 = scaleValue(static_cast<float>(chargeLog[i].dutyCycle), dutyCycleMin, dutyCycleMax);
             drawLineAndUpdateGrid(x1, y1, x2, y2, TFT_DARKGREY);
         }
         {
-            float currentTempDiffPrev = dataStore.chargeLog[i - 1].batteryTemperature - dataStore.chargeLog[i - 1].ambientTemperature;
-            float currentTempDiffCurr = dataStore.chargeLog[i].batteryTemperature     - dataStore.chargeLog[i].ambientTemperature;
+            float currentTempDiffPrev = chargeLog[i - 1].batteryTemperature - chargeLog[i - 1].ambientTemperature;
+            float currentTempDiffCurr = chargeLog[i].batteryTemperature     - chargeLog[i].ambientTemperature;
             int y1 = scaleValue(currentTempDiffPrev, tempDiffMin, tempDiffMax);
             int y2 = scaleValue(currentTempDiffCurr, tempDiffMin, tempDiffMax);
             drawLineAndUpdateGrid(x1, y1, x2, y2, TFT_BLUE);
@@ -729,14 +739,14 @@ void drawChargePlot(bool autoscaleX, bool autoscaleY) {
             size_t prevIdx = i - 1;
             size_t prevPrevIdx = (i >= 2) ? (i - 2) : prevIdx;
             float estimatedDiffPrev = estimateTempDiff(
-                dataStore.chargeLog[prevIdx].voltage,
-                dataStore.chargeLog[prevIdx].voltage,
-                dataStore.chargeLog[prevIdx].current,
-                dataStore.regressedInternalResistancePairsIntercept,
-                dataStore.chargeLog[prevIdx].ambientTemperature,
-                dataStore.chargeLog[prevIdx].timestamp,
-                dataStore.chargeLog[prevPrevIdx].timestamp,
-                dataStore.chargeLog[prevIdx].batteryTemperature,
+                chargeLog[prevIdx].voltage,
+                chargeLog[prevIdx].voltage,
+                chargeLog[prevIdx].current,
+                regressedInternalResistancePairsIntercept,
+                chargeLog[prevIdx].ambientTemperature,
+                chargeLog[prevIdx].timestamp,
+                chargeLog[prevPrevIdx].timestamp,
+                chargeLog[prevIdx].batteryTemperature,
                 DEFAULT_CELL_MASS_KG,
                 DEFAULT_SPECIFIC_HEAT,
                 DEFAULT_SURFACE_AREA_M2,
@@ -745,14 +755,14 @@ void drawChargePlot(bool autoscaleX, bool autoscaleY) {
             );
 
             float estimatedDiffCurr = estimateTempDiff(
-                dataStore.chargeLog[i].voltage,
-                dataStore.chargeLog[i].voltage,
-                dataStore.chargeLog[i].current,
-                dataStore.regressedInternalResistancePairsIntercept,
-                dataStore.chargeLog[i].ambientTemperature,
-                dataStore.chargeLog[i].timestamp,
-                dataStore.chargeLog[i - 1].timestamp,
-                dataStore.chargeLog[i].batteryTemperature,
+                chargeLog[i].voltage,
+                chargeLog[i].voltage,
+                chargeLog[i].current,
+                regressedInternalResistancePairsIntercept,
+                chargeLog[i].ambientTemperature,
+                chargeLog[i].timestamp,
+                chargeLog[i - 1].timestamp,
+                chargeLog[i].batteryTemperature,
                 DEFAULT_CELL_MASS_KG,
                 DEFAULT_SPECIFIC_HEAT,
                 DEFAULT_SURFACE_AREA_M2,
@@ -767,13 +777,13 @@ void drawChargePlot(bool autoscaleX, bool autoscaleY) {
             drawLineAndUpdateGrid(x1, y1, x2, y2, TFT_RED);
         }
         {
-            int y1 = scaleValue(dataStore.chargeLog[i - 1].internalResistanceLoadedUnloaded, irLU_Min, irLU_Max);
-            int y2 = scaleValue(dataStore.chargeLog[i].internalResistanceLoadedUnloaded, irLU_Min, irLU_Max);
+            int y1 = scaleValue(chargeLog[i - 1].internalResistanceLoadedUnloaded, irLU_Min, irLU_Max);
+            int y2 = scaleValue(chargeLog[i].internalResistanceLoadedUnloaded, irLU_Min, irLU_Max);
             drawLineAndUpdateGrid(x1, y1, x2, y2, TFT_ORANGE);
         }
         {
-            int y1 = scaleValue(dataStore.chargeLog[i - 1].internalResistancePairs, irPairs_Min, irPairs_Max);
-            int y2 = scaleValue(dataStore.chargeLog[i].internalResistancePairs, irPairs_Min, irPairs_Max);
+            int y1 = scaleValue(chargeLog[i - 1].internalResistancePairs, irPairs_Min, irPairs_Max);
+            int y2 = scaleValue(chargeLog[i].internalResistancePairs, irPairs_Min, irPairs_Max);
             drawLineAndUpdateGrid(x1, y1, x2, y2, TFT_CYAN);
         }
     }

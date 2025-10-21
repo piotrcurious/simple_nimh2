@@ -22,7 +22,7 @@
 #include "ThermistorSensor.h"
 #include "analog.h"
 
-#define DEBUG_LABELS
+// All constants and type definitions have been moved to config.h and Shared.h
 
 // --- Extern Global Variables ---
 extern TFT_eSPI tft;
@@ -30,6 +30,8 @@ extern SHT4xSensor sht4Sensor;
 extern ThermistorSensor thermistorSensor;
 extern AsyncMeasure meas;
 extern FindOptManager findOpt;
+// All other state variables have been moved to the DataStore class.
+
 
 // --- Function Declarations ---
 // These are functions that are defined in one .cpp file but called from another.

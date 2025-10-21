@@ -1,6 +1,5 @@
 #include "config.h"
 #include "Shared.h"
-#include "DataStore.h"
 #include "definitions.h"
 #include "logging.h"
 #include "graphing.h"
@@ -8,13 +7,7 @@
 #include "internal_resistance.h"
 #include <IRremote.h>
 
-// --- Global Instances of New Classes ---
 DataStore dataStore;
-DisplayManager displayManager(&dataStore);
-// Power power(&dataStore);
-// InternalResistance ir_tester(&dataStore, &power);
-// Remote remote(&dataStore, &power, &ir_tester, &displayManager);
-
 
 #define PLOT_WIDTH 320
 #define PLOT_Y_START 0
@@ -22,6 +15,7 @@ DisplayManager displayManager(&dataStore);
 extern void startMHElectrodeMeasurement(int testDutyCycle, unsigned long stabilization_delay, unsigned long unloaded_delay);
 
 // --- State Machine Definitions ---
+// AppState currentAppState = APP_STATE_IDLE; // Moved to DataStore
 extern IRState currentIRState;
 
 // --- Global Variable Definitions ---
@@ -31,23 +25,41 @@ extern void plotVoltageData();
 extern void plotTemperatureData();
 extern void updateTemperatureHistory(double temp1, double temp2, double tempDiff, float voltage, float current);
 extern void printThermistorSerial(double temp1, double temp2, double tempDiff, float t1_millivolts, float voltage, float current);
+CurrentModel currentModel;
 SHT4xSensor sht4Sensor;
 
 extern void displayInternalResistanceGraph();
 extern void drawChargePlot(bool autoscaleX, bool autoscaleY);
-ThermistorSensor thermistorSensor(THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, 0.0); // THERMISTOR_1_OFFSET will be in DataStore
+ThermistorSensor thermistorSensor(THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, THERMISTOR_1_OFFSET);
 
-// All global state variables are now in the dataStore object.
-// Some local static variables may remain in functions.
+volatile float voltage_mv = 1000.0f;
+volatile float current_ma = 0.0f;
+volatile float mAh_charged = 0.0f;
+volatile bool resetAh = false;
+volatile uint32_t mAh_last_time = 0;
+uint32_t dutyCycle = 0;
+
+unsigned long lastPlotUpdateTime = 0;
+unsigned long lastDataGatherTime = 0;
+unsigned long lastChargingHouseTime = 0;
+unsigned long lastIRHandleTime = 0;
+unsigned long displayStateChangeTime = 0;
+
+const int pwmPin = PWM_PIN;
+const int pwmResolutionBits = 8;
+const int pwmMaxDutyCycle = (1 << pwmResolutionBits) - 1;
+double THERMISTOR_1_OFFSET = 0.0;
+volatile uint32_t voltage_last_time;
+volatile uint32_t voltage_update_interval = 250;
 
 // --- Function Implementations ---
 
 void setupPWM() {
-    analogWriteResolution(PWM_PIN,dataStore.pwmResolutionBits);
-    analogWriteFrequency(PWM_PIN,PWM_FREQUENCY);
-    pinMode(PWM_PIN, OUTPUT);
-    dataStore.dutyCycle = 0;
-    analogWrite(PWM_PIN, 0);
+    analogWriteResolution(pwmPin,pwmResolutionBits);
+    analogWriteFrequency(pwmPin,PWM_FREQUENCY);
+    pinMode(pwmPin, OUTPUT);
+    dutyCycle = 0;
+    analogWrite(pwmPin, 0);
 }
 
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current) {
@@ -58,8 +70,8 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
     temp2 = thermistorSensor.getTemperature2();
     tempDiff = thermistorSensor.getDifference();
     t1_millivolts = thermistorSensor.getRawMillivolts1();
-    voltage = dataStore.voltage_mv / 1000.0f;
-    current = dataStore.current_ma / 1000.0f;
+    voltage = voltage_mv / 1000.0f;
+    current = current_ma / 1000.0f;
 }
 
 // --- Non-blocking buildCurrentModel ---
@@ -98,8 +110,8 @@ void buildCurrentModelStep() {
 
     if (buildModelStep == 1) {
         if (buildModelDutyCycle <= MAX_DUTY_CYCLE) {
-            dataStore.dutyCycle = buildModelDutyCycle;
-            analogWrite(PWM_PIN, dataStore.dutyCycle);
+            dutyCycle = buildModelDutyCycle;
+            analogWrite(pwmPin, dutyCycle);
             buildModelLastStepTime = now;
             buildModelStep = 2;
         } else {
@@ -129,10 +141,10 @@ void buildCurrentModelStep() {
     if (buildModelStep == 3) {
         if (dutyCycles.size() < 2) {
             Serial.println("Not enough data points to build a reliable model.");
-            dataStore.current_model.isModelBuilt = false;
-            dataStore.dutyCycle = 0;
-            analogWrite(PWM_PIN, dataStore.dutyCycle);
-            dataStore.app_state = APP_STATE_IDLE;
+            currentModel.isModelBuilt = false;
+            dutyCycle = 0;
+            analogWrite(pwmPin, dutyCycle);
+            currentAppState = APP_STATE_IDLE;
             return;
         }
 
@@ -152,31 +164,31 @@ void buildCurrentModelStep() {
         if (degree >= 0) {
             coefficients(0) = 0.0f;
         }
-        dataStore.current_model.coefficients = coefficients;
-        dataStore.current_model.isModelBuilt = true;
+        currentModel.coefficients = coefficients;
+        currentModel.isModelBuilt = true;
 
         Serial.println("Current model built successfully with coefficients:");
         for (int i = 0; i <= degree; ++i) {
             Serial.printf("Coefficient for x^%d: %.4f\n", i, coefficients(i));
         }
-        dataStore.dutyCycle = 0;
-        analogWrite(PWM_PIN, dataStore.dutyCycle);
-        dataStore.app_state = APP_STATE_IDLE;
+        dutyCycle = 0;
+        analogWrite(pwmPin, dutyCycle);
+        currentAppState = APP_STATE_IDLE;
         startCharging();
         buildModelStep = 0;
     }
 }
 
 float estimateCurrent(int dutyCycle) {
-    if (!dataStore.current_model.isModelBuilt) {
+    if (!currentModel.isModelBuilt) {
         Serial.println("Warning: Current model has not been built yet. Returning 0.");
         return 0.0f;
     }
 
     float estimatedCurrent = 0.0f;
     float dutyCycleFloat = static_cast<float>(dutyCycle);
-    for (int i = 0; i < dataStore.current_model.coefficients.size(); ++i) {
-        estimatedCurrent += dataStore.current_model.coefficients(i) * std::pow(dutyCycleFloat, i);
+    for (int i = 0; i < currentModel.coefficients.size(); ++i) {
+        estimatedCurrent += currentModel.coefficients(i) * std::pow(dutyCycleFloat, i);
     }
 
     if (estimatedCurrent < MEASURABLE_CURRENT_THRESHOLD && dutyCycle > 0) {
@@ -194,7 +206,7 @@ void task_readSHT4x(void* parameter) {
 }
 
 void task_readThermistor(void* parameter) {
-    dataStore.mAh_last_time = millis();
+    mAh_last_time = millis();
 
     while (true) {
         uint32_t current_time = millis();
@@ -212,35 +224,35 @@ void task_readThermistor(void* parameter) {
             sumAnalogValuesCurrent += analogValue;
         }
         double voltageAcrossShunt = (sumAnalogValuesCurrent / task_current_numSamples) - CURRENT_SHUNT_PIN_ZERO_OFFSET;
-        dataStore.current_ma = (voltageAcrossShunt / CURRENT_SHUNT_RESISTANCE);
+        current_ma = (voltageAcrossShunt / CURRENT_SHUNT_RESISTANCE);
 
-        if ((current_time - dataStore.voltage_last_time) > dataStore.voltage_update_interval) {
+        if ((current_time - voltage_last_time) > voltage_update_interval) {
             int task_voltage_numSamples = 256;
             double sumAnalogValuesVoltage = 0;
             for (int i = 0; i < task_voltage_numSamples; ++i) {
                 uint32_t analogValue = analogReadMillivolts(VOLTAGE_READ_PIN, VOLTAGE_ATTENUATION, VOLTAGE_OVERSAMPLING);
                 sumAnalogValuesVoltage += analogValue;
             }
-            dataStore.voltage_mv = (thermistorSensor.getVCC() * MAIN_VCC_RATIO) - (sumAnalogValuesVoltage / task_voltage_numSamples);
-            dataStore.voltage_last_time = current_time;
+            voltage_mv = (thermistorSensor.getVCC() * MAIN_VCC_RATIO) - (sumAnalogValuesVoltage / task_voltage_numSamples);
+            voltage_last_time = current_time;
         }
 
-        uint32_t time_elapsed = current_time - dataStore.mAh_last_time;
+        uint32_t time_elapsed = current_time - mAh_last_time;
         double time_elapsed_hours = (double)time_elapsed / (1000.0 * 3600.0);
         double current_for_mah_calculation_ma;
 
-        if (dataStore.current_model.isModelBuilt && (dataStore.current_ma / 1000.0) < MEASURABLE_CURRENT_THRESHOLD) {
-            current_for_mah_calculation_ma = static_cast<double>(estimateCurrent(dataStore.dutyCycle) * 1000.0);
+        if (currentModel.isModelBuilt && (current_ma / 1000.0) < MEASURABLE_CURRENT_THRESHOLD) {
+            current_for_mah_calculation_ma = static_cast<double>(estimateCurrent(dutyCycle) * 1000.0);
         } else {
-            current_for_mah_calculation_ma = dataStore.current_ma;
+            current_for_mah_calculation_ma = current_ma;
         }
 
-        dataStore.mAh_charged += (current_for_mah_calculation_ma) * time_elapsed_hours;
-        dataStore.mAh_last_time = current_time;
+        mAh_charged += (current_for_mah_calculation_ma) * time_elapsed_hours;
+        mAh_last_time = current_time;
 
-        if (dataStore.resetAh) {
-            dataStore.mAh_charged = 0.0f;
-            dataStore.resetAh = false;
+        if (resetAh) {
+            mAh_charged = 0.0f;
+            resetAh = false;
             Serial.println("mAh counter reset.");
         }
 
@@ -253,7 +265,7 @@ void task_readThermistor(void* parameter) {
 int testGraph() {
     // Create some dummy data for testing
     for (int i = 0; i < 100; ++i) {
-        dataStore.chargeLog.push_back({(unsigned long)i * 1000, 0.2f + 0.1f * sin(i * 0.1f), 1.5f + 0.2f * cos(i * 0.05f), i % 256, 25.0f + 0.5f * i, 20.0f + 0.3f * i, 0.1f + 0.01f * i, 0.2f + 0.02f * i});
+        chargeLog.push_back({(unsigned long)i * 1000, 0.2f + 0.1f * sin(i * 0.1f), 1.5f + 0.2f * cos(i * 0.05f), i % 256, 25.0f + 0.5f * i, 20.0f + 0.3f * i, 0.1f + 0.01f * i, 0.2f + 0.02f * i});
     }
     drawChargePlot(true, true);
     return 0;
@@ -266,26 +278,26 @@ void handleIRCommand() {
         Serial.println(IrReceiver.decodedIRData.command, HEX);
         switch(IrReceiver.decodedIRData.command) {
             case RemoteKeys::KEY_PLAY:
-                dataStore.app_state = APP_STATE_MEASURING_IR;
+                currentAppState = APP_STATE_MEASURING_IR;
                 currentIRState = IR_STATE_START;
                 break;
             case RemoteKeys::KEY_INFO:
-                 if (dataStore.app_state == APP_STATE_IDLE || dataStore.app_state == APP_STATE_CHARGING ) {
-                    dataStore.currentDisplayState = DISPLAY_STATE_IR_GRAPH;
+                 if (currentAppState == APP_STATE_IDLE || currentAppState == APP_STATE_CHARGING ) {
+                    currentDisplayState = DISPLAY_STATE_IR_GRAPH;
                     displayInternalResistanceGraph();
-                    dataStore.displayStateChangeTime = millis();
+                    displayStateChangeTime = millis();
                 }
                 break;
             case RemoteKeys::KEY_SOURCE:
-                if (dataStore.currentDisplayState != DISPLAY_STATE_CHARGE_GRAPH) {
-                    dataStore.currentDisplayState = DISPLAY_STATE_CHARGE_GRAPH;
+                if (currentDisplayState != DISPLAY_STATE_CHARGE_GRAPH) {
+                    currentDisplayState = DISPLAY_STATE_CHARGE_GRAPH;
                     drawChargePlot(true, true);
-                    dataStore.displayStateChangeTime = millis();
+                    displayStateChangeTime = millis();
                 }
                 break;
             case RemoteKeys::KEY_POWER:
-                dataStore.resetAh = true;
-                dataStore.app_state = APP_STATE_BUILDING_MODEL;
+                resetAh = true;
+                currentAppState = APP_STATE_BUILDING_MODEL;
                 break;
 
 #ifdef DEBUG_LABELS
@@ -309,11 +321,11 @@ void setup() {
     IrReceiver.begin(IR_RECEIVE_PIN);
 
     for (int i = 0; i < PLOT_WIDTH; i++) {
-        dataStore.temp1_values[i] = 25.0f;
-        dataStore.temp2_values[i] = 25.0f;
-        dataStore.diff_values[i] = 0.0f;
-        dataStore.voltage_values[i] = 1.0f;
-        dataStore.current_values[i] = 0.0f;
+        temp1_values[i] = 25.0f;
+        temp2_values[i] = 25.0f;
+        diff_values[i] = 0.0f;
+        voltage_values[i] = 1.0f;
+        current_values[i] = 0.0f;
     }
 
     sht4Sensor.begin();
@@ -340,7 +352,7 @@ void gatherData() {
 }
 
 void updateDisplay() {
-    if (dataStore.currentDisplayState == DISPLAY_STATE_MAIN) {
+    if (currentDisplayState == DISPLAY_STATE_MAIN) {
         prepareTemperaturePlot();
         plotVoltageData();
         plotTemperatureData();
@@ -349,7 +361,7 @@ void updateDisplay() {
 
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setCursor(19 * 10, PLOT_Y_START + PLOT_HEIGHT + 20);
-        tft.print(dataStore.mAh_charged, 3);
+        tft.print(mAh_charged, 3);
         tft.print(" mAh");
     }
 }
@@ -358,7 +370,7 @@ void loop() {
     unsigned long now = millis();
 
     // --- State Machine ---
-    switch (dataStore.app_state) {
+    switch (currentAppState) {
         case APP_STATE_IDLE:
             // Nothing to do
             break;
@@ -368,38 +380,38 @@ void loop() {
         case APP_STATE_MEASURING_IR:
             measureInternalResistanceStep();
             if (currentIRState == IR_STATE_IDLE) {
-                dataStore.app_state = APP_STATE_IDLE;
+                currentAppState = APP_STATE_IDLE;
             }
             break;
         case APP_STATE_CHARGING:
-            if (now - dataStore.lastChargingHouseTime >= CHARGING_HOUSEKEEP_INTERVAL) {
-                dataStore.lastChargingHouseTime = now;
+            if (now - lastChargingHouseTime >= CHARGING_HOUSEKEEP_INTERVAL) {
+                lastChargingHouseTime = now;
                 if (!chargeBattery()) {
-                    dataStore.app_state = APP_STATE_IDLE;
+                    currentAppState = APP_STATE_IDLE;
                 }
             }
             break;
     }
 
     // --- Timed Events ---
-    if (now - dataStore.lastDataGatherTime >= PLOT_DATA_UPDATE_INTERVAL) {
-        dataStore.lastDataGatherTime = now;
+    if (now - lastDataGatherTime >= PLOT_DATA_UPDATE_INTERVAL) {
+        lastDataGatherTime = now;
         gatherData();
     }
 
-    if (now - dataStore.lastPlotUpdateTime >= PLOT_UPDATE_INTERVAL_MS) {
-        dataStore.lastPlotUpdateTime = now;
+    if (now - lastPlotUpdateTime >= PLOT_UPDATE_INTERVAL_MS) {
+        lastPlotUpdateTime = now;
         updateDisplay();
     }
 
-    if (dataStore.currentDisplayState != DISPLAY_STATE_MAIN && now - dataStore.displayStateChangeTime > 20000) {
-        dataStore.currentDisplayState = DISPLAY_STATE_MAIN;
+    if (currentDisplayState != DISPLAY_STATE_MAIN && now - displayStateChangeTime > 20000) {
+        currentDisplayState = DISPLAY_STATE_MAIN;
         tft.fillScreen(TFT_BLACK);
     }
 
     // --- IR Remote Handling ---
-    if (now - dataStore.lastIRHandleTime >= IR_HANDLE_INTERVAL_MS) {
-        dataStore.lastIRHandleTime = now;
+    if (now - lastIRHandleTime >= IR_HANDLE_INTERVAL_MS) {
+        lastIRHandleTime = now;
         portMUX_TYPE ir_mux = portMUX_INITIALIZER_UNLOCKED;
         portENTER_CRITICAL(&ir_mux);
         bool is_ir_data = IrReceiver.decode();

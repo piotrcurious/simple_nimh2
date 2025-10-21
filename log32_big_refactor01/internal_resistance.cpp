@@ -1,21 +1,22 @@
 #include "internal_resistance.h"
 #include "definitions.h"
+#include "config.h"
+#include "Shared.h"
 
 extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
 extern void processThermistorData(const MeasurementData& data, const String& measurementType);
-extern DataStore dataStore;
 
-// IRState currentIRState = IR_STATE_IDLE; // Moved to DataStore
-unsigned long irStateChangeTime = 0; // This seems to be a local helper for this state machine
+IRState currentIRState = IR_STATE_IDLE;
+unsigned long irStateChangeTime = 0;
 MeasurementData currentMeasurement;
 IRState nextIRState;
 
 void getSingleMeasurement(int dc, IRState nextState) {
-    dataStore.dutyCycle = dc;
-    analogWrite(PWM_PIN, dataStore.dutyCycle);
+    dutyCycle = dc;
+    analogWrite(pwmPin, dutyCycle);
     irStateChangeTime = millis();
     nextIRState = nextState;
-    dataStore.ir_state = IR_STATE_GET_MEASUREMENT;
+    currentIRState = IR_STATE_GET_MEASUREMENT;
 }
 int irDutyCycle = 0;
 int minDutyCycle = 0;
@@ -42,44 +43,43 @@ std::vector<float> ir_dutyCycles;
 std::vector<float> consecutiveInternalResistances;
 
 
-// These are now in DataStore
-// float internalResistanceData[MAX_RESISTANCE_POINTS][2];
-// int resistanceDataCount = 0;
-// float internalResistanceDataPairs[MAX_RESISTANCE_POINTS][2];
-// int resistanceDataCountPairs = 0;
-// float regressedInternalResistanceSlope = 0.0f;
-// float regressedInternalResistanceIntercept = 0.0f;
-// float regressedInternalResistancePairsSlope = 0.0f;
-// float regressedInternalResistancePairsIntercept = 0.0f;
-// bool isMeasuringResistance = false;
+float internalResistanceData[MAX_RESISTANCE_POINTS][2];
+int resistanceDataCount = 0;
+float internalResistanceDataPairs[MAX_RESISTANCE_POINTS][2];
+int resistanceDataCountPairs = 0;
+float regressedInternalResistanceSlope = 0.0f;
+float regressedInternalResistanceIntercept = 0.0f;
+float regressedInternalResistancePairsSlope = 0.0f;
+float regressedInternalResistancePairsIntercept = 0.0f;
+bool isMeasuringResistance = false;
 
 void measureInternalResistanceStep() {
     unsigned long now = millis();
 
-    switch (dataStore.ir_state) {
+    switch (currentIRState) {
         case IR_STATE_IDLE:
             // Do nothing
             break;
 
         case IR_STATE_START:
             Serial.println("Starting improved internal resistance measurement...");
-            dataStore.resistanceDataCount = 0;
-            dataStore.resistanceDataCountPairs = 0;
+            resistanceDataCount = 0;
+            resistanceDataCountPairs = 0;
             voltagesLoaded.clear();
             currentsLoaded.clear();
             ir_dutyCycles.clear();
             consecutiveInternalResistances.clear();
             dutyCyclePairs.clear();
             pairIndex = 0;
-            dataStore.ir_state = IR_STATE_STOP_LOAD_WAIT;
+            currentIRState = IR_STATE_STOP_LOAD_WAIT;
             irStateChangeTime = now;
             break;
 
         case IR_STATE_STOP_LOAD_WAIT:
-            dataStore.dutyCycle = 0;
-            analogWrite(PWM_PIN, 0);
+            dutyCycle = 0;
+            analogWrite(pwmPin, 0);
             if (now - irStateChangeTime >= UNLOADED_VOLTAGE_DELAY_MS) {
-                dataStore.ir_state = IR_STATE_GET_UNLOADED_VOLTAGE;
+                currentIRState = IR_STATE_GET_UNLOADED_VOLTAGE;
             }
             break;
 
@@ -88,7 +88,7 @@ void measureInternalResistanceStep() {
                 MeasurementData initialUnloaded;
                 getThermistorReadings(initialUnloaded.temp1, initialUnloaded.temp2, initialUnloaded.tempDiff, initialUnloaded.t1_millivolts, initialUnloaded.voltage, initialUnloaded.current);
                 Serial.printf("Initial Unloaded Voltage: %.3f V\n", initialUnloaded.voltage);
-                dataStore.ir_state = IR_STATE_FIND_MIN_DC;
+                currentIRState = IR_STATE_FIND_MIN_DC;
             }
             break;
 
@@ -127,11 +127,11 @@ void measureInternalResistanceStep() {
                     Serial.printf("Minimal duty cycle found: %d\n", minimalDutyCycle);
                     tft.printf("Minimal Duty Cycle Found:\n%d%%\n", minimalDutyCycle);
                     minDutyCycle = minimalDutyCycle;
-                    dataStore.ir_state = IR_STATE_GENERATE_PAIRS;
+                    currentIRState = IR_STATE_GENERATE_PAIRS;
                 } else {
                     Serial.println("Warning: Could not find a duty cycle producing measurable current.");
                     tft.println("Warning: Could not find\nmeasurable current.");
-                    dataStore.ir_state = IR_STATE_IDLE;
+                    currentIRState = IR_STATE_IDLE;
                 }
             }
 
@@ -149,11 +149,11 @@ void measureInternalResistanceStep() {
             if (pairGenerationStep == 0) {
                 Serial.println("Generating duty cycle pairs...");
                 if (minDutyCycle == 0) {
-                    dataStore.ir_state = IR_STATE_IDLE;
+                    currentIRState = IR_STATE_IDLE;
                     break;
                 }
-                dataStore.dutyCycle = minDutyCycle;
-                analogWrite(PWM_PIN, dataStore.dutyCycle);
+                dutyCycle = minDutyCycle;
+                analogWrite(pwmPin, dutyCycle);
                 irStateChangeTime = now;
                 pairGenerationStep = 1;
             } else if (pairGenerationStep == 1) {
@@ -179,7 +179,7 @@ void measureInternalResistanceStep() {
                         highBound = previousHighDc;
                         pairGenerationSubStep = 1;
                     } else {
-                        dataStore.ir_state = IR_STATE_MEASURE_L_UL;
+                        currentIRState = IR_STATE_MEASURE_L_UL;
                         pairIndex = 0;
                     }
                 } else if (pairGenerationSubStep == 1) {
@@ -229,15 +229,15 @@ void measureInternalResistanceStep() {
                 } else if (measureStep == 2) {
                     if (currentsLoaded.back() > 0.01f) {
                         float internalResistance = (currentMeasurement.voltage - voltagesLoaded.back()) / currentsLoaded.back();
-                        storeResistanceData(currentsLoaded.back(), std::fabs(internalResistance), dataStore.internalResistanceData, dataStore.resistanceDataCount);
+                        storeResistanceData(currentsLoaded.back(), std::fabs(internalResistance), internalResistanceData, resistanceDataCount);
                     } else {
-                        storeResistanceData(currentsLoaded.back(), -1.0f, dataStore.internalResistanceData, dataStore.resistanceDataCount);
+                        storeResistanceData(currentsLoaded.back(), -1.0f, internalResistanceData, resistanceDataCount);
                     }
                     pairIndex++;
                     measureStep = 0;
                 }
             } else {
-                dataStore.ir_state = IR_STATE_MEASURE_PAIRS;
+                currentIRState = IR_STATE_MEASURE_PAIRS;
                 pairIndex = 0;
                 measureStep = 0;
             }
@@ -259,53 +259,53 @@ void measureInternalResistanceStep() {
                     if (currentMeasurement.current > currentsLoaded.back() + MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
                         float internalResistanceConsecutive = (voltagesLoaded.back() - currentMeasurement.voltage) / (currentMeasurement.current - currentsLoaded.back());
                         consecutiveInternalResistances.push_back(std::fabs(internalResistanceConsecutive));
-                        storeResistanceData(currentMeasurement.current, std::fabs(internalResistanceConsecutive), dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs);
+                        storeResistanceData(currentMeasurement.current, std::fabs(internalResistanceConsecutive), internalResistanceDataPairs, resistanceDataCountPairs);
                     } else {
                         consecutiveInternalResistances.push_back(-1.0f);
-                        storeResistanceData(currentMeasurement.current, -1.0f, dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs);
+                        storeResistanceData(currentMeasurement.current, -1.0f, internalResistanceDataPairs, resistanceDataCountPairs);
                     }
                     pairIndex++;
                     measureStep = 0;
                 }
             } else {
-                dataStore.ir_state = IR_STATE_COMPLETE;
+                currentIRState = IR_STATE_COMPLETE;
             }
             break;
 
         case IR_STATE_GET_MEASUREMENT:
             if (now - irStateChangeTime >= STABILIZATION_DELAY_MS) {
                 getThermistorReadings(currentMeasurement.temp1, currentMeasurement.temp2, currentMeasurement.tempDiff, currentMeasurement.t1_millivolts, currentMeasurement.voltage, currentMeasurement.current);
-                currentMeasurement.dutyCycle = dataStore.dutyCycle;
+                currentMeasurement.dutyCycle = dutyCycle;
                 currentMeasurement.timestamp = millis();
-                dataStore.ir_state = nextIRState;
+                currentIRState = nextIRState;
             }
             break;
 
         case IR_STATE_COMPLETE:
-            bubbleSort(dataStore.internalResistanceData, dataStore.resistanceDataCount);
-            bubbleSort(dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs);
+            bubbleSort(internalResistanceData, resistanceDataCount);
+            bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
 
-            if (dataStore.resistanceDataCount >= 2) {
-                if (performLinearRegression(dataStore.internalResistanceData, dataStore.resistanceDataCount, dataStore.regressedInternalResistanceSlope, dataStore.regressedInternalResistanceIntercept)) {
+            if (resistanceDataCount >= 2) {
+                if (performLinearRegression(internalResistanceData, resistanceDataCount, regressedInternalResistanceSlope, regressedInternalResistanceIntercept)) {
                     Serial.printf("Regressed Internal Resistance (Loaded/Unloaded): Slope = %.4f, Intercept = %.4f\n",
-                                  dataStore.regressedInternalResistanceSlope, dataStore.regressedInternalResistanceIntercept);
+                                  regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
                 }
             } else {
                 Serial.println("Not enough data points for linear regression of Loaded/Unloaded resistance.");
             }
 
-            if (dataStore.resistanceDataCountPairs >= 2) {
-                if (performLinearRegression(dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs, dataStore.regressedInternalResistancePairsSlope, dataStore.regressedInternalResistancePairsIntercept)) {
+            if (resistanceDataCountPairs >= 2) {
+                if (performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept)) {
                     Serial.printf("Regressed Internal Resistance (Pairs): Slope = %.4f, Intercept = %.4f\n",
-                                  dataStore.regressedInternalResistancePairsSlope, dataStore.regressedInternalResistancePairsIntercept);
+                                  regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
                 }
             } else {
                 Serial.println("Not enough data points for linear regression of paired resistance.");
             }
 
-            Serial.printf("Internal resistance measurement complete. %d loaded/unloaded points, %d pair points collected.\n", dataStore.resistanceDataCount, dataStore.resistanceDataCountPairs);
-            dataStore.isMeasuringResistance = false;
-            dataStore.ir_state = IR_STATE_IDLE;
+            Serial.printf("Internal resistance measurement complete. %d loaded/unloaded points, %d pair points collected.\n", resistanceDataCount, resistanceDataCountPairs);
+            isMeasuringResistance = false;
+            currentIRState = IR_STATE_IDLE;
             break;
     }
 }

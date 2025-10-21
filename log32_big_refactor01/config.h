@@ -1,7 +1,9 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// This file will be populated with hardware pin definitions and other constants.
+#include <Arduino.h> // For ADC_ATTEN_DB_11 etc.
+
+#define DEBUG_LABELS
 
 // --- Pin Definitions ---
 #define SCREEN_WIDTH 320
@@ -20,7 +22,6 @@
 #define CURRENT_SHUNT_OVERSAMPLING 16
 #define PWM_PIN 19
 #define IR_RECEIVE_PIN 15
-
 
 // --- Constants ---
 #define CHARGING_UPDATE_INTERVAL_MS 2000
@@ -47,7 +48,6 @@ static const float STEFAN_BOLTZMANN           = 5.670374419e-8f;
 // Charging constants
 const float MAX_TEMP_DIFF_THRESHOLD = 0.5f;
 const uint8_t OVERTEMP_TRIP_TRESHOLD = 3;
-// extern float maximumCurrent; // This will be moved to DataStore
 const float MH_ELECTRODE_RATIO = 0.60f;
 const uint32_t CHARGE_EVALUATION_INTERVAL_MS = 120000;
 const int CHARGE_CURRENT_STEP = 1;
@@ -92,7 +92,6 @@ const int MAX_RESISTANCE_POINTS = 100;
 const float MIN_TEMP             = 15.0;
 const float MAX_TEMP             = 30.0;
 const float MIN_DIFF_TEMP        = -0.5;
-// extern float MAX_DIFF_TEMP; // This will be moved to DataStore
 const float MIN_VOLTAGE = 1.0f;
 const float MAX_VOLTAGE = 2.3f;
 const float MIN_CURRENT = 0.0f;

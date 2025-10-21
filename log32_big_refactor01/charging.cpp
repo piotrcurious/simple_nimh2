@@ -1,13 +1,24 @@
 #include "charging.h"
 #include "definitions.h"
 #include "logging.h"
+#include "config.h"
+#include "Shared.h"
 
 extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
 extern void processThermistorData(const MeasurementData& data, const String& measurementType);
 extern float estimateCurrent(int dutyCycle);
 extern DataStore dataStore;
+// extern AppState currentAppState; // Moved to DataStore
 
-// All state is now in dataStore. These are now local to the charging logic.
+uint32_t chargingStartTime = 0;
+ChargingState chargingState = CHARGE_IDLE;
+int cachedOptimalDuty = MAX_CHARGE_DUTY_CYCLE;
+unsigned long chargePhaseStartTime = 0;
+uint8_t overtemp_trip_counter = 0;
+unsigned long lastChargeEvaluationTime = 0;
+float maximumCurrent = 0.150;
+float currentRampTarget = 0.0f;
+
 AsyncMeasure meas;
 FindOptManager findOpt;
 
@@ -111,7 +122,7 @@ float computeAbsoluteTempRiseFromHistory(int depth) {
 
         float Rparam = e.internalResistancePairs;
         if (!isfinite(Rparam) || Rparam <= 1e-12f) {
-            Rparam = dataStore.regressedInternalResistancePairsIntercept;
+            Rparam = regressedInternalResistancePairsIntercept;
             if (!isfinite(Rparam) || Rparam <= 1e-12f) Rparam = 0.0f;
         }
 
@@ -188,8 +199,8 @@ void startMHElectrodeMeasurement(int testDutyCycle, unsigned long stabilization_
     meas.testDuty = testDutyCycle;
     meas.stabilizationDelay = stabilization_delay;
     meas.unloadedDelay = unloaded_delay;
-    dataStore.dutyCycle = 0;
-    analogWrite(PWM_PIN, 0);
+    dutyCycle = 0;
+    analogWrite(pwmPin, 0);
     meas.stateStart = millis();
     meas.state = MEAS_STOPLOAD_WAIT;
     meas.resultReady = false;
@@ -204,8 +215,8 @@ bool measurementStep() {
     switch (meas.state) {
         case MEAS_STOPLOAD_WAIT:
         {
-            dataStore.dutyCycle = 0;
-            analogWrite(PWM_PIN, dataStore.dutyCycle);
+            dutyCycle = 0;
+            analogWrite(pwmPin, dutyCycle);
 
             if (now - meas.stateStart >= meas.unloadedDelay) {
                 meas.unloadedData = MeasurementData();
@@ -215,8 +226,8 @@ bool measurementStep() {
                 meas.unloadedData.timestamp = now;
                 processThermistorData(meas.unloadedData, "MH idle (async)");
 
-                dataStore.dutyCycle = meas.testDuty;
-                analogWrite(PWM_PIN, meas.testDuty);
+                dutyCycle = meas.testDuty;
+                analogWrite(pwmPin, meas.testDuty);
                 meas.stateStart = now;
                 meas.state = MEAS_APPLY_LOAD;
             }
@@ -248,8 +259,8 @@ bool measurementStep() {
 
                 meas.resultReady = true;
                 meas.state = MEAS_COMPLETE;
-                dataStore.dutyCycle = 0;
-                analogWrite(PWM_PIN, dataStore.dutyCycle);
+                dutyCycle = 0;
+                analogWrite(pwmPin, dutyCycle);
                 Serial.printf("Measurement complete: testDC=%d U=%.3f L=%.3f I=%.3f target=%.3f diff=%.3f\n",
                               meas.testDuty, meas.result.unloadedVoltage, meas.result.loadedVoltage,
                               meas.result.current, meas.result.targetVoltage, meas.result.voltageDifference);
@@ -274,8 +285,8 @@ void abortMeasurement() {
     if (meas.active()) {
         meas.state = MEAS_ABORTED;
         meas.resultReady = false;
-        dataStore.dutyCycle = 0;
-        analogWrite(PWM_PIN, 0);
+        dutyCycle = 0;
+        analogWrite(pwmPin, 0);
         Serial.println("Measurement aborted.");
     }
 }
@@ -311,8 +322,8 @@ bool findOptimalChargingDutyCycleStepAsync() {
                 if (dataHigh.current > 0.01f) {
                     float internalResistanceLUInitial = (findOpt.initialUnloadedVoltage - dataHigh.loadedVoltage) / dataHigh.current;
                     storeOrAverageResistanceData(dataHigh.current, std::fabs(internalResistanceLUInitial),
-                                                 dataStore.internalResistanceData, dataStore.resistanceDataCount);
-                    bubbleSort(dataStore.internalResistanceData, dataStore.resistanceDataCount);
+                                                 internalResistanceData, resistanceDataCount);
+                    bubbleSort(internalResistanceData, resistanceDataCount);
                 }
 
                 if ((int)findOpt.cache.size() >= MAX_RESISTANCE_POINTS) findOpt.cache.erase(findOpt.cache.begin());
@@ -330,24 +341,24 @@ bool findOptimalChargingDutyCycleStepAsync() {
 
     if (findOpt.phase == FIND_BINARY_PREPARE) {
         if (findOpt.highDC - findOpt.lowDC <= CHARGE_CURRENT_STEP * 2) {
-            distribute_error(dataStore.internalResistanceData, dataStore.resistanceDataCount, 0.05f, 1.05f);
-            distribute_error(dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs, 0.05f, 1.05f);
+            distribute_error(internalResistanceData, resistanceDataCount, 0.05f, 1.05f);
+            distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, 0.05f, 1.05f);
 
-            if (dataStore.resistanceDataCount >= 2) {
-                if (performLinearRegression(dataStore.internalResistanceData, dataStore.resistanceDataCount,
-                                            dataStore.regressedInternalResistanceSlope, dataStore.regressedInternalResistanceIntercept)) {
+            if (resistanceDataCount >= 2) {
+                if (performLinearRegression(internalResistanceData, resistanceDataCount,
+                                            regressedInternalResistanceSlope, regressedInternalResistanceIntercept)) {
                     Serial.printf("Regressed Internal Resistance (Loaded/Unloaded): Slope = %.4f, Intercept = %.4f\n",
-                                  dataStore.regressedInternalResistanceSlope, dataStore.regressedInternalResistanceIntercept);
+                                  regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
                 }
             } else {
                 Serial.println("Not enough data points for linear regression of Loaded/Unloaded resistance.");
             }
 
-            if (dataStore.resistanceDataCountPairs >= 2) {
-                if (performLinearRegression(dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs,
-                                            dataStore.regressedInternalResistancePairsSlope, dataStore.regressedInternalResistancePairsIntercept)) {
+            if (resistanceDataCountPairs >= 2) {
+                if (performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs,
+                                            regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept)) {
                     Serial.printf("Regressed Internal Resistance (Pairs): Slope = %.4f, Intercept = %.4f\n",
-                                  dataStore.regressedInternalResistancePairsSlope, dataStore.regressedInternalResistancePairsIntercept);
+                                  regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
                 }
             } else {
                 Serial.println("Not enough data points for linear regression of paired resistance.");
@@ -378,8 +389,8 @@ bool findOptimalChargingDutyCycleStepAsync() {
 
                 if (cur.current > 0.001f) { // to avoid division by 0
                     float internalResistanceLU = (cur.unloadedVoltage - cur.loadedVoltage) / cur.current;
-                    storeOrAverageResistanceData(cur.current, std::fabs(internalResistanceLU), dataStore.internalResistanceData, dataStore.resistanceDataCount);
-                    bubbleSort(dataStore.internalResistanceData, dataStore.resistanceDataCount);
+                    storeOrAverageResistanceData(cur.current, std::fabs(internalResistanceLU), internalResistanceData, resistanceDataCount);
+                    bubbleSort(internalResistanceData, resistanceDataCount);
                 }
 
                 if ((int)findOpt.cache.size() >= MAX_RESISTANCE_POINTS) findOpt.cache.erase(findOpt.cache.begin());
@@ -390,8 +401,8 @@ bool findOptimalChargingDutyCycleStepAsync() {
                         float internalResistancePair = (cached.loadedVoltage - cur.loadedVoltage) / (cur.current - cached.current);
                         float higherCurrent = std::max(cur.current, cached.current);
                         storeOrAverageResistanceData(higherCurrent, std::fabs(internalResistancePair),
-                                                     dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs);
-                        bubbleSort(dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs);
+                                                     internalResistanceDataPairs, resistanceDataCountPairs);
+                        bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
 
                     }
                 }
@@ -426,8 +437,8 @@ bool findOptimalChargingDutyCycleStepAsync() {
                 }
                 if (finalData.current > 0.01f) {
                     float internalResistanceLU = (finalData.unloadedVoltage - finalData.loadedVoltage) / finalData.current;
-                    storeOrAverageResistanceData(finalData.current, std::fabs(internalResistanceLU), dataStore.internalResistanceData, dataStore.resistanceDataCount);
-                    bubbleSort(dataStore.internalResistanceData, dataStore.resistanceDataCount);
+                    storeOrAverageResistanceData(finalData.current, std::fabs(internalResistanceLU), internalResistanceData, resistanceDataCount);
+                    bubbleSort(internalResistanceData, resistanceDataCount);
                 }
 
                 if ((int)findOpt.cache.size() >= MAX_RESISTANCE_POINTS) findOpt.cache.erase(findOpt.cache.begin());
@@ -438,29 +449,29 @@ bool findOptimalChargingDutyCycleStepAsync() {
                         float internalResistancePair = (cached.loadedVoltage - finalData.loadedVoltage) / (finalData.current - cached.current);
                         float higherCurrent = std::max(finalData.current, cached.current);
                         storeOrAverageResistanceData(higherCurrent, std::fabs(internalResistancePair),
-                                                     dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs);
-                        bubbleSort(dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs);
+                                                     internalResistanceDataPairs, resistanceDataCountPairs);
+                        bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
                     }
                 }
 
-                distribute_error(dataStore.internalResistanceData, dataStore.resistanceDataCount, 0.05f, 1.05f);
-                distribute_error(dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs, 0.05f, 1.05f);
+                distribute_error(internalResistanceData, resistanceDataCount, 0.05f, 1.05f);
+                distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, 0.05f, 1.05f);
 
-                if (dataStore.resistanceDataCount >= 2) {
-                    if (performLinearRegression(dataStore.internalResistanceData, dataStore.resistanceDataCount,
-                                                dataStore.regressedInternalResistanceSlope, dataStore.regressedInternalResistanceIntercept)) {
+                if (resistanceDataCount >= 2) {
+                    if (performLinearRegression(internalResistanceData, resistanceDataCount,
+                                                regressedInternalResistanceSlope, regressedInternalResistanceIntercept)) {
                         Serial.printf("Regressed Internal Resistance (Loaded/Unloaded): Slope = %.4f, Intercept = %.4f\n",
-                                      dataStore.regressedInternalResistanceSlope, dataStore.regressedInternalResistanceIntercept);
+                                      regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
                     }
                 } else {
                     Serial.println("Not enough data points for linear regression of Loaded/Unloaded resistance.");
                 }
 
-                if (dataStore.resistanceDataCountPairs >= 2) {
-                    if (performLinearRegression(dataStore.internalResistanceDataPairs, dataStore.resistanceDataCountPairs,
-                                                dataStore.regressedInternalResistancePairsSlope, dataStore.regressedInternalResistancePairsIntercept)) {
+                if (resistanceDataCountPairs >= 2) {
+                    if (performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs,
+                                                regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept)) {
                         Serial.printf("Regressed Internal Resistance (Pairs): Slope = %.4f, Intercept = %.4f\n",
-                                      dataStore.regressedInternalResistancePairsSlope, dataStore.regressedInternalResistancePairsIntercept);
+                                      regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
                     }
                 } else {
                     Serial.println("Not enough data points for linear regression of paired resistance.");
@@ -473,7 +484,7 @@ bool findOptimalChargingDutyCycleStepAsync() {
                               findOpt.optimalDC, finalData.loadedVoltage, findOpt.targetVoltage,
                               fabs(finalData.loadedVoltage - findOpt.targetVoltage));
 
-                dataStore.cachedOptimalDuty = findOpt.optimalDC;
+                cachedOptimalDuty = findOpt.optimalDC;
                 findOpt.active = false;
                 findOpt.phase = FIND_COMPLETE;
 
@@ -770,11 +781,11 @@ void startCharging() {
 }
 
 void stopCharging() {
-  if (dataStore.app_state == APP_STATE_CHARGING && chargingState != CHARGE_STOPPED) {
+  if (dataStore.app_state == APP_STATE_CHARGING && dataStore.chargingState != CHARGE_STOPPED) {
     Serial.println("Manually stopping charging");
-    chargingState = CHARGE_STOPPED;
-    dutyCycle = 0;
-    analogWrite(pwmPin, 0);
+    dataStore.chargingState = CHARGE_STOPPED;
+    dataStore.dutyCycle = 0;
+    analogWrite(PWM_PIN, 0);
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(1);
     tft.setCursor(14*7, PLOT_Y_START + PLOT_HEIGHT + 20);
