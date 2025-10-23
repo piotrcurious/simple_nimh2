@@ -682,7 +682,6 @@ void removeDataPoint(float data[][2], int& count, int index) {
     }
     
     // Shift elements left
-```cpp
     for (int i = index; i < count - 1; ++i) {
         data[i][0] = data[i + 1][0];
         data[i][1] = data[i + 1][1];
