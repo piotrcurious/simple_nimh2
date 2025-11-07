@@ -43,6 +43,7 @@ unsigned long lastDataGatherTime = 0;
 unsigned long lastChargingHouseTime = 0;
 unsigned long lastIRHandleTime = 0;
 unsigned long displayStateChangeTime = 0;
+unsigned long idleStateStartTime = 0;
 
 const int pwmPin = PWM_PIN;
 const int pwmResolutionBits = 8;
@@ -295,6 +296,10 @@ void handleIRCommand() {
                     displayStateChangeTime = millis();
                 }
                 break;
+            case RemoteKeys::KEY_MENU:
+                currentDisplayState = DISPLAY_STATE_IDLE;
+                displayStateChangeTime = millis();
+                break;
             case RemoteKeys::KEY_POWER:
                 resetAh = true;
                 currentAppState = APP_STATE_BUILDING_MODEL;
@@ -354,7 +359,7 @@ void gatherData() {
 
 void updateDisplay() {
     if (currentDisplayState == DISPLAY_STATE_IDLE) {
-        homeScreen.update();
+        homeScreen.render();
     } else if (currentDisplayState == DISPLAY_STATE_MAIN) {
         prepareTemperaturePlot();
         plotVoltageData();
@@ -375,15 +380,20 @@ void loop() {
     // --- State Machine ---
     switch (currentAppState) {
         case APP_STATE_IDLE:
-            if (currentDisplayState != DISPLAY_STATE_IR_GRAPH && currentDisplayState != DISPLAY_STATE_CHARGE_GRAPH) {
+            if (idleStateStartTime == 0) {
+                idleStateStartTime = now;
+            }
+            if (now - idleStateStartTime >= 5000 && currentDisplayState != DISPLAY_STATE_IR_GRAPH && currentDisplayState != DISPLAY_STATE_CHARGE_GRAPH) {
                 currentDisplayState = DISPLAY_STATE_IDLE;
             }
             break;
         case APP_STATE_BUILDING_MODEL:
+            idleStateStartTime = 0;
             currentDisplayState = DISPLAY_STATE_MAIN;
             buildCurrentModelStep();
             break;
         case APP_STATE_MEASURING_IR:
+            idleStateStartTime = 0;
             currentDisplayState = DISPLAY_STATE_MAIN;
             measureInternalResistanceStep();
             if (currentIRState == IR_STATE_IDLE) {
@@ -391,6 +401,7 @@ void loop() {
             }
             break;
         case APP_STATE_CHARGING:
+            idleStateStartTime = 0;
             currentDisplayState = DISPLAY_STATE_MAIN;
             if (now - lastChargingHouseTime >= CHARGING_HOUSEKEEP_INTERVAL) {
                 lastChargingHouseTime = now;
@@ -405,6 +416,7 @@ void loop() {
     if (now - lastDataGatherTime >= PLOT_DATA_UPDATE_INTERVAL) {
         lastDataGatherTime = now;
         gatherData();
+        homeScreen.gatherData();
     }
 
     if (now - lastPlotUpdateTime >= PLOT_UPDATE_INTERVAL_MS) {

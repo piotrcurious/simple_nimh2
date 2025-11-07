@@ -1,7 +1,8 @@
 #include "home_screen.h"
 
 HomeScreen::HomeScreen() {
-    last_update_time = 0;
+    last_render_time = 0;
+    last_data_gather_time = 0;
 }
 
 void HomeScreen::begin() {
@@ -12,29 +13,32 @@ void HomeScreen::begin() {
     }
 }
 
-void HomeScreen::update() {
+void HomeScreen::render() {
     unsigned long now = millis();
-    if (now - last_update_time >= 60000) { // Update every minute
-        last_update_time = now;
-        updateData();
+    if (now - last_render_time >= 1000) { // Render every second
+        last_render_time = now;
         tft.fillScreen(TFT_BLACK);
         drawGraph();
         drawLabels();
     }
 }
 
-void HomeScreen::updateData() {
-    // Shift history arrays
-    for (int i = 0; i < SCREEN_WIDTH - 1; i++) {
-        temp_history[i] = temp_history[i + 1];
-        humidity_history[i] = humidity_history[i + 1];
-        dew_point_history[i] = dew_point_history[i + 1];
-    }
+void HomeScreen::gatherData() {
+    unsigned long now = millis();
+    if (now - last_data_gather_time >= 60000) { // Gather data every minute
+        last_data_gather_time = now;
+        // Shift history arrays
+        for (int i = 0; i < SCREEN_WIDTH - 1; i++) {
+            temp_history[i] = temp_history[i + 1];
+            humidity_history[i] = humidity_history[i + 1];
+            dew_point_history[i] = dew_point_history[i + 1];
+        }
 
-    // Add new data points
-    temp_history[SCREEN_WIDTH - 1] = sht4Sensor.getTemperature();
-    humidity_history[SCREEN_WIDTH - 1] = sht4Sensor.getHumidity();
-    dew_point_history[SCREEN_WIDTH - 1] = calculateDewPoint(sht4Sensor.getTemperature(), sht4Sensor.getHumidity());
+        // Add new data points
+        temp_history[SCREEN_WIDTH - 1] = sht4Sensor.getTemperature();
+        humidity_history[SCREEN_WIDTH - 1] = sht4Sensor.getHumidity();
+        dew_point_history[SCREEN_WIDTH - 1] = calculateDewPoint(sht4Sensor.getTemperature(), sht4Sensor.getHumidity());
+    }
 }
 
 void HomeScreen::drawGraph() {
@@ -61,18 +65,22 @@ void HomeScreen::drawGraph() {
 }
 
 void HomeScreen::drawLabels() {
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(2);
+
+    tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.setCursor(10, 10);
     tft.printf("Temp: %.2f C", temp_history[SCREEN_WIDTH - 1]);
 
+    tft.setTextColor(TFT_BLUE, TFT_BLACK);
     tft.setCursor(10, 30);
     tft.printf("Humi: %.2f %%", humidity_history[SCREEN_WIDTH - 1]);
 
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.setCursor(10, 50);
     tft.printf("Dew:  %.2f C", dew_point_history[SCREEN_WIDTH - 1]);
 
     if (mAh_charged > 0) {
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setCursor(10, 70);
         tft.printf("Last Charge: %.2f mAh", mAh_charged);
     }

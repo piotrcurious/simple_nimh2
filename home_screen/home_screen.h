@@ -7,18 +7,19 @@ class HomeScreen {
 public:
     HomeScreen();
     void begin();
-    void update();
+    void render();
+    void gatherData();
 
 private:
     void drawGraph();
     void drawLabels();
-    void updateData();
     double calculateDewPoint(double temperature, double humidity);
 
     float temp_history[SCREEN_WIDTH];
     float humidity_history[SCREEN_WIDTH];
     float dew_point_history[SCREEN_WIDTH];
-    unsigned long last_update_time;
+    unsigned long last_render_time;
+    unsigned long last_data_gather_time;
 };
 
 #endif // HOME_SCREEN_H
