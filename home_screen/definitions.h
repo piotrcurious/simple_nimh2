@@ -293,6 +293,7 @@ extern float current_values[PLOT_WIDTH];
 extern volatile float voltage_mv;
 extern volatile float current_ma;
 extern volatile double mAh_charged;
+extern volatile double last_mAh_charged;
 extern volatile bool resetAh;
 extern volatile uint32_t mAh_last_time;
 

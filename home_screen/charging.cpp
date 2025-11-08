@@ -835,6 +835,8 @@ bool chargeBattery() {
         case CHARGE_STOPPED: {
             dutyCycle = 0;
             analogWrite(pwmPin, 0);
+            last_mAh_charged = mAh_charged;
+            mAh_charged = 0;
             return false; // Signal that charging is complete.
         }
 
@@ -850,10 +852,6 @@ void startCharging() {
         currentAppState = APP_STATE_CHARGING;
         chargingState = CHARGE_IDLE;
         Serial.println("Initiating battery charging...");
-        tft.setTextColor(TFT_RED,TFT_BLACK);
-        tft.setTextSize(1);
-        tft.setCursor(14*7, PLOT_Y_START + PLOT_HEIGHT + 20);
-        tft.printf("CHARGING");
     } else {
         Serial.println("Charging already in progress");
     }
@@ -865,9 +863,5 @@ void stopCharging() {
     chargingState = CHARGE_STOPPED;
     dutyCycle = 0;
     analogWrite(pwmPin, 0);
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(1);
-    tft.setCursor(14*7, PLOT_Y_START + PLOT_HEIGHT + 20);
-    tft.printf("STOPPED");
   }
 }

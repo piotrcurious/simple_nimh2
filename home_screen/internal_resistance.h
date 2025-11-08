@@ -17,6 +17,7 @@ enum IRState {
 };
 
 extern IRState currentIRState;
+extern int minimalDutyCycle;
 
 void handleGeneratePairs();
 void handleMeasurePairs();

@@ -97,8 +97,6 @@ uint16_t darkerColor(uint16_t color, float darkeningFactor) {
 
 // Function to clear the plot area and draw the zero line
 void prepareTemperaturePlot() {
-    tft.fillRect(PLOT_X_START, PLOT_Y_START, PLOT_WIDTH, PLOT_HEIGHT, TFT_BLACK);
-
     // Calculate the Y-coordinate for the zero line of the temperature difference graph
     float zero_diff_mapped = mapf(0, MIN_DIFF_TEMP, MAX_DIFF_TEMP, 0, PLOT_HEIGHT);
     int zero_diff_y = PLOT_Y_START + PLOT_HEIGHT - (int)zero_diff_mapped;
@@ -361,9 +359,6 @@ void plotResistanceData(const std::vector<DataPoint>& dataPoints, uint16_t color
 // internal resistance graph
 
 void displayInternalResistanceGraph() {
-    // --- Clear plot area ---
-    tft.fillRect(PLOT_X_START, PLOT_Y_START, PLOT_WIDTH, PLOT_HEIGHT, TFT_BLACK);
-
     // --- Extract valid data ---
     auto validResistanceData       = extractValidData(internalResistanceData, resistanceDataCount);
     auto validResistanceDataPairs  = extractValidData(internalResistanceDataPairs, resistanceDataCountPairs);
@@ -569,14 +564,11 @@ int calculateVerticalPosition(int yInitial, int textHeight, LabelVerticalPlaceme
 
 void drawChargePlot(bool autoscaleX, bool autoscaleY) {
     if (chargeLog.empty()) {
-        tft.fillScreen(TFT_BLACK);
         tft.setTextColor(TFT_WHITE);
         tft.setTextDatum(6);
         tft.drawString("No charge data to plot", tft.width() / 2, tft.height() / 2, 2);
         return;
     }
-
-    tft.fillScreen(TFT_BLACK);
 
     int plotAreaWidth  = tft.width() - 2;
     int plotAreaHeight = tft.height() - 25;

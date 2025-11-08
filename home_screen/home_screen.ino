@@ -34,6 +34,7 @@ ThermistorSensor thermistorSensor(THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, THERMIST
 volatile float voltage_mv = 1000.0f;
 volatile float current_ma = 0.0f;
 volatile double mAh_charged = 0.0f;
+volatile double last_mAh_charged = 0.0f;
 volatile bool resetAh = false;
 volatile uint32_t mAh_last_time = 0;
 uint32_t dutyCycle = 0;
@@ -84,15 +85,6 @@ std::vector<float> currents;
 void processThermistorData(const MeasurementData& data, const String& measurementType) {
     printThermistorSerial(data.temp1, data.temp2, data.tempDiff, data.t1_millivolts, data.voltage, data.current);
     updateTemperatureHistory(data.temp1, data.temp2, data.tempDiff, data.voltage, data.current);
-    prepareTemperaturePlot();
-    plotVoltageData();
-    plotTemperatureData();
-    displayTemperatureLabels(data.temp1, data.temp2, data.tempDiff, data.t1_millivolts, data.voltage, data.current);
-
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(2);
-    tft.setCursor(PLOT_X_START + 20, PLOT_Y_START + PLOT_HEIGHT / 2 - 10);
-    tft.print(measurementType);
 }
 
 void buildCurrentModelStep() {
@@ -361,16 +353,39 @@ void updateDisplay() {
     if (currentDisplayState == DISPLAY_STATE_IDLE) {
         homeScreen.render();
     } else if (currentDisplayState == DISPLAY_STATE_MAIN) {
-        prepareTemperaturePlot();
-        plotVoltageData();
-        plotTemperatureData();
+        tft.fillRect(PLOT_X_START, PLOT_Y_START, PLOT_WIDTH, PLOT_HEIGHT, TFT_BLACK);
+        if (currentIRState == IR_STATE_FIND_MIN_DC) {
+            tft.setTextColor(TFT_WHITE);
+            tft.setTextSize(2);
+            tft.drawString("Finding Min Duty Cycle", 10, 10);
+        } else if (currentIRState == IR_STATE_GENERATE_PAIRS) {
+            tft.setTextColor(TFT_WHITE);
+            tft.setTextSize(2);
+            tft.printf("Minimal Duty Cycle:\n%d%%\n", minimalDutyCycle);
+        } else {
+            prepareTemperaturePlot();
+            plotVoltageData();
+            plotTemperatureData();
+        }
 
-        displayTemperatureLabels(temp1_values[PLOT_WIDTH - 1], temp2_values[PLOT_WIDTH - 1], diff_values[PLOT_WIDTH - 1], 0, voltage_values[PLOT_WIDTH - 1], current_values[PLOT_WIDTH - 1]);
+        displayTemperatureLabels(temp1_values[PLOT_WIDTH - 1], temp2_values[PLOT_WIDTH - 1], diff_values[PLOT_WIDTH - 1], thermistorSensor.getRawMillivolts1(), voltage_values[PLOT_WIDTH - 1], current_values[PLOT_WIDTH - 1]);
 
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
         tft.setCursor(19 * 10, PLOT_Y_START + PLOT_HEIGHT + 20);
         tft.print(mAh_charged, 3);
         tft.print(" mAh");
+
+        if (currentAppState == APP_STATE_CHARGING) {
+            tft.setTextColor(TFT_RED,TFT_BLACK);
+            tft.setTextSize(1);
+            tft.setCursor(14*7, PLOT_Y_START + PLOT_HEIGHT + 20);
+            tft.printf("CHARGING");
+        } else if (currentAppState == APP_STATE_IDLE && chargingState == CHARGE_STOPPED) {
+            tft.setTextColor(TFT_WHITE,TFT_BLACK);
+            tft.setTextSize(1);
+            tft.setCursor(14*7, PLOT_Y_START + PLOT_HEIGHT + 20);
+            tft.printf("STOPPED");
+        }
     }
 }
 

@@ -17,8 +17,9 @@ void HomeScreen::render() {
     unsigned long now = millis();
     if (now - last_render_time >= 1000) { // Render every second
         last_render_time = now;
-        tft.fillScreen(TFT_BLACK);
+        tft.fillRect(PLOT_X_START, PLOT_Y_START, PLOT_WIDTH, PLOT_HEIGHT, TFT_BLACK);
         drawGraph();
+        tft.fillRect(0, PLOT_Y_START + PLOT_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT - PLOT_HEIGHT, TFT_BLACK);
         drawLabels();
     }
 }
@@ -68,21 +69,21 @@ void HomeScreen::drawLabels() {
     tft.setTextSize(2);
 
     tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.setCursor(10, 10);
+    tft.setCursor(10, LABEL_Y_START);
     tft.printf("Temp: %.2f C", temp_history[SCREEN_WIDTH - 1]);
 
     tft.setTextColor(TFT_BLUE, TFT_BLACK);
-    tft.setCursor(10, 30);
+    tft.setCursor(10, LABEL_Y_START + 20);
     tft.printf("Humi: %.2f %%", humidity_history[SCREEN_WIDTH - 1]);
 
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.setCursor(10, 50);
+    tft.setCursor(10, LABEL_Y_START + 40);
     tft.printf("Dew:  %.2f C", dew_point_history[SCREEN_WIDTH - 1]);
 
-    if (mAh_charged > 0) {
+    if (last_mAh_charged > 0) {
         tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.setCursor(10, 70);
-        tft.printf("Last Charge: %.2f mAh", mAh_charged);
+        tft.setCursor(10, LABEL_Y_START + 60);
+        tft.printf("Last Charge: %.2f mAh", last_mAh_charged);
     }
 }
 

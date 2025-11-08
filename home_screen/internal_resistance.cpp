@@ -128,9 +128,6 @@ void measureInternalResistanceStep() {
                 minimalDutyCycle = 0;
 
                 Serial.println("Finding minimal duty cycle for measurable current using binary search...");
-                tft.fillScreen(TFT_BLACK);
-                tft.setTextColor(TFT_WHITE);
-                tft.setTextSize(2);
                 tft.drawString("Finding Min Duty Cycle", 10, 10);
 
                 currentIRState = IR_STATE_FIND_MIN_DC;
@@ -156,17 +153,11 @@ void measureInternalResistanceStep() {
                     getSingleMeasurement(findMinDcMid, IR_STATE_FIND_MIN_DC);
                 } else {
                     // Search complete
-                    tft.fillScreen(TFT_BLACK);
-                    tft.setTextColor(TFT_WHITE);
-                    tft.setTextSize(2);
-
                     if (minimalDutyCycle > 0) {
                         Serial.printf("Minimal duty cycle found: %d\n", minimalDutyCycle);
-                        tft.printf("Minimal Duty Cycle:\n%d%%\n", minimalDutyCycle);
                         currentIRState = IR_STATE_GENERATE_PAIRS;
                     } else {
                         Serial.println("Warning: Could not find duty cycle producing measurable current.");
-                        tft.println("Warning: No measurable\ncurrent found.");
                         currentIRState = IR_STATE_IDLE;
                         isMeasuringResistance = false;
                     }

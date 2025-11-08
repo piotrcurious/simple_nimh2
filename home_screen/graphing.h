@@ -3,8 +3,6 @@
 
 #include "definitions.h"
 
-extern DisplayState currentDisplayState;
-
 // Function declarations for graphing
 void prepareTemperaturePlot();
 void plotVoltageData();
