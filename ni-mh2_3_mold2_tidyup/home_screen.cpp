@@ -104,9 +104,12 @@ void HomeScreen::fitAndStorePolynomials() {
     }
 
     if (current_poly_index >= POLY_COUNT) {
-        // For simplicity, we'll just cycle through the segments for now.
-        // A more robust implementation would recompress old segments.
-        segment_count = (segment_count % SEGMENTS) + 1;
+        if (segment_count < SEGMENTS) {
+            tail = (tail + 1) % SEGMENTS;
+            segment_count++;
+        } else {
+            recompressSegments();
+        }
         current_poly_index = 0;
     }
 
@@ -116,21 +119,82 @@ void HomeScreen::fitAndStorePolynomials() {
     compressDataToSegment(
         temp_segment_buffer, segment_count, current_poly_index,
         temp_log_buffer, timestamp_log_buffer, log_buffer_index,
-        temp_segment_buffer[segment_count - 1].coefficients[current_poly_index],
+        temp_segment_buffer[tail].coefficients[current_poly_index],
         temp_time_delta
     );
-    temp_segment_buffer[segment_count - 1].timeDeltas[current_poly_index] = temp_time_delta;
+    temp_segment_buffer[tail].timeDeltas[current_poly_index] = temp_time_delta;
 
     // Fit Humidity Data
     compressDataToSegment(
         humidity_segment_buffer, segment_count, current_poly_index,
         humidity_log_buffer, timestamp_log_buffer, log_buffer_index,
-        humidity_segment_buffer[segment_count - 1].coefficients[current_poly_index],
+        humidity_segment_buffer[tail].coefficients[current_poly_index],
         humidity_time_delta
     );
-    humidity_segment_buffer[segment_count - 1].timeDeltas[current_poly_index] = humidity_time_delta;
+    humidity_segment_buffer[tail].timeDeltas[current_poly_index] = humidity_time_delta;
 
     current_poly_index++;
+}
+
+void HomeScreen::recompressSegments() {
+    if (segment_count < 2) return;
+
+    AdvancedPolynomialFitter fitter;
+
+    // Recompress temperature segments
+    PolynomialSegment recompressed_temp;
+    uint16_t temp_poly_count = 0;
+    for (uint16_t i = 0; i < POLY_COUNT; i += 2) {
+        if (temp_segment_buffer[head].timeDeltas[i] == 0 || temp_segment_buffer[head].timeDeltas[i+1] == 0) break;
+        double combined_delta = temp_segment_buffer[head].timeDeltas[i] + temp_segment_buffer[head].timeDeltas[i+1];
+        std::vector<float> new_coeffs = fitter.composePolynomials(temp_segment_buffer[head].coefficients[i], temp_segment_buffer[head].timeDeltas[i], temp_segment_buffer[head].coefficients[i+1], temp_segment_buffer[head].timeDeltas[i+1], POLY_DEGREE);
+        for(uint8_t j = 0; j < new_coeffs.size() && j < POLY_DEGREE + 1; j++) {
+            recompressed_temp.coefficients[temp_poly_count][j] = new_coeffs[j];
+        }
+        recompressed_temp.timeDeltas[temp_poly_count] = combined_delta;
+        temp_poly_count++;
+    }
+     for (uint16_t i = 0; i < POLY_COUNT; i += 2) {
+        if (temp_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i] == 0 || temp_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i+1] == 0) break;
+        double combined_delta = temp_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i] + temp_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i+1];
+        std::vector<float> new_coeffs = fitter.composePolynomials(temp_segment_buffer[(head + 1) % SEGMENTS].coefficients[i], temp_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i], temp_segment_buffer[(head + 1) % SEGMENTS].coefficients[i+1], temp_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i+1], POLY_DEGREE);
+        for(uint8_t j = 0; j < new_coeffs.size() && j < POLY_DEGREE + 1; j++) {
+            recompressed_temp.coefficients[temp_poly_count][j] = new_coeffs[j];
+        }
+        recompressed_temp.timeDeltas[temp_poly_count] = combined_delta;
+        temp_poly_count++;
+    }
+
+    // Recompress humidity segments
+    PolynomialSegment recompressed_hum;
+    uint16_t hum_poly_count = 0;
+    for (uint16_t i = 0; i < POLY_COUNT; i += 2) {
+        if (humidity_segment_buffer[head].timeDeltas[i] == 0 || humidity_segment_buffer[head].timeDeltas[i+1] == 0) break;
+        double combined_delta = humidity_segment_buffer[head].timeDeltas[i] + humidity_segment_buffer[head].timeDeltas[i+1];
+        std::vector<float> new_coeffs = fitter.composePolynomials(humidity_segment_buffer[head].coefficients[i], humidity_segment_buffer[head].timeDeltas[i], humidity_segment_buffer[head].coefficients[i+1], humidity_segment_buffer[head].timeDeltas[i+1], POLY_DEGREE);
+        for(uint8_t j = 0; j < new_coeffs.size() && j < POLY_DEGREE + 1; j++) {
+            recompressed_hum.coefficients[hum_poly_count][j] = new_coeffs[j];
+        }
+        recompressed_hum.timeDeltas[hum_poly_count] = combined_delta;
+        hum_poly_count++;
+    }
+    for (uint16_t i = 0; i < POLY_COUNT; i += 2) {
+        if (humidity_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i] == 0 || humidity_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i+1] == 0) break;
+        double combined_delta = humidity_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i] + humidity_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i+1];
+        std::vector<float> new_coeffs = fitter.composePolynomials(humidity_segment_buffer[(head + 1) % SEGMENTS].coefficients[i], humidity_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i], humidity_segment_buffer[(head + 1) % SEGMENTS].coefficients[i+1], humidity_segment_buffer[(head + 1) % SEGMENTS].timeDeltas[i+1], POLY_DEGREE);
+        for(uint8_t j = 0; j < new_coeffs.size() && j < POLY_DEGREE + 1; j++) {
+            recompressed_hum.coefficients[hum_poly_count][j] = new_coeffs[j];
+        }
+        recompressed_hum.timeDeltas[hum_poly_count] = combined_delta;
+        hum_poly_count++;
+    }
+
+    // Replace oldest segment with recompressed data
+    temp_segment_buffer[head] = recompressed_temp;
+    humidity_segment_buffer[head] = recompressed_hum;
+
+    head = (head + 1) % SEGMENTS;
+    segment_count--;
 }
 
 

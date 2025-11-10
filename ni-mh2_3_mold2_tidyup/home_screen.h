@@ -54,6 +54,8 @@ private:
     PolynomialSegment humidity_segment_buffer[SEGMENTS];
     uint8_t segment_count = 0;
     uint16_t current_poly_index = 0;
+    uint8_t head = 0; // For circular buffer
+    uint8_t tail = 0;
 
     uint32_t graphTimeOffset = 0; // Now in seconds
 
@@ -65,6 +67,7 @@ private:
     // --- New Private Methods ---
     void logSensorData(float temp, float humidity);
     void fitAndStorePolynomials();
+    void recompressSegments();
     void renderPolynomialGraph();
     void drawRawDataOverlay(uint32_t window_start, uint32_t window_end, float temp_min, float temp_max, float hum_min, float hum_max);
     void updateMinMax(const PolynomialSegment* segments, int seg_count, int poly_idx, float& min_val, float& max_val, uint32_t window_start, uint32_t window_end);

@@ -325,6 +325,21 @@ OptimizationMethod method ) {
 }
 
 
+
+
+
+
+/**
+     * @brief Composes two consequential polynomials into one, preserving the
+     * best L2-fit using a stable orthogonal (Legendre) basis.
+     *
+     * The target function f(x) on [0, 1] is:
+     * f(x) = P1(x / w1)           for x in [0, w1]
+     * f(x) = P2((x - w1) / w2)   for x in [w1, 1]
+     *
+     * This function finds the polynomial P_out(x) that minimizes
+     * the integral of (P_out(x) - f(x))^2 from 0 to 1.
+     */
 // Define a simple 2D vector for clarity
 using VecMatrix = std::vector<std::vector<double>>;
 
