@@ -74,6 +74,8 @@ void HomeScreen::logSensorData(float temp, float humidity) {
     uint32_t timeDelta = (currentTimestamp - lastTimestamp);
     lastTimestamp = currentTimestamp;
 
+    raw_buffer_duration_s += timeDelta;
+
     // Store in polynomial log buffer
     temp_log_buffer[log_buffer_index] = temp;
     humidity_log_buffer[log_buffer_index] = humidity;
@@ -134,6 +136,7 @@ void HomeScreen::fitAndStorePolynomials() {
     humidity_segment_buffer[tail].timeDeltas[current_poly_index] = humidity_time_delta;
 
     current_poly_index++;
+    raw_buffer_duration_s = 0; // Reset duration after compression
 }
 
 void HomeScreen::recompressSegments() {
@@ -319,10 +322,11 @@ void HomeScreen::updateMinMax(const PolynomialSegment* segments, int seg_count, 
     }
 }
 
-void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, uint32_t window_start, uint32_t window_end, float min_val, float max_val, uint16_t color) {
+void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, uint32_t window_start, uint32_t window_end, float min_val, float max_val, uint16_t color, int raw_region_width) {
     if (seg_count == 0) return;
 
-    // Draw boundary lines first
+    // Draw boundary lines first, but only in the historical region
+    int historical_plot_width = PLOT_WIDTH - raw_region_width;
     uint32_t boundary_time = millis() / 1000;
     for (int s = seg_count - 1; s >= 0; --s) {
         for (int p = (s == seg_count - 1 ? poly_idx - 1 : POLY_COUNT - 1); p >= 0; --p) {
@@ -331,7 +335,9 @@ void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg
 
             if (boundary_time >= window_start && boundary_time <= window_end) {
                 int x = map_value(boundary_time, window_start, window_end, PLOT_X_START, PLOT_X_START + PLOT_WIDTH);
-                tft.drawFastVLine(x, PLOT_Y_START, PLOT_HEIGHT, TFT_DARKGREY);
+                if (x < PLOT_X_START + historical_plot_width) {
+                    tft.drawFastVLine(x, PLOT_Y_START, PLOT_HEIGHT, TFT_DARKGREY);
+                }
             }
             boundary_time -= delta;
             if (boundary_time < window_start) break;
@@ -346,7 +352,7 @@ void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg
     int current_poly = poly_idx -1;
     uint32_t time_marker = millis() / 1000;
 
-    for (int x = PLOT_WIDTH - 1; x >= 0; --x) {
+    for (int x = historical_plot_width - 1; x >= 0; --x) {
         uint32_t target_time = window_start + (uint32_t)((float)x / PLOT_WIDTH * (window_end - window_start));
 
         // Find the correct polynomial for target_time
@@ -403,6 +409,21 @@ void HomeScreen::renderPolynomialGraph() {
     uint32_t window_start = (window_end > window_duration) ? (window_end - window_duration) : 0;
     if (window_start > window_end) window_start = 0; // Rollover check
 
+    // --- Demarcate Raw Data Region ---
+    int raw_region_width = 0;
+    if (window_duration > 0) {
+        raw_region_width = (int)((raw_buffer_duration_s / (float)window_duration) * PLOT_WIDTH);
+    }
+    if (raw_region_width > PLOT_WIDTH) raw_region_width = PLOT_WIDTH;
+    int raw_region_start_x = PLOT_X_START + PLOT_WIDTH - raw_region_width;
+
+    // Draw background for the raw data region
+    if (raw_region_width > 0) {
+        tft.fillRect(raw_region_start_x, PLOT_Y_START, raw_region_width, PLOT_HEIGHT, TFT_DARKGREY);
+        tft.drawRect(raw_region_start_x, PLOT_Y_START, raw_region_width, PLOT_HEIGHT, TFT_RED);
+    }
+
+
     float temp_min, temp_max, hum_min, hum_max;
     updateMinMax(temp_segment_buffer, segment_count, current_poly_index, temp_min, temp_max, window_start, window_end);
     updateMinMax(humidity_segment_buffer, segment_count, current_poly_index, hum_min, hum_max, window_start, window_end);
@@ -417,8 +438,8 @@ void HomeScreen::renderPolynomialGraph() {
     hum_min -= hum_range * 0.1;
 
 
-    drawPolynomialSeries(temp_segment_buffer, segment_count, current_poly_index, window_start, window_end, temp_min, temp_max, TFT_RED);
-    drawPolynomialSeries(humidity_segment_buffer, segment_count, current_poly_index, window_start, window_end, hum_min, hum_max, TFT_BLUE);
+    drawPolynomialSeries(temp_segment_buffer, segment_count, current_poly_index, window_start, window_end, temp_min, temp_max, TFT_RED, raw_region_width);
+    drawPolynomialSeries(humidity_segment_buffer, segment_count, current_poly_index, window_start, window_end, hum_min, hum_max, TFT_BLUE, raw_region_width);
     drawRawDataOverlay(window_start, window_end, temp_min, temp_max, hum_min, hum_max);
     drawAxisLabels(temp_min, temp_max, hum_min, hum_max);
 }

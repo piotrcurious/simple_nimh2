@@ -63,6 +63,7 @@ private:
     static constexpr int RAW_DATA_BUFFER_SIZE = LOG_BUFFER_POINTS_PER_POLY * 2;
     RawDataPoint raw_data_buffer[RAW_DATA_BUFFER_SIZE];
     int raw_data_head = 0;
+    float raw_buffer_duration_s = 0;
 
     // --- New Private Methods ---
     void logSensorData(float temp, float humidity);
@@ -71,7 +72,7 @@ private:
     void renderPolynomialGraph();
     void drawRawDataOverlay(uint32_t window_start, uint32_t window_end, float temp_min, float temp_max, float hum_min, float hum_max);
     void updateMinMax(const PolynomialSegment* segments, int seg_count, int poly_idx, float& min_val, float& max_val, uint32_t window_start, uint32_t window_end);
-    void drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, uint32_t window_start, uint32_t window_end, float min_val, float max_val, uint16_t color);
+    void drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, uint32_t window_start, uint32_t window_end, float min_val, float max_val, uint16_t color, int raw_region_width);
 
     // Helpers
     void drawLabels();
