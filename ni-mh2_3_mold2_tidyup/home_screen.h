@@ -63,7 +63,6 @@ private:
     static constexpr int RAW_DATA_BUFFER_SIZE = LOG_BUFFER_POINTS_PER_POLY * 2;
     RawDataPoint raw_data_buffer[RAW_DATA_BUFFER_SIZE];
     int raw_data_head = 0;
-    float raw_buffer_duration_s = 0;
 
     // --- New Private Methods ---
     void logSensorData(float temp, float humidity);

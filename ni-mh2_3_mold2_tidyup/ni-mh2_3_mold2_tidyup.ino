@@ -403,17 +403,6 @@ void handleIRCommand() {
                 break;
             }
 #endif // DEBUG_LABELS
-            case 0x65: // KEY_LEFT
-                if (currentDisplayState == DISPLAY_STATE_IDLE) {
-                    homeScreen.adjustTimeWindow(24); // Go back 24 hours
-                }
-                break;
-
-            case 0x62: // KEY_RIGHT
-                if (currentDisplayState == DISPLAY_STATE_IDLE) {
-                    homeScreen.adjustTimeWindow(-24); // Go forward 24 hours
-                }
-                break;
 
             default:
                 // Unhandled key
@@ -457,8 +446,9 @@ void drawLabelsFromGlobals() {
 void updateDisplay() {
     if (currentDisplayState == DISPLAY_STATE_IDLE) {
         homeScreen.render();
-        // The new home screen handles its own labels.
-        // We can add a separate global label drawing function if needed.
+        displayTemperatureLabels(temp1_values[PLOT_WIDTH - 1], temp2_values[PLOT_WIDTH - 1], diff_values[PLOT_WIDTH - 1], 0,
+                                 voltage_values[PLOT_WIDTH - 1], current_values[PLOT_WIDTH - 1]);
+        drawLabelsFromGlobals();
     } else if (currentDisplayState == DISPLAY_STATE_MAIN) {
         prepareTemperaturePlot();
         plotVoltageData();

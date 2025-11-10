@@ -1,49 +1,30 @@
-#ifndef ADVANCED_POLYNOMIAL_FITTER_H
-#define ADVANCED_POLYNOMIAL_FITTER_H
+#pragma once
 
-#include <Arduino.h>
-//#include <Eigen/Dense>
-#include <ArduinoEigenDense.h>
 #include <vector>
-#include <ArduinoEigen.h>
-
 #include <functional>
+#include <ArduinoEigen/Eigen/Dense>
 
 class AdvancedPolynomialFitter {
 public:
-    enum OptimizationMethod {
-        GRADIENT_DESCENT,
-        LEVENBERG_MARQUARDT,
-        NELDER_MEAD,
+    enum BoundaryCondition {
         NONE,
+        START_ZERO,
+        END_ZERO,
+        START_END_ZERO
     };
 
-    double calculateMSE(const std::vector<float>& coeffs, const std::vector<float>& x, const std::vector<float>& y);
-    double calculateMSED(const std::vector<float>& coeffs, const std::vector<double>& x, const std::vector<float>& y);
+    // Main fitting function with functional parameter for x values
+    std::vector<float> fitPolynomialD_superpos5c(
+        const std::vector<float>& y,
+        std::function<double(int)> x_func,
+        int n_points,
+        int degree,
+        BoundaryCondition bc
+    );
 
-    std::vector<float> fitPolynomial(const std::vector<float>& x, const std::vector<float>& y, int degree,
-                                     OptimizationMethod method = GRADIENT_DESCENT);
-    std::vector<float> fitPolynomialD(const std::vector<double>& x, const std::vector<float>& y, int degree,
-                                     OptimizationMethod method = GRADIENT_DESCENT);
-    std::vector<float> fitPolynomialD_superpos5c(const std::vector<double>& x, const std::vector<float>& y, int degree,
-                                     OptimizationMethod method = GRADIENT_DESCENT);
-
-    std::vector<float> fitPolynomialD_superpos5c(const std::vector<float>& y, std::function<double(int)> x_func, int size, int degree, OptimizationMethod method);
-
-
-    std::vector<float> NormalizeAndFitPolynomial(const std::vector<float>& x, const std::vector<float>& y, int degree,
-                                     OptimizationMethod method = GRADIENT_DESCENT);
-
-    std::vector<float> fitSegmentedPolynomials(const std::vector<float>& x, const std::vector<float>& y, int degree, int segments);
-    std::vector<float> levenbergMarquardt(std::vector<float>& coeffs, const std::vector<float>& x, const std::vector<float>& y, int degree);
-    std::vector<float> levenbergMarquardtD(std::vector<float>& coeffs, const std::vector<double>& x, const std::vector<float>& y, int degree);
-
-    std::vector<float> composePolynomials(const float* p1_coeffs, double p1_delta, const float* p2_coeffs, double p2_delta, int degree);
-
-private:
-    std::vector<double> solveLinearSystem(std::vector<std::vector<double>>& A, std::vector<double>& b);
-    std::vector<double> solveQR(std::vector<std::vector<double>>& A, std::vector<double>& b);
-
+    std::vector<float> composePolynomials(
+        const float* p1_coeffs, double p1_duration,
+        const float* p2_coeffs, double p2_duration,
+        int degree
+    );
 };
-
-#endif
