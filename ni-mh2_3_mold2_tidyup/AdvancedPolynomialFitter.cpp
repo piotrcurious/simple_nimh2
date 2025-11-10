@@ -5,7 +5,9 @@
 
 using namespace Eigen;
 
-    // calculate using Welford's method
+#include <functional>
+
+// calculate using Welford's method
     double AdvancedPolynomialFitter::calculateMSE(const std::vector<float>& coeffs,
                    const std::vector<float>& x,
                    const std::vector<float>& y) {
@@ -279,6 +281,48 @@ using namespace Eigen;
 
         return x;
     }
+
+std::vector<float> AdvancedPolynomialFitter::fitPolynomialD_superpos5c(const std::vector<float>& y, std::function<double(int)> x_func, int size, int degree,
+OptimizationMethod method ) {
+
+    const size_t n = size;
+    const size_t m = degree + 1;
+
+    // Use Eigen or Armadillo for more robust linear algebra if possible
+    std::vector<std::vector<double>> ATA(m, std::vector<double>(m, 0.0));
+    std::vector<double> ATy(m, 0.0);
+
+    // Precompute powers to avoid repeated multiplication
+    std::vector<std::vector<double>> xPowers(n, std::vector<double>(m, 1.0));
+    for (size_t i = 0; i < n; ++i) {
+        double x_val = x_func(i);
+        for (size_t j = 1; j < m; ++j) {
+            xPowers[i][j] = xPowers[i][j-1] * x_val;
+        }
+    }
+
+    // Compute A^T * A and A^T * y
+    for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < m; ++j) {
+            ATy[j] += xPowers[i][j] * y[i];
+            for (size_t k = 0; k <= j; ++k) {
+                ATA[j][k] += xPowers[i][j] * xPowers[i][k];
+            }
+        }
+    }
+
+    // Fill symmetric matrix
+    for (size_t j = 0; j < m; ++j) {
+        for (size_t k = j + 1; k < m; ++k) {
+            ATA[j][k] = ATA[k][j];
+        }
+    }
+
+      std::vector<double> coeffs = solveQR(ATA, ATy);
+      // Convert coefficients to float
+      std::vector<float> result(coeffs.begin(), coeffs.end());
+      return result;
+}
 
 
 // Define a simple 2D vector for clarity

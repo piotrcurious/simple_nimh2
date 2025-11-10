@@ -20,7 +20,7 @@ struct PolynomialSegment {
 
 // Structure for raw data points for overlay
 struct RawDataPoint {
-    unsigned long timestamp;
+    uint32_t timestamp; // Changed to uint32_t for seconds
     float temperature;
     float humidity;
 };
@@ -36,13 +36,13 @@ public:
     static double normalizeTime(double t, double tMax);
 
 private:
-    // timing (ms)
+    // timing (ms for render/gather, seconds for graphing)
     static constexpr unsigned long RENDER_INTERVAL_MS = 2000UL;
     static constexpr unsigned long GATHER_INTERVAL_MS = 60000UL;
 
     unsigned long lastRenderMs;
     unsigned long lastGatherMs;
-    uint32_t lastTimestamp = 0;
+    uint32_t lastTimestamp = 0; // Now in seconds
 
     // --- New Polynomial Graphing Members ---
     float temp_log_buffer[LOG_BUFFER_POINTS_PER_POLY];
@@ -55,7 +55,7 @@ private:
     uint8_t segment_count = 0;
     uint16_t current_poly_index = 0;
 
-    unsigned long graphTimeOffset = 0;
+    uint32_t graphTimeOffset = 0; // Now in seconds
 
     // --- Raw Data Buffer for Overlay ---
     static constexpr int RAW_DATA_BUFFER_SIZE = LOG_BUFFER_POINTS_PER_POLY * 2;
@@ -66,9 +66,9 @@ private:
     void logSensorData(float temp, float humidity);
     void fitAndStorePolynomials();
     void renderPolynomialGraph();
-    void drawRawDataOverlay(unsigned long window_start, unsigned long window_end, float temp_min, float temp_max, float hum_min, float hum_max);
-    void updateMinMax(const PolynomialSegment* segments, int seg_count, int poly_idx, float& min_val, float& max_val, unsigned long window_start, unsigned long window_end);
-    void drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, unsigned long window_start, unsigned long window_end, float min_val, float max_val, uint16_t color);
+    void drawRawDataOverlay(uint32_t window_start, uint32_t window_end, float temp_min, float temp_max, float hum_min, float hum_max);
+    void updateMinMax(const PolynomialSegment* segments, int seg_count, int poly_idx, float& min_val, float& max_val, uint32_t window_start, uint32_t window_end);
+    void drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, uint32_t window_start, uint32_t window_end, float min_val, float max_val, uint16_t color);
 
     // Helpers
     void drawLabels();

@@ -23,17 +23,18 @@ namespace {
             timestamp_absolute += timestamps[j];
         }
 
-        std::vector<double> x(dataSize);
-        std::vector<float> y(dataSize);
+        std::vector<float> y(rawData, rawData + dataSize);
 
-        float current_time = 0;
-        for (uint16_t j = 0; j < dataSize; j++) {
-            current_time += timestamps[j];
-            x[j] = HomeScreen::normalizeTime(current_time, timestamp_absolute);
-            y[j] = rawData[j];
-        }
+        // Define a lambda function to generate normalized time values on the fly
+        auto x_func = [&](int i) {
+            float current_time = 0;
+            for (int j = 0; j <= i; ++j) {
+                current_time += timestamps[j];
+            }
+            return HomeScreen::normalizeTime(current_time, timestamp_absolute);
+        };
 
-        std::vector<float> fitted_coefficients = fitter.fitPolynomialD_superpos5c(x, y, POLY_DEGREE, AdvancedPolynomialFitter::NONE);
+        std::vector<float> fitted_coefficients = fitter.fitPolynomialD_superpos5c(y, x_func, dataSize, POLY_DEGREE, AdvancedPolynomialFitter::NONE);
 
         for (uint8_t j = 0; j < fitted_coefficients.size() && j < POLY_DEGREE + 1; j++) {
             coefficients[j] = fitted_coefficients[j];
@@ -52,7 +53,7 @@ HomeScreen::HomeScreen()
 void HomeScreen::begin() {
     // Initialize any necessary variables, if needed.
     // The polynomial buffers are zero-initialized by default.
-    lastTimestamp = millis();
+    lastTimestamp = millis() / 1000;
 }
 
 void HomeScreen::gatherData() {
@@ -69,7 +70,7 @@ void HomeScreen::gatherData() {
 }
 
 void HomeScreen::logSensorData(float temp, float humidity) {
-    uint32_t currentTimestamp = millis();
+    uint32_t currentTimestamp = millis() / 1000;
     uint32_t timeDelta = (currentTimestamp - lastTimestamp);
     lastTimestamp = currentTimestamp;
 
@@ -188,28 +189,29 @@ static inline float map_value(float x, float in_min, float in_max, float out_min
 }
 
 void HomeScreen::adjustTimeWindow(long hours) {
-    long long newOffset = (long long)graphTimeOffset + (long long)hours * 3600000LL;
+    long long newOffset = (long long)graphTimeOffset + (long long)hours * 3600LL;
 
     if (newOffset < 0) {
         newOffset = 0;
     }
 
-    if (newOffset > millis()) {
-        newOffset = millis();
+    uint32_t current_time_seconds = millis() / 1000;
+    if (newOffset > current_time_seconds) {
+        newOffset = current_time_seconds;
     }
 
     graphTimeOffset = newOffset;
 }
 
 
-void HomeScreen::updateMinMax(const PolynomialSegment* segments, int seg_count, int poly_idx, float& min_val, float& max_val, unsigned long window_start, unsigned long window_end) {
+void HomeScreen::updateMinMax(const PolynomialSegment* segments, int seg_count, int poly_idx, float& min_val, float& max_val, uint32_t window_start, uint32_t window_end) {
     min_val = INFINITY;
     max_val = -INFINITY;
     if (seg_count == 0) return;
 
     int current_seg = seg_count - 1;
     int current_poly = poly_idx -1;
-    unsigned long current_time_marker = millis();
+    uint32_t current_time_marker = millis() / 1000;
 
     while (current_seg >= 0) {
         if (current_poly < 0) {
@@ -224,16 +226,16 @@ void HomeScreen::updateMinMax(const PolynomialSegment* segments, int seg_count, 
             continue;
         }
 
-        unsigned long poly_end_time = current_time_marker;
-        unsigned long poly_start_time = current_time_marker - delta;
+        uint32_t poly_end_time = current_time_marker;
+        uint32_t poly_start_time = current_time_marker - delta;
 
         // Check if this polynomial is relevant to the window
         if (poly_start_time < window_end && poly_end_time > window_start) {
             const int steps = 20;
             for (int i = 0; i <= steps; ++i) {
                 float t_norm = static_cast<float>(i) / steps;
-                unsigned long time_in_poly = t_norm * delta;
-                unsigned long actual_time = poly_start_time + time_in_poly;
+                uint32_t time_in_poly = t_norm * delta;
+                uint32_t actual_time = poly_start_time + time_in_poly;
 
                 if (actual_time >= window_start && actual_time <= window_end) {
                     float val = evaluatePolynomial(segments[current_seg].coefficients[current_poly], POLY_DEGREE + 1, t_norm);
@@ -253,11 +255,11 @@ void HomeScreen::updateMinMax(const PolynomialSegment* segments, int seg_count, 
     }
 }
 
-void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, unsigned long window_start, unsigned long window_end, float min_val, float max_val, uint16_t color) {
+void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, uint32_t window_start, uint32_t window_end, float min_val, float max_val, uint16_t color) {
     if (seg_count == 0) return;
 
     // Draw boundary lines first
-    unsigned long boundary_time = millis();
+    uint32_t boundary_time = millis() / 1000;
     for (int s = seg_count - 1; s >= 0; --s) {
         for (int p = (s == seg_count - 1 ? poly_idx - 1 : POLY_COUNT - 1); p >= 0; --p) {
             uint32_t delta = segments[s].timeDeltas[p];
@@ -278,10 +280,10 @@ void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg
 
     int current_seg = seg_count - 1;
     int current_poly = poly_idx -1;
-    unsigned long time_marker = millis();
+    uint32_t time_marker = millis() / 1000;
 
     for (int x = PLOT_WIDTH - 1; x >= 0; --x) {
-        unsigned long target_time = window_start + (unsigned long)((float)x / PLOT_WIDTH * (window_end - window_start));
+        uint32_t target_time = window_start + (uint32_t)((float)x / PLOT_WIDTH * (window_end - window_start));
 
         // Find the correct polynomial for target_time
         bool poly_found = false;
@@ -331,10 +333,10 @@ void HomeScreen::renderPolynomialGraph() {
         return;
     }
 
-    unsigned long now = millis();
-    unsigned long window_duration = 24 * 3600 * 1000UL;
-    unsigned long window_end = now - graphTimeOffset;
-    unsigned long window_start = (window_end > window_duration) ? (window_end - window_duration) : 0;
+    uint32_t now = millis() / 1000;
+    uint32_t window_duration = 24 * 3600;
+    uint32_t window_end = now - graphTimeOffset;
+    uint32_t window_start = (window_end > window_duration) ? (window_end - window_duration) : 0;
     if (window_start > window_end) window_start = 0; // Rollover check
 
     float temp_min, temp_max, hum_min, hum_max;
@@ -375,7 +377,7 @@ void HomeScreen::drawAxisLabels(float temp_min, float temp_max, float hum_min, f
     tft.drawString(String(hum_min, 0) + "%", PLOT_X_START + PLOT_WIDTH - 2, PLOT_Y_START + PLOT_HEIGHT - 2, 1);
 }
 
-void HomeScreen::drawRawDataOverlay(unsigned long window_start, unsigned long window_end, float temp_min, float temp_max, float hum_min, float hum_max) {
+void HomeScreen::drawRawDataOverlay(uint32_t window_start, uint32_t window_end, float temp_min, float temp_max, float hum_min, float hum_max) {
     for (int i = 0; i < RAW_DATA_BUFFER_SIZE; ++i) {
         const RawDataPoint& point = raw_data_buffer[i];
         if (point.timestamp >= window_start && point.timestamp <= window_end) {
