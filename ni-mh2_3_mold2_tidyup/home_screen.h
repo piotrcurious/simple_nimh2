@@ -18,6 +18,13 @@ struct PolynomialSegment {
     uint32_t timeDeltas[POLY_COUNT];
 };
 
+// Structure for raw data points for overlay
+struct RawDataPoint {
+    unsigned long timestamp;
+    float temperature;
+    float humidity;
+};
+
 class HomeScreen {
 public:
     HomeScreen();
@@ -50,15 +57,22 @@ private:
 
     unsigned long graphTimeOffset = 0;
 
+    // --- Raw Data Buffer for Overlay ---
+    static constexpr int RAW_DATA_BUFFER_SIZE = LOG_BUFFER_POINTS_PER_POLY * 2;
+    RawDataPoint raw_data_buffer[RAW_DATA_BUFFER_SIZE];
+    int raw_data_head = 0;
+
     // --- New Private Methods ---
     void logSensorData(float temp, float humidity);
     void fitAndStorePolynomials();
     void renderPolynomialGraph();
+    void drawRawDataOverlay(unsigned long window_start, unsigned long window_end, float temp_min, float temp_max, float hum_min, float hum_max);
     void updateMinMax(const PolynomialSegment* segments, int seg_count, int poly_idx, float& min_val, float& max_val, unsigned long window_start, unsigned long window_end);
     void drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, unsigned long window_start, unsigned long window_end, float min_val, float max_val, uint16_t color);
 
     // Helpers
     void drawLabels();
+    void drawAxisLabels(float temp_min, float temp_max, float hum_min, float hum_max);
     static inline bool isValidSample(float v) { return !isnan(v) && isfinite(v); }
     double calculateDewPoint(double temperature, double humidity);
     static float evaluatePolynomial(const float *coefficients, uint8_t degree, double t);

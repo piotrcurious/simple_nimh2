@@ -73,10 +73,15 @@ void HomeScreen::logSensorData(float temp, float humidity) {
     uint32_t timeDelta = (currentTimestamp - lastTimestamp);
     lastTimestamp = currentTimestamp;
 
+    // Store in polynomial log buffer
     temp_log_buffer[log_buffer_index] = temp;
     humidity_log_buffer[log_buffer_index] = humidity;
     timestamp_log_buffer[log_buffer_index] = timeDelta;
     log_buffer_index++;
+
+    // Store in raw data circular buffer
+    raw_data_buffer[raw_data_head] = {currentTimestamp, temp, humidity};
+    raw_data_head = (raw_data_head + 1) % RAW_DATA_BUFFER_SIZE;
 
     if (log_buffer_index >= LOG_BUFFER_POINTS_PER_POLY) {
         fitAndStorePolynomials();
@@ -251,6 +256,24 @@ void HomeScreen::updateMinMax(const PolynomialSegment* segments, int seg_count, 
 void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, unsigned long window_start, unsigned long window_end, float min_val, float max_val, uint16_t color) {
     if (seg_count == 0) return;
 
+    // Draw boundary lines first
+    unsigned long boundary_time = millis();
+    for (int s = seg_count - 1; s >= 0; --s) {
+        for (int p = (s == seg_count - 1 ? poly_idx - 1 : POLY_COUNT - 1); p >= 0; --p) {
+            uint32_t delta = segments[s].timeDeltas[p];
+            if (delta == 0) continue;
+
+            if (boundary_time >= window_start && boundary_time <= window_end) {
+                int x = map_value(boundary_time, window_start, window_end, PLOT_X_START, PLOT_X_START + PLOT_WIDTH);
+                tft.drawFastVLine(x, PLOT_Y_START, PLOT_HEIGHT, TFT_DARKGREY);
+            }
+            boundary_time -= delta;
+            if (boundary_time < window_start) break;
+        }
+        if (boundary_time < window_start) break;
+    }
+
+
     int16_t last_y = -1;
 
     int current_seg = seg_count - 1;
@@ -330,6 +353,52 @@ void HomeScreen::renderPolynomialGraph() {
 
     drawPolynomialSeries(temp_segment_buffer, segment_count, current_poly_index, window_start, window_end, temp_min, temp_max, TFT_RED);
     drawPolynomialSeries(humidity_segment_buffer, segment_count, current_poly_index, window_start, window_end, hum_min, hum_max, TFT_BLUE);
+    drawRawDataOverlay(window_start, window_end, temp_min, temp_max, hum_min, hum_max);
+    drawAxisLabels(temp_min, temp_max, hum_min, hum_max);
+}
+
+void HomeScreen::drawAxisLabels(float temp_min, float temp_max, float hum_min, float hum_max) {
+    tft.setTextSize(1);
+
+    // Temperature labels (left side)
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.setTextDatum(TL_DATUM);
+    tft.drawString(String(temp_max, 1) + "C", PLOT_X_START + 2, PLOT_Y_START + 2, 1);
+    tft.setTextDatum(BL_DATUM);
+    tft.drawString(String(temp_min, 1) + "C", PLOT_X_START + 2, PLOT_Y_START + PLOT_HEIGHT - 2, 1);
+
+    // Humidity labels (right side)
+    tft.setTextColor(TFT_BLUE, TFT_BLACK);
+    tft.setTextDatum(TR_DATUM);
+    tft.drawString(String(hum_max, 0) + "%", PLOT_X_START + PLOT_WIDTH - 2, PLOT_Y_START + 2, 1);
+    tft.setTextDatum(BR_DATUM);
+    tft.drawString(String(hum_min, 0) + "%", PLOT_X_START + PLOT_WIDTH - 2, PLOT_Y_START + PLOT_HEIGHT - 2, 1);
+}
+
+void HomeScreen::drawRawDataOverlay(unsigned long window_start, unsigned long window_end, float temp_min, float temp_max, float hum_min, float hum_max) {
+    for (int i = 0; i < RAW_DATA_BUFFER_SIZE; ++i) {
+        const RawDataPoint& point = raw_data_buffer[i];
+        if (point.timestamp >= window_start && point.timestamp <= window_end) {
+
+            // Draw temperature point
+            if (isValidSample(point.temperature)) {
+                int x = map_value(point.timestamp, window_start, window_end, PLOT_X_START, PLOT_X_START + PLOT_WIDTH);
+                int y = map_value(point.temperature, temp_min, temp_max, PLOT_Y_START + PLOT_HEIGHT, PLOT_Y_START);
+                if (x >= PLOT_X_START && x < PLOT_X_START + PLOT_WIDTH && y >= PLOT_Y_START && y < PLOT_Y_START + PLOT_HEIGHT) {
+                    tft.drawPixel(x, y, TFT_WHITE);
+                }
+            }
+
+            // Draw humidity point
+            if (isValidSample(point.humidity)) {
+                int x = map_value(point.timestamp, window_start, window_end, PLOT_X_START, PLOT_X_START + PLOT_WIDTH);
+                int y = map_value(point.humidity, hum_min, hum_max, PLOT_Y_START + PLOT_HEIGHT, PLOT_Y_START);
+                if (x >= PLOT_X_START && x < PLOT_X_START + PLOT_WIDTH && y >= PLOT_Y_START && y < PLOT_Y_START + PLOT_HEIGHT) {
+                    tft.drawPixel(x, y, TFT_CYAN);
+                }
+            }
+        }
+    }
 }
 
 
