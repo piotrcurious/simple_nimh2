@@ -1,48 +1,65 @@
 #pragma once
 #include <Arduino.h>
 #include <math.h>
-#include <cstring> // memmove
+#include <vector>
+#include <cstring>
 #include "definitions.h"
+#include "AdvancedPolynomialFitter.hpp"
+
+// Constants for the polynomial graphing system
+#define POLY_DEGREE 5
+#define POLY_COUNT 8
+#define SEGMENTS 2
+#define LOG_BUFFER_POINTS_PER_POLY 60
+
+// Storage structure for polynomial data
+struct PolynomialSegment {
+    float coefficients[POLY_COUNT][POLY_DEGREE + 1];
+    uint32_t timeDeltas[POLY_COUNT];
+};
 
 class HomeScreen {
 public:
     HomeScreen();
 
     void begin();
-    void render();       // call frequently (non-blocking)
-    void gatherData();   // call frequently (non-blocking)
+    void render();
+    void gatherData();
+    void adjustTimeWindow(long hours);
+    static double normalizeTime(double t, double tMax);
 
 private:
     // timing (ms)
     static constexpr unsigned long RENDER_INTERVAL_MS = 2000UL;
     static constexpr unsigned long GATHER_INTERVAL_MS = 60000UL;
 
-    // dash/grid constants
-    static constexpr int TIME_GRID_STEP_PX = 60; // pixels between vertical lines
-    static constexpr int DASH_LEN_PX = 3;        // dash length for vertical grid
-    static constexpr int GAP_LEN_PX = 3;         // gap length for vertical grid
-    static constexpr int GRID_LINES = 4;         // horizontal grid lines
-
     unsigned long lastRenderMs;
     unsigned long lastGatherMs;
+    uint32_t lastTimestamp = 0;
 
-    float temp_history[SCREEN_WIDTH];
-    float humidity_history[SCREEN_WIDTH];
-    float dew_point_history[SCREEN_WIDTH];
+    // --- New Polynomial Graphing Members ---
+    float temp_log_buffer[LOG_BUFFER_POINTS_PER_POLY];
+    float humidity_log_buffer[LOG_BUFFER_POINTS_PER_POLY];
+    uint32_t timestamp_log_buffer[LOG_BUFFER_POINTS_PER_POLY];
+    uint16_t log_buffer_index = 0;
 
-    // helpers
-    static inline float mapFloat(float x, float in_min, float in_max, float out_min, float out_max);
-    static inline bool isValidSample(float v) { return !isnan(v) && isfinite(v); }
-    void shiftHistoryLeft(float *arr, size_t len) noexcept;
+    PolynomialSegment temp_segment_buffer[SEGMENTS];
+    PolynomialSegment humidity_segment_buffer[SEGMENTS];
+    uint8_t segment_count = 0;
+    uint16_t current_poly_index = 0;
 
-    void drawGraph();
-    void drawSeries(const float *history, size_t len,
-                    float plot_min, float plot_max,
-                    uint16_t color, bool rightAxis = false);
-    void drawGrid(const float *humidity_history, size_t history_len, float h_plot_min, float h_plot_max);
-    void drawAxisLabels(float td_plot_min, float td_plot_max,
-                        float h_plot_min, float h_plot_max);
+    unsigned long graphTimeOffset = 0;
+
+    // --- New Private Methods ---
+    void logSensorData(float temp, float humidity);
+    void fitAndStorePolynomials();
+    void renderPolynomialGraph();
+    void updateMinMax(const PolynomialSegment* segments, int seg_count, int poly_idx, float& min_val, float& max_val, unsigned long window_start, unsigned long window_end);
+    void drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, unsigned long window_start, unsigned long window_end, float min_val, float max_val, uint16_t color);
+
+    // Helpers
     void drawLabels();
-    float interpolatedHumidityAtPixel(const float *history, size_t len, int px, float &outHumidity);
+    static inline bool isValidSample(float v) { return !isnan(v) && isfinite(v); }
     double calculateDewPoint(double temperature, double humidity);
+    static float evaluatePolynomial(const float *coefficients, uint8_t degree, double t);
 };
