@@ -28,8 +28,7 @@ public:
     std::vector<float> fitPolynomialD_superpos5c(const std::vector<double>& x, const std::vector<float>& y, int degree,
                                      OptimizationMethod method = GRADIENT_DESCENT);
 
-    std::vector<float> fitPolynomialD_superpos5c(const std::vector<float>& y, std::function<double(int)> x_func, int size, int degree,
-                                     OptimizationMethod method = GRADIENT_DESCENT);
+    std::vector<float> fitPolynomialD_superpos5c(const std::vector<float>& y, std::function<double(int)> x_func, int size, int degree, OptimizationMethod method);
 
 
     std::vector<float> NormalizeAndFitPolynomial(const std::vector<float>& x, const std::vector<float>& y, int degree,
