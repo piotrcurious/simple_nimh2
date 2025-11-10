@@ -133,8 +133,6 @@ void HomeScreen::fitAndStorePolynomials() {
     raw_data_head = 0; // Reset raw data buffer after compression
 }
 
-// NOTE: The rest of the functions will be implemented in subsequent steps.
-// This is a placeholder to allow compilation.
 void HomeScreen::recompressSegments() {
     if (segment_count < 2) return;
 
@@ -307,9 +305,11 @@ void HomeScreen::updateMinMax(const PolynomialSegment* segments, int seg_count, 
     if (isinf(min_val) || isinf(max_val)) { min_val = 0; max_val = 1; }
 }
 
-void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, uint32_t window_start, uint32_t window_end, float min_val, float max_val, uint16_t color, int raw_region_width) {
+void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg_count, int poly_idx, uint32_t window_start, uint32_t history_window_end, float min_val, float max_val, uint16_t color) {
     if (seg_count == 0) return;
-    int historical_plot_width = PLOT_WIDTH - raw_region_width;
+
+    uint32_t full_window_duration = 24 * 3600;
+    uint32_t full_window_end = window_start + full_window_duration;
 
     uint32_t boundary_time = millis() / 1000;
     for (int s_offset = 0; s_offset < seg_count; ++s_offset) {
@@ -319,11 +319,9 @@ void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg
             uint32_t delta = segments[seg_idx].timeDeltas[p];
             if (delta == 0) continue;
 
-            if (boundary_time >= window_start && boundary_time <= window_end) {
-                int x = map_value(boundary_time, window_start, window_end, PLOT_X_START, PLOT_X_START + PLOT_WIDTH);
-                if (x < PLOT_X_START + historical_plot_width) {
-                    tft.drawFastVLine(x, PLOT_Y_START, PLOT_HEIGHT, TFT_DARKGREY);
-                }
+            if (boundary_time >= window_start && boundary_time <= history_window_end) {
+                int x = map_value(boundary_time, window_start, full_window_end, PLOT_X_START, PLOT_X_START + PLOT_WIDTH);
+                tft.drawFastVLine(x, PLOT_Y_START, PLOT_HEIGHT, TFT_DARKGREY);
             }
             boundary_time -= delta;
             if (boundary_time < window_start) break;
@@ -332,8 +330,10 @@ void HomeScreen::drawPolynomialSeries(const PolynomialSegment* segments, int seg
     }
 
     int16_t last_y = -1;
-    for (int x_pixel = 0; x_pixel < historical_plot_width; ++x_pixel) {
-        uint32_t target_time = window_start + (uint32_t)((float)x_pixel / (PLOT_WIDTH - 1) * (window_end - window_start));
+    int history_pixel_width = map_value(history_window_end, window_start, full_window_end, 0, PLOT_WIDTH);
+
+    for (int x_pixel = 0; x_pixel < history_pixel_width; ++x_pixel) {
+        uint32_t target_time = window_start + (uint32_t)((float)x_pixel / (PLOT_WIDTH - 1) * full_window_duration);
 
         uint32_t time_marker = millis() / 1000;
         float val = NAN;
@@ -378,27 +378,16 @@ void HomeScreen::renderPolynomialGraph() {
 
     uint32_t now = millis() / 1000;
     uint32_t window_duration = 24 * 3600;
+
+    // Determine the end of the historical graph, which is the start of the raw data
+    uint32_t history_end_time = now;
+    if (raw_data_head > 0) {
+        history_end_time = raw_data_buffer[0].timestamp;
+    }
+
     uint32_t window_end = now - graphTimeOffset;
     uint32_t window_start = (window_end > window_duration) ? (window_end - window_duration) : 0;
     if (window_start > window_end) window_start = 0;
-
-    // --- Demarcate Raw Data Region ---
-    uint32_t raw_buffer_duration_s = 0;
-    if (raw_data_head > 1) {
-        raw_buffer_duration_s = raw_data_buffer[raw_data_head - 1].timestamp - raw_data_buffer[0].timestamp;
-    }
-
-    int raw_region_width = 0;
-    if (window_duration > 0) {
-        raw_region_width = (int)(((float)raw_buffer_duration_s / window_duration) * PLOT_WIDTH);
-    }
-    if (raw_region_width > PLOT_WIDTH) raw_region_width = PLOT_WIDTH;
-    int raw_region_start_x = PLOT_X_START + PLOT_WIDTH - raw_region_width;
-
-    if (raw_region_width > 0) {
-        tft.fillRect(raw_region_start_x, PLOT_Y_START, raw_region_width, PLOT_HEIGHT, TFT_DARKGREY);
-        tft.drawRect(raw_region_start_x, PLOT_Y_START, raw_region_width, PLOT_HEIGHT, TFT_RED);
-    }
 
     float temp_min, temp_max, hum_min, hum_max;
     updateMinMax(temp_segment_buffer, segment_count, current_poly_index, temp_min, temp_max, window_start, window_end);
@@ -410,8 +399,17 @@ void HomeScreen::renderPolynomialGraph() {
     float hum_range = hum_max - hum_min; if (hum_range < 2.0) hum_range = 2.0;
     hum_max += hum_range * 0.1; hum_min -= hum_range * 0.1;
 
-    drawPolynomialSeries(temp_segment_buffer, segment_count, current_poly_index, window_start, window_end, temp_min, temp_max, TFT_RED, raw_region_width);
-    drawPolynomialSeries(humidity_segment_buffer, segment_count, current_poly_index, window_start, window_end, hum_min, hum_max, TFT_BLUE, raw_region_width);
+    uint32_t history_window_end = (history_end_time < window_end) ? history_end_time : window_end;
+
+    drawPolynomialSeries(temp_segment_buffer, segment_count, current_poly_index, window_start, history_window_end, temp_min, temp_max, TFT_RED);
+    drawPolynomialSeries(humidity_segment_buffer, segment_count, current_poly_index, window_start, history_window_end, hum_min, hum_max, TFT_BLUE);
+
+    // Draw demarcation line
+    if (raw_data_head > 0) {
+        int demarcation_x = map_value(history_end_time, window_start, window_end, PLOT_X_START, PLOT_X_START + PLOT_WIDTH);
+        tft.drawFastVLine(demarcation_x, PLOT_Y_START, PLOT_HEIGHT, TFT_RED);
+    }
+
     drawRawDataOverlay(window_start, window_end, temp_min, temp_max, hum_min, hum_max);
     drawAxisLabels(temp_min, temp_max, hum_min, hum_max);
 }
