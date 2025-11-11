@@ -22,33 +22,53 @@ inline float GraphRenderer::mapFloat(float x, float in_min, float in_max, float 
 }
 
 void GraphRenderer::drawGraph(const GraphDataManager* dataManager) {
+    const uint16_t raw_data_count = dataManager->getRawDataCount();
+    if (raw_data_count < 2) {
+        tft.fillRect(PLOT_X_START, PLOT_Y_START, PLOT_WIDTH, PLOT_HEIGHT, TFT_BLACK); // Clear if no data
+        drawGridAndAxes(dataManager);
+        return;
+    }
+
+    const uint32_t* raw_timestamps = dataManager->getRawTimestamps();
+    uint32_t windowStart, windowEnd;
+    GraphDataManager::ViewMode mode = dataManager->getViewMode();
+
+    const uint32_t latest_raw_timestamp = raw_timestamps[raw_data_count - 1];
+
+    if (mode == GraphDataManager::VIEW_MODE_FULL) {
+        uint32_t total_historical_delta = dataManager->getTotalTimeDelta();
+        // The raw delta is the actual span of the raw history array
+        uint32_t full_raw_delta = raw_timestamps[raw_data_count - 1] - raw_timestamps[0];
+        windowEnd = latest_raw_timestamp;
+        windowStart = windowEnd - total_historical_delta - full_raw_delta;
+    } else { // LIVE or PANNING
+        windowEnd = dataManager->getWindowEndTime();
+        // The window size is constant, equivalent to the time span of the raw buffer
+        uint32_t window_duration = raw_timestamps[raw_data_count - 1] - raw_timestamps[0];
+        if (window_duration == 0) window_duration = 1;
+        windowStart = windowEnd - window_duration;
+    }
+    if (windowStart >= windowEnd) windowStart = windowEnd - 1; // Ensure valid window
+
+
     // Draw Temperature's compressed graph and clear the area as it draws.
-    drawCompressedGraph(dataManager, true, true);
+    drawCompressedGraph(dataManager, true, true, windowStart, windowEnd);
 
     // Draw the humidity's compressed graph on top, without clearing.
-    drawCompressedGraph(dataManager, false, false);
+    drawCompressedGraph(dataManager, false, false, windowStart, windowEnd);
 
     // --- Hybrid Clearing: Clear the raw data area ---
-    const uint32_t* raw_timestamps = dataManager->getRawTimestamps();
-    const uint16_t raw_data_count = dataManager->getRawDataCount();
-    if (raw_data_count > 0) {
-        uint32_t windowEnd = raw_timestamps[raw_data_count - 1];
-        uint32_t windowStart = raw_timestamps[0];
-        uint32_t xMax = windowEnd - dataManager->getRawTimeDelta();
-        if (windowEnd > windowStart) {
-            float compression_ratio = (float)(xMax - windowStart) / (float)(windowEnd - windowStart);
-            int compressed_width = PLOT_WIDTH * compression_ratio;
-            int raw_graph_start_x = PLOT_X_START + compressed_width;
-            int raw_graph_width = PLOT_WIDTH - compressed_width;
-            if (raw_graph_width > 0) {
-                tft.fillRect(raw_graph_start_x+1, PLOT_Y_START, raw_graph_width, PLOT_HEIGHT, TFT_BLACK);
-            }
-        }
+    // The compressed data ends where the raw data begins.
+    uint32_t raw_hist_duration = latest_raw_timestamp - raw_timestamps[0];
+    uint32_t compressed_end_time = latest_raw_timestamp - raw_hist_duration;
+    int raw_start_x = mapFloat(compressed_end_time, windowStart, windowEnd, PLOT_X_START, PLOT_X_START + PLOT_WIDTH);
+    if (raw_start_x >= PLOT_X_START && raw_start_x < PLOT_X_START + PLOT_WIDTH) {
+         tft.fillRect(raw_start_x, PLOT_Y_START, (PLOT_X_START + PLOT_WIDTH) - raw_start_x, PLOT_HEIGHT, TFT_BLACK);
     }
 
     // Overlay both raw graphs on top of the compressed graphs.
-    drawRawGraph(dataManager, true);
-    drawRawGraph(dataManager, false);
+    drawRawGraph(dataManager, true, windowStart, windowEnd);
+    drawRawGraph(dataManager, false, windowStart, windowEnd);
 
     // Draw axis labels last so they are not overwritten.
     drawGridAndAxes(dataManager);
@@ -76,7 +96,7 @@ void GraphRenderer::drawGridAndAxes(const GraphDataManager* dataManager) {
     tft.drawString(String(dataManager->getMinValue(false), 0) + "%", PLOT_X_START + PLOT_WIDTH, PLOT_Y_START + PLOT_HEIGHT -1);
 }
 
-void GraphRenderer::drawRawGraph(const GraphDataManager* dataManager, bool isTemp) {
+void GraphRenderer::drawRawGraph(const GraphDataManager* dataManager, bool isTemp, uint32_t windowStart, uint32_t windowEnd) {
     const uint16_t count = dataManager->getRawDataCount();
     if (count < 2) return;
 
@@ -86,22 +106,22 @@ void GraphRenderer::drawRawGraph(const GraphDataManager* dataManager, bool isTem
     const float y_min = dataManager->getMinValue(isTemp);
     const float y_max = dataManager->getMaxValue(isTemp);
 
-    uint32_t min_ts = timestamps[0];
-    uint32_t max_ts = timestamps[count - 1];
-
     for (uint16_t i = 0; i < count - 1; ++i) {
         if (!isnan(data[i]) && !isnan(data[i+1])) {
-            int16_t x1 = mapFloat(timestamps[i], min_ts, max_ts, PLOT_X_START, PLOT_X_START + PLOT_WIDTH -1);
-            int16_t y1 = mapFloat(data[i], y_min, y_max, PLOT_Y_START + PLOT_HEIGHT -1, PLOT_Y_START);
-            int16_t x2 = mapFloat(timestamps[i+1], min_ts, max_ts, PLOT_X_START, PLOT_X_START + PLOT_WIDTH -1);
-            int16_t y2 = mapFloat(data[i+1], y_min, y_max, PLOT_Y_START + PLOT_HEIGHT -1, PLOT_Y_START);
-            tft.drawLine(x1, y1, x2, y2, color);
+            // Only draw lines that are at least partially within the window
+            if (timestamps[i+1] >= windowStart && timestamps[i] <= windowEnd) {
+                int16_t x1 = mapFloat(timestamps[i], windowStart, windowEnd, PLOT_X_START, PLOT_X_START + PLOT_WIDTH -1);
+                int16_t y1 = mapFloat(data[i], y_min, y_max, PLOT_Y_START + PLOT_HEIGHT -1, PLOT_Y_START);
+                int16_t x2 = mapFloat(timestamps[i+1], windowStart, windowEnd, PLOT_X_START, PLOT_X_START + PLOT_WIDTH -1);
+                int16_t y2 = mapFloat(data[i+1], y_min, y_max, PLOT_Y_START + PLOT_HEIGHT -1, PLOT_Y_START);
+                tft.drawLine(x1, y1, x2, y2, color);
+            }
         }
     }
 }
 
 
-void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, bool isTemp, bool clear_under) {
+void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, bool isTemp, bool clear_under, uint32_t windowStart, uint32_t windowEnd) {
     const uint8_t segmentCount = dataManager->getSegmentCount();
     if (segmentCount == 0) return;
 
@@ -114,64 +134,62 @@ void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, boo
     const uint16_t raw_data_count = dataManager->getRawDataCount();
     if (raw_data_count < 1) return;
 
-    uint32_t windowEnd = raw_timestamps[raw_data_count - 1];
-    uint32_t windowStart = raw_timestamps[0];
-    uint32_t xMax = windowEnd - dataManager->getRawTimeDelta();
-
-    // Calculate the width of the screen available for the compressed graph
-    if (windowEnd == windowStart) return; // Avoid division by zero
-    float compression_ratio = (float)(xMax - windowStart) / (float)(windowEnd - windowStart);
-    int compressed_width = PLOT_WIDTH * compression_ratio;
+    // The compressed data ends where the raw data logging buffer begins.
+    uint32_t raw_hist_duration = raw_timestamps[raw_data_count - 1] - raw_timestamps[0];
+    uint32_t compressed_data_end_time = raw_timestamps[raw_data_count - 1] - raw_hist_duration;
 
     int16_t last_y = -1;
 
-    // Draw a marker for the boundary between raw and compressed data
-    if (compressed_width < PLOT_WIDTH) {
-         tft.drawFastVLine(PLOT_X_START + compressed_width, PLOT_Y_START, PLOT_HEIGHT, TFT_RED);
+    // Draw marker for boundary between raw and compressed data
+    int boundary_x = mapFloat(compressed_data_end_time, windowStart, windowEnd, PLOT_X_START, PLOT_X_START + PLOT_WIDTH);
+    if (boundary_x >= PLOT_X_START && boundary_x < PLOT_X_START + PLOT_WIDTH) {
+        tft.drawFastVLine(boundary_x, PLOT_Y_START, PLOT_HEIGHT, TFT_GREEN);
     }
 
-    uint32_t t_cursor = xMax;
+    uint32_t t_cursor = compressed_data_end_time;
     int seg_idx = segmentCount - 1;
     int poly_idx = dataManager->getCurrentPolyIndex() -1;
-    if (poly_idx < 0) poly_idx = POLY_COUNT_PER_SEGMENT - 1;
+    if (poly_idx < 0) {
+      poly_idx = POLY_COUNT_PER_SEGMENT - 1;
+      seg_idx--; // Start from the previous segment if the current one is empty
+    }
 
 
-    // Start drawing from the right edge of the compressed area
-    for (int x_screen = PLOT_X_START + compressed_width; x_screen >= PLOT_X_START; --x_screen) {
+    // Iterate backwards through time from the start of the raw data
+    for (int x_screen = boundary_x; x_screen >= PLOT_X_START; --x_screen) {
         if (clear_under) {
             tft.drawFastVLine(x_screen, PLOT_Y_START, PLOT_HEIGHT, TFT_BLACK);
         }
-        uint32_t t_target = mapFloat(x_screen, PLOT_X_START, PLOT_X_START + compressed_width, windowStart, xMax);
 
+        uint32_t t_target = mapFloat(x_screen, PLOT_X_START, PLOT_X_START + PLOT_WIDTH, windowStart, windowEnd);
+
+        // Find the correct polynomial segment for this timestamp
         bool found_poly = false;
-        while(t_target < t_cursor && seg_idx >= 0) {
+        while(seg_idx >= 0) {
+             if (poly_idx < 0) { // Move to the previous segment
+                 seg_idx--;
+                 poly_idx = POLY_COUNT_PER_SEGMENT - 1;
+                 continue;
+             }
              uint32_t poly_delta = segments[seg_idx].timeDeltas[poly_idx];
              if (poly_delta == 0) { // Skip empty polys
                  poly_idx--;
-                 if (poly_idx < 0) {
-                     seg_idx--;
-                     poly_idx = POLY_COUNT_PER_SEGMENT - 1;
-                 }
                  continue;
              }
 
-             if (t_target >= t_cursor - poly_delta) {
+             if (t_target <= t_cursor && t_target >= t_cursor - poly_delta) {
                  found_poly = true;
                  break;
              }
 
              t_cursor -= poly_delta;
-             // Draw boundary line for this polynomial
-             int boundary_x = mapFloat(t_cursor, windowStart, xMax, PLOT_X_START, PLOT_X_START + compressed_width);
-             if(boundary_x >= PLOT_X_START) tft.drawFastVLine(boundary_x, PLOT_Y_START, PLOT_HEIGHT, 0x0821); // Dark blue
+             // Draw boundary line between polynomials
+             int poly_boundary_x = mapFloat(t_cursor, windowStart, windowEnd, PLOT_X_START, PLOT_X_START + PLOT_WIDTH);
+             if (poly_boundary_x >= PLOT_X_START && poly_boundary_x < boundary_x) {
+                 tft.drawFastVLine(poly_boundary_x, PLOT_Y_START, PLOT_HEIGHT, 0x0821); // Dark blue
+             }
 
              poly_idx--;
-             if (poly_idx < 0) {
-                 // Draw boundary line for this segment
-                 if(boundary_x >= PLOT_X_START) tft.drawFastVLine(boundary_x, PLOT_Y_START, PLOT_HEIGHT, TFT_RED);
-                 seg_idx--;
-                 poly_idx = POLY_COUNT_PER_SEGMENT - 1;
-             }
         }
 
         if(found_poly) {
@@ -181,13 +199,15 @@ void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, boo
             int16_t y_screen = mapFloat(y_val, y_min, y_max, PLOT_Y_START + PLOT_HEIGHT -1, PLOT_Y_START);
 
             if (last_y != -1) {
-                tft.drawLine(x_screen, y_screen, x_screen + 1, last_y, color);
+                // Check if x_screen is monotonically decreasing to prevent weird lines
+                if (x_screen < (boundary_x -1))
+                  tft.drawLine(x_screen, y_screen, x_screen + 1, last_y, color);
             } else {
                 tft.drawPixel(x_screen, y_screen, color);
             }
             last_y = y_screen;
         } else {
-            last_y = -1;
+            last_y = -1; // We are out of data for this part of the window
         }
     }
 }

@@ -18,7 +18,8 @@ GraphDataManager::GraphDataManager()
     : raw_data_count(0), raw_time_delta(0), log_buffer_count(0), last_timestamp(0),
       segment_count(0), current_poly_index(0),
       min_temp_value(INFINITY), max_temp_value(-INFINITY),
-      min_humidity_value(INFINITY), max_humidity_value(-INFINITY) {}
+      min_humidity_value(INFINITY), max_humidity_value(-INFINITY),
+      view_mode_(VIEW_MODE_LIVE), window_end_timestamp_(0) {}
 
 void GraphDataManager::begin() {
     // Initialize raw data buffers with NAN
@@ -52,6 +53,10 @@ void GraphDataManager::logData(float tempData, float humidityData, uint32_t curr
     raw_timestamps[raw_data_count] = currentTimestamp;
     raw_data_count++;
     updateMinMax();
+
+    if (view_mode_ == VIEW_MODE_LIVE) {
+        window_end_timestamp_ = currentTimestamp;
+    }
 
     // --- 2. Log data into the compression buffer ---
     if (last_timestamp == 0) last_timestamp = currentTimestamp;
@@ -239,5 +244,51 @@ void GraphDataManager::combinePolynomials(const PolynomialSegment& oldest, const
     // Clear any remaining slots in the recompressed segment
     for (uint16_t i = newPolyIndex; i < POLY_COUNT_PER_SEGMENT; ++i) {
         recompressedSegment.timeDeltas[i] = 0;
+    }
+}
+uint32_t GraphDataManager::getTotalTimeDelta() const {
+    uint32_t total_delta = 0;
+    for (uint8_t i = 0; i < segment_count; ++i) {
+        for (uint16_t j = 0; j < (i == segment_count - 1 ? current_poly_index : POLY_COUNT_PER_SEGMENT); ++j) {
+            total_delta += temp_segment_buffer[i].timeDeltas[j];
+        }
+    }
+    return total_delta;
+}
+
+void GraphDataManager::setViewMode(ViewMode mode) {
+    view_mode_ = mode;
+    if (view_mode_ == VIEW_MODE_LIVE) {
+        // When switching to live, snap the window to the latest data
+        if (raw_data_count > 0) {
+            window_end_timestamp_ = raw_timestamps[raw_data_count - 1];
+        }
+    }
+    // For FULL or PANNING, the timestamp is managed by the panning logic
+}
+
+void GraphDataManager::panLeft() {
+    if (view_mode_ == VIEW_MODE_FULL) {
+      view_mode_ = VIEW_MODE_PANNING;
+    }
+    if (view_mode_ == VIEW_MODE_PANNING) {
+        // Shift the window into the past. Let's use a step of 1/4th of the raw buffer time delta.
+        uint32_t pan_step = (raw_timestamps[raw_data_count-1] - raw_timestamps[0]) / 4;
+        if(pan_step == 0) pan_step = 1000;
+        window_end_timestamp_ -= pan_step;
+    }
+}
+
+void GraphDataManager::panRight() {
+    if (view_mode_ == VIEW_MODE_PANNING) {
+        uint32_t pan_step = (raw_timestamps[raw_data_count-1] - raw_timestamps[0]) / 4;
+        if(pan_step == 0) pan_step = 1000;
+        window_end_timestamp_ += pan_step;
+
+        // Don't pan past the latest available data
+        if (raw_data_count > 0 && window_end_timestamp_ > raw_timestamps[raw_data_count - 1]) {
+            window_end_timestamp_ = raw_timestamps[raw_data_count - 1];
+            view_mode_ = VIEW_MODE_LIVE; // Snap back to live view
+        }
     }
 }

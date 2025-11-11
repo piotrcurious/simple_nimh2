@@ -11,8 +11,8 @@ public:
     void drawGraph(const GraphDataManager* dataManager);
 
 private:
-    void drawCompressedGraph(const GraphDataManager* dataManager, bool isTemp, bool clear_under);
-    void drawRawGraph(const GraphDataManager* dataManager, bool isTemp);
+    void drawCompressedGraph(const GraphDataManager* dataManager, bool isTemp, bool clear_under, uint32_t windowStart, uint32_t windowEnd);
+    void drawRawGraph(const GraphDataManager* dataManager, bool isTemp, uint32_t windowStart, uint32_t windowEnd);
     void drawGridAndAxes(const GraphDataManager* dataManager);
 
     // Helper function to map data values to screen coordinates

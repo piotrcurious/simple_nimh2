@@ -16,6 +16,7 @@ public:
     void begin();
     void render();       // call frequently (non-blocking)
     void gatherData();   // call frequently (non-blocking)
+    GraphDataManager* getGraphDataManager() { return dataManager; }
 
 private:
     // timing (ms)

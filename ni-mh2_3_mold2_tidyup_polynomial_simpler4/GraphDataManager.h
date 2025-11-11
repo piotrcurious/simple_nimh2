@@ -41,6 +41,16 @@ public:
     const PolynomialSegment* getHumiditySegments() const { return humidity_segment_buffer; }
     uint8_t getSegmentCount() const { return segment_count; }
     uint16_t getCurrentPolyIndex() const { return current_poly_index; }
+    uint32_t getTotalTimeDelta() const;
+
+    // --- Public methods for view window control ---
+    enum ViewMode { VIEW_MODE_LIVE, VIEW_MODE_FULL, VIEW_MODE_PANNING };
+    void setViewMode(ViewMode mode);
+    ViewMode getViewMode() const { return view_mode_; }
+    void panLeft();
+    void panRight();
+    uint32_t getWindowEndTime() const { return window_end_timestamp_; }
+
 
 private:
     void processDataBuffer();
@@ -77,6 +87,10 @@ private:
     float max_temp_value;
     float min_humidity_value;
     float max_humidity_value;
+
+    // --- View window state ---
+    ViewMode view_mode_;
+    uint32_t window_end_timestamp_; // The timestamp at the right edge of the graph
 };
 
 #endif // GRAPHDATAMANAGER_H

@@ -7,6 +7,8 @@
 #include "charging.h"
 #include "internal_resistance.h"
 #include "home_screen.h"
+#include "GraphDataManager.h"
+#include "GraphRenderer.h"
 #include <IRremote.h>
 
 #include <vector>
@@ -362,6 +364,25 @@ void handleIRCommand() {
         Serial.println(IrReceiver.decodedIRData.command, HEX);
 
         switch (IrReceiver.decodedIRData.command) {
+            case RemoteKeys::KEY_LEFT:
+                if (currentDisplayState == DISPLAY_STATE_IDLE) {
+                    homeScreen.getGraphDataManager()->panLeft();
+                }
+                break;
+            case RemoteKeys::KEY_RIGHT:
+                if (currentDisplayState == DISPLAY_STATE_IDLE) {
+                    homeScreen.getGraphDataManager()->panRight();
+                }
+                break;
+            case RemoteKeys::KEY_OK:
+                if (currentDisplayState == DISPLAY_STATE_IDLE) {
+                    if (homeScreen.getGraphDataManager()->getViewMode() == GraphDataManager::VIEW_MODE_FULL) {
+                        homeScreen.getGraphDataManager()->setViewMode(GraphDataManager::VIEW_MODE_LIVE);
+                    } else {
+                        homeScreen.getGraphDataManager()->setViewMode(GraphDataManager::VIEW_MODE_FULL);
+                    }
+                }
+                break;
             case RemoteKeys::KEY_PLAY:
                 setAppState(APP_STATE_MEASURING_IR);
                 currentIRState = IR_STATE_START;
@@ -446,6 +467,7 @@ void drawLabelsFromGlobals() {
 void updateDisplay() {
     if (currentDisplayState == DISPLAY_STATE_IDLE) {
         homeScreen.render();
+        // g_graphRenderer.drawGraph(&g_graphDataManager);
         displayTemperatureLabels(temp1_values[PLOT_WIDTH - 1], temp2_values[PLOT_WIDTH - 1], diff_values[PLOT_WIDTH - 1], 0,
                                  voltage_values[PLOT_WIDTH - 1], current_values[PLOT_WIDTH - 1]);
         drawLabelsFromGlobals();
@@ -500,6 +522,7 @@ void gatherData() {
     double temp1 = 0.0, temp2 = 0.0, tempDiff = 0.0;
     float t1_millivolts = 0.0f, voltage = 0.0f, current = 0.0f;
     getThermistorReadings(temp1, temp2, tempDiff, t1_millivolts, voltage, current);
+    // g_graphDataManager.logData(sht4Sensor.getTemperature(), sht4Sensor.getHumidity(), millis());
     //printThermistorSerial(temp1, temp2, tempDiff, t1_millivolts, voltage, current);
     updateTemperatureHistory(temp1, temp2, tempDiff, voltage, current);
 }
@@ -538,7 +561,7 @@ void loop() {
     // --- Periodic actions ---
     if (now - lastDataGatherTime >= PLOT_DATA_UPDATE_INTERVAL) {
         lastDataGatherTime = now;
-        gatherData();
+        // gatherData();
     }
 
     homeScreen.gatherData();
