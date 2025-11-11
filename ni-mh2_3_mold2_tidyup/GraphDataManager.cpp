@@ -118,6 +118,11 @@ void GraphDataManager::processDataBuffer() {
     raw_time_delta = 0;
     log_buffer_count = 0;
 
+    Serial.print("Added polynomial ");
+    Serial.print(current_poly_index);
+    Serial.print(" to segment ");
+    Serial.println(segment_count - 1);
+
     current_poly_index++;
 
     // Check if the current segment is full
@@ -125,6 +130,8 @@ void GraphDataManager::processDataBuffer() {
         current_poly_index = 0;
         if (segment_count < SEGMENT_COUNT) {
             segment_count++; // Add a new segment
+            Serial.print("Created new segment ");
+            Serial.println(segment_count - 1);
             // Initialize the new segment
              for(int i = 0; i < POLY_COUNT_PER_SEGMENT; ++i) {
                 temp_segment_buffer[segment_count - 1].timeDeltas[i] = 0;
@@ -191,6 +198,12 @@ void GraphDataManager::recompressData() {
         temp_segment_buffer[segment_count].timeDeltas[i] = 0;
         humidity_segment_buffer[segment_count].timeDeltas[i] = 0;
     }
+    Serial.print("Recompressed. New segment count: ");
+    Serial.println(segment_count);
+    Serial.print("Poly data size: ");
+    Serial.print(sizeof(temp_segment_buffer) + sizeof(humidity_segment_buffer));
+    Serial.print(" bytes. Raw data size: ");
+    Serial.println(sizeof(raw_temp_history) + sizeof(raw_humidity_history) + sizeof(raw_timestamps));
 }
 
 

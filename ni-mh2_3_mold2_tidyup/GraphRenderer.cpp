@@ -37,16 +37,8 @@ void GraphRenderer::drawGraph(const GraphDataManager* dataManager) {
 }
 
 void GraphRenderer::drawGridAndAxes(const GraphDataManager* dataManager) {
-    // --- Draw Grid ---
-    for (int g = 0; g <= 4; ++g) {
-        int gy = PLOT_Y_START + ((PLOT_HEIGHT * g) / 4);
-        tft.drawFastHLine(PLOT_X_START, gy, PLOT_WIDTH, GRID_COLOR);
-    }
-    for (int gx = PLOT_X_START + PLOT_WIDTH; gx >= PLOT_X_START; gx -= 60) {
-        tft.drawFastVLine(gx, PLOT_Y_START, PLOT_HEIGHT, GRID_COLOR);
-    }
-
-    // --- Draw Axis Labels ---
+    // This function is now responsible only for drawing the Y-axis labels.
+    // The dynamic grid/boundary lines are drawn in drawCompressedGraph.
     tft.setTextSize(1);
     // Left axis (Temperature)
     tft.setTextColor(TEMP_COLOR, TFT_BLACK);
@@ -112,41 +104,69 @@ void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, boo
     int16_t last_y = -1;
 
     // Start drawing from the right edge of the compressed area
+    // First, clear the area under the compressed graph
+    tft.fillRect(PLOT_X_START, PLOT_Y_START, compressed_width, PLOT_HEIGHT, TFT_BLACK);
+
+    // Draw a marker for the boundary between raw and compressed data
+    if (compressed_width < PLOT_WIDTH) {
+         tft.drawFastVLine(PLOT_X_START + compressed_width, PLOT_Y_START, PLOT_HEIGHT, TFT_RED);
+    }
+
+    uint32_t t_cursor = xMax;
+    int seg_idx = segmentCount - 1;
+    int poly_idx = dataManager->getCurrentPolyIndex() -1;
+    if (poly_idx < 0) poly_idx = POLY_COUNT_PER_SEGMENT - 1;
+
+
+    // Start drawing from the right edge of the compressed area
     for (int x_screen = PLOT_X_START + compressed_width; x_screen >= PLOT_X_START; --x_screen) {
-        // Map screen x to a timestamp in the compressed range
         uint32_t t_target = mapFloat(x_screen, PLOT_X_START, PLOT_X_START + compressed_width, windowStart, xMax);
 
-        // Find which polynomial segment this timestamp falls into
-        uint32_t t_cursor = xMax;
-        int seg_idx = segmentCount - 1;
-        int poly_idx = dataManager->getCurrentPolyIndex() -1;
-        if (poly_idx < 0) poly_idx = POLY_COUNT_PER_SEGMENT -1;
+        bool found_poly = false;
+        while(t_target < t_cursor && seg_idx >= 0) {
+             uint32_t poly_delta = segments[seg_idx].timeDeltas[poly_idx];
+             if (poly_delta == 0) { // Skip empty polys
+                 poly_idx--;
+                 if (poly_idx < 0) {
+                     seg_idx--;
+                     poly_idx = POLY_COUNT_PER_SEGMENT - 1;
+                 }
+                 continue;
+             }
 
-        bool found = false;
-        while (seg_idx >= 0) {
-            uint32_t poly_delta = segments[seg_idx].timeDeltas[poly_idx];
-            if (t_target >= t_cursor - poly_delta && t_target <= t_cursor) {
-                // We found the right polynomial
-                double t_norm = (double)(t_target - (t_cursor - poly_delta)) / poly_delta;
-                float y_val = evaluatePolynomial(segments[seg_idx].coefficients[poly_idx], POLY_DEGREE, t_norm);
-                int16_t y_screen = mapFloat(y_val, y_min, y_max, PLOT_Y_START + PLOT_HEIGHT -1, PLOT_Y_START);
+             if (t_target >= t_cursor - poly_delta) {
+                 found_poly = true;
+                 break;
+             }
 
-                if (last_y != -1) {
-                    tft.drawLine(x_screen, y_screen, x_screen + 1, last_y, color);
-                } else {
-                    tft.drawPixel(x_screen, y_screen, color);
-                }
-                last_y = y_screen;
-                found = true;
-                break;
-            }
-            t_cursor -= poly_delta;
-            poly_idx--;
-            if (poly_idx < 0) {
-                seg_idx--;
-                poly_idx = POLY_COUNT_PER_SEGMENT -1;
-            }
+             t_cursor -= poly_delta;
+             // Draw boundary line for this polynomial
+             int boundary_x = mapFloat(t_cursor, windowStart, xMax, PLOT_X_START, PLOT_X_START + compressed_width);
+             if(boundary_x >= PLOT_X_START) tft.drawFastVLine(boundary_x, PLOT_Y_START, PLOT_HEIGHT, 0x0821); // Dark blue
+
+             poly_idx--;
+             if (poly_idx < 0) {
+                 // Draw boundary line for this segment
+                 if(boundary_x >= PLOT_X_START) tft.drawFastVLine(boundary_x, PLOT_Y_START, PLOT_HEIGHT, TFT_RED);
+                 seg_idx--;
+                 poly_idx = POLY_COUNT_PER_SEGMENT - 1;
+             }
         }
-        if(!found) last_y = -1;
+
+        if(found_poly) {
+            uint32_t poly_delta = segments[seg_idx].timeDeltas[poly_idx];
+            double t_norm = (double)(t_target - (t_cursor - poly_delta)) / poly_delta;
+            float y_val = evaluatePolynomial(segments[seg_idx].coefficients[poly_idx], POLY_DEGREE, t_norm);
+            int16_t y_screen = mapFloat(y_val, y_min, y_max, PLOT_Y_START + PLOT_HEIGHT -1, PLOT_Y_START);
+
+            if (last_y != -1) {
+                tft.drawLine(x_screen, y_screen, x_screen + 1, last_y, color);
+            } else {
+                tft.drawPixel(x_screen, y_screen, color);
+            }
+            last_y = y_screen;
+        } else {
+            last_y = -1;
+        }
     }
 }
