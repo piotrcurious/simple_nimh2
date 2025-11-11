@@ -22,39 +22,65 @@ inline float GraphRenderer::mapFloat(float x, float in_min, float in_max, float 
 }
 
 void GraphRenderer::drawGraph(const GraphDataManager* dataManager) {
+    uint32_t windowStart, windowEnd;
+    calculateFullTimeWindow(dataManager, windowStart, windowEnd);
+    if (windowStart == windowEnd) return; // Nothing to draw
+
     // Draw Temperature's compressed graph and clear the area as it draws.
-    drawCompressedGraph(dataManager, true, true);
+    drawCompressedGraph(dataManager, true, true, windowStart, windowEnd);
 
     // Draw the humidity's compressed graph on top, without clearing.
-    drawCompressedGraph(dataManager, false, false);
+    drawCompressedGraph(dataManager, false, false, windowStart, windowEnd);
 
     // --- Hybrid Clearing: Clear the raw data area ---
     const uint32_t* raw_timestamps = dataManager->getRawTimestamps();
     const uint16_t raw_data_count = dataManager->getRawDataCount();
     if (raw_data_count > 0) {
-        uint32_t windowEnd = raw_timestamps[raw_data_count - 1];
-        uint32_t windowStart = raw_timestamps[0];
         uint32_t xMax = windowEnd - dataManager->getRawTimeDelta();
-        if (windowEnd > windowStart) {
-            float compression_ratio = (float)(xMax - windowStart) / (float)(windowEnd - windowStart);
-            int compressed_width = PLOT_WIDTH * compression_ratio;
-            int raw_graph_start_x = PLOT_X_START + compressed_width;
-            int raw_graph_width = PLOT_WIDTH - compressed_width;
-            if (raw_graph_width > 0) {
-                tft.fillRect(raw_graph_start_x, PLOT_Y_START, raw_graph_width, PLOT_HEIGHT, TFT_BLACK);
-            }
+        float compression_ratio = (float)(xMax - windowStart) / (float)(windowEnd - windowStart);
+        int compressed_width = PLOT_WIDTH * compression_ratio;
+        int raw_graph_start_x = PLOT_X_START + compressed_width;
+        int raw_graph_width = PLOT_WIDTH - compressed_width;
+        if (raw_graph_width > 0) {
+            // Shift by +1 to avoid erasing the boundary line
+            tft.fillRect(raw_graph_start_x + 1, PLOT_Y_START, raw_graph_width - 1, PLOT_HEIGHT, TFT_BLACK);
         }
     }
 
     // Overlay both raw graphs on top of the compressed graphs.
-    drawRawGraph(dataManager, true);
-    drawRawGraph(dataManager, false);
+    drawRawGraph(dataManager, true, windowStart, windowEnd);
+    drawRawGraph(dataManager, false, windowStart, windowEnd);
 
     // Draw axis labels last so they are not overwritten.
     drawGridAndAxes(dataManager);
 
     // Redraw border on top
     tft.drawRect(PLOT_X_START - 1, PLOT_Y_START - 1, PLOT_WIDTH + 2, PLOT_HEIGHT + 2, TFT_WHITE);
+}
+
+void GraphRenderer::calculateFullTimeWindow(const GraphDataManager* dataManager, uint32_t& windowStart, uint32_t& windowEnd) {
+    const uint16_t raw_data_count = dataManager->getRawDataCount();
+    if (raw_data_count < 1) {
+        windowStart = 0;
+        windowEnd = 0;
+        return;
+    }
+
+    const uint32_t* raw_timestamps = dataManager->getRawTimestamps();
+    windowEnd = raw_timestamps[raw_data_count - 1];
+
+    uint32_t total_historical_delta = 0;
+    const uint8_t segmentCount = dataManager->getSegmentCount();
+    const PolynomialSegment* segments = dataManager->getTempSegments(); // Can use either temp or humidity
+
+    for (int s = 0; s < segmentCount; ++s) {
+        for (int p = 0; p < POLY_COUNT_PER_SEGMENT; ++p) {
+            total_historical_delta += segments[s].timeDeltas[p];
+        }
+    }
+
+    // The start of the window is the end time minus the total duration of all data
+    windowStart = windowEnd - total_historical_delta - dataManager->getRawTimeDelta();
 }
 
 void GraphRenderer::drawGridAndAxes(const GraphDataManager* dataManager) {
@@ -76,7 +102,7 @@ void GraphRenderer::drawGridAndAxes(const GraphDataManager* dataManager) {
     tft.drawString(String(dataManager->getMinValue(false), 0) + "%", PLOT_X_START + PLOT_WIDTH, PLOT_Y_START + PLOT_HEIGHT -1);
 }
 
-void GraphRenderer::drawRawGraph(const GraphDataManager* dataManager, bool isTemp) {
+void GraphRenderer::drawRawGraph(const GraphDataManager* dataManager, bool isTemp, uint32_t windowStart, uint32_t windowEnd) {
     const uint16_t count = dataManager->getRawDataCount();
     if (count < 2) return;
 
@@ -86,22 +112,19 @@ void GraphRenderer::drawRawGraph(const GraphDataManager* dataManager, bool isTem
     const float y_min = dataManager->getMinValue(isTemp);
     const float y_max = dataManager->getMaxValue(isTemp);
 
-    uint32_t min_ts = timestamps[0];
-    uint32_t max_ts = timestamps[count - 1];
-
     for (uint16_t i = 0; i < count - 1; ++i) {
         if (!isnan(data[i]) && !isnan(data[i+1])) {
-            int16_t x1 = mapFloat(timestamps[i], min_ts, max_ts, PLOT_X_START, PLOT_X_START + PLOT_WIDTH -1);
-            int16_t y1 = mapFloat(data[i], y_min, y_max, PLOT_Y_START + PLOT_HEIGHT -1, PLOT_Y_START);
-            int16_t x2 = mapFloat(timestamps[i+1], min_ts, max_ts, PLOT_X_START, PLOT_X_START + PLOT_WIDTH -1);
-            int16_t y2 = mapFloat(data[i+1], y_min, y_max, PLOT_Y_START + PLOT_HEIGHT -1, PLOT_Y_START);
+            int16_t x1 = mapFloat(timestamps[i], windowStart, windowEnd, PLOT_X_START, PLOT_X_START + PLOT_WIDTH - 1);
+            int16_t y1 = mapFloat(data[i], y_min, y_max, PLOT_Y_START + PLOT_HEIGHT - 1, PLOT_Y_START);
+            int16_t x2 = mapFloat(timestamps[i+1], windowStart, windowEnd, PLOT_X_START, PLOT_X_START + PLOT_WIDTH - 1);
+            int16_t y2 = mapFloat(data[i+1], y_min, y_max, PLOT_Y_START + PLOT_HEIGHT - 1, PLOT_Y_START);
             tft.drawLine(x1, y1, x2, y2, color);
         }
     }
 }
 
 
-void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, bool isTemp, bool clear_under) {
+void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, bool isTemp, bool clear_under, uint32_t windowStart, uint32_t windowEnd) {
     const uint8_t segmentCount = dataManager->getSegmentCount();
     if (segmentCount == 0) return;
 
@@ -110,16 +133,12 @@ void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, boo
     const float y_min = dataManager->getMinValue(isTemp);
     const float y_max = dataManager->getMaxValue(isTemp);
 
-    const uint32_t* raw_timestamps = dataManager->getRawTimestamps();
     const uint16_t raw_data_count = dataManager->getRawDataCount();
     if (raw_data_count < 1) return;
 
-    uint32_t windowEnd = raw_timestamps[raw_data_count - 1];
-    uint32_t windowStart = raw_timestamps[0];
     uint32_t xMax = windowEnd - dataManager->getRawTimeDelta();
 
     // Calculate the width of the screen available for the compressed graph
-    if (windowEnd == windowStart) return; // Avoid division by zero
     float compression_ratio = (float)(xMax - windowStart) / (float)(windowEnd - windowStart);
     int compressed_width = PLOT_WIDTH * compression_ratio;
 
