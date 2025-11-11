@@ -11,7 +11,7 @@ public:
     void drawGraph(const GraphDataManager* dataManager);
 
 private:
-    void drawCompressedGraph(const GraphDataManager* dataManager, bool isTemp);
+    void drawCompressedGraph(const GraphDataManager* dataManager, bool isTemp, bool clear_under);
     void drawRawGraph(const GraphDataManager* dataManager, bool isTemp);
     void drawGridAndAxes(const GraphDataManager* dataManager);
 

@@ -22,14 +22,17 @@ inline float GraphRenderer::mapFloat(float x, float in_min, float in_max, float 
 }
 
 void GraphRenderer::drawGraph(const GraphDataManager* dataManager) {
+    // Draw axis labels first
     drawGridAndAxes(dataManager);
 
-    // Draw Temperature (compressed and raw)
-    drawCompressedGraph(dataManager, true);
-    drawRawGraph(dataManager, true);
+    // Draw Temperature's compressed graph and clear the area as it draws.
+    drawCompressedGraph(dataManager, true, true);
 
-    // Draw Humidity (compressed and raw)
-    drawCompressedGraph(dataManager, false);
+    // Draw the humidity's compressed graph on top, without clearing.
+    drawCompressedGraph(dataManager, false, false);
+
+    // Overlay both raw graphs on top of the compressed graphs.
+    drawRawGraph(dataManager, true);
     drawRawGraph(dataManager, false);
 
     // Redraw border on top
@@ -80,7 +83,7 @@ void GraphRenderer::drawRawGraph(const GraphDataManager* dataManager, bool isTem
 }
 
 
-void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, bool isTemp) {
+void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, bool isTemp, bool clear_under) {
     const uint8_t segmentCount = dataManager->getSegmentCount();
     if (segmentCount == 0) return;
 
@@ -98,14 +101,11 @@ void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, boo
     uint32_t xMax = windowEnd - dataManager->getRawTimeDelta();
 
     // Calculate the width of the screen available for the compressed graph
+    if (windowEnd == windowStart) return; // Avoid division by zero
     float compression_ratio = (float)(xMax - windowStart) / (float)(windowEnd - windowStart);
     int compressed_width = PLOT_WIDTH * compression_ratio;
 
     int16_t last_y = -1;
-
-    // Start drawing from the right edge of the compressed area
-    // First, clear the area under the compressed graph
-    tft.fillRect(PLOT_X_START, PLOT_Y_START, compressed_width, PLOT_HEIGHT, TFT_BLACK);
 
     // Draw a marker for the boundary between raw and compressed data
     if (compressed_width < PLOT_WIDTH) {
@@ -120,6 +120,9 @@ void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, boo
 
     // Start drawing from the right edge of the compressed area
     for (int x_screen = PLOT_X_START + compressed_width; x_screen >= PLOT_X_START; --x_screen) {
+        if (clear_under) {
+            tft.drawFastVLine(x_screen, PLOT_Y_START, PLOT_HEIGHT, TFT_BLACK);
+        }
         uint32_t t_target = mapFloat(x_screen, PLOT_X_START, PLOT_X_START + compressed_width, windowStart, xMax);
 
         bool found_poly = false;
@@ -155,7 +158,7 @@ void GraphRenderer::drawCompressedGraph(const GraphDataManager* dataManager, boo
 
         if(found_poly) {
             uint32_t poly_delta = segments[seg_idx].timeDeltas[poly_idx];
-            double t_norm = (double)(t_target - (t_cursor - poly_delta)) / poly_delta;
+            double t_norm = (poly_delta > 0) ? (double)(t_target - (t_cursor - poly_delta)) / poly_delta : 0;
             float y_val = evaluatePolynomial(segments[seg_idx].coefficients[poly_idx], POLY_DEGREE, t_norm);
             int16_t y_screen = mapFloat(y_val, y_min, y_max, PLOT_Y_START + PLOT_HEIGHT -1, PLOT_Y_START);
 

@@ -43,8 +43,7 @@ void HomeScreen::render() {
     if (now - lastRenderMs < RENDER_INTERVAL_MS) return;
     lastRenderMs = now;
 
-    // clear plotting region and render the graph using the new renderer
-    tft.fillRect(PLOT_X_START, PLOT_Y_START, PLOT_WIDTH, PLOT_HEIGHT, TFT_BLACK);
+    // The renderer now handles clearing the plot area, so no need for fillRect here.
     renderer->drawGraph(dataManager);
     drawLabels();
 }
