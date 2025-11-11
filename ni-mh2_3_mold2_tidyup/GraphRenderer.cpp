@@ -22,18 +22,36 @@ inline float GraphRenderer::mapFloat(float x, float in_min, float in_max, float 
 }
 
 void GraphRenderer::drawGraph(const GraphDataManager* dataManager) {
-    // Draw axis labels first
-    drawGridAndAxes(dataManager);
-
     // Draw Temperature's compressed graph and clear the area as it draws.
     drawCompressedGraph(dataManager, true, true);
 
     // Draw the humidity's compressed graph on top, without clearing.
     drawCompressedGraph(dataManager, false, false);
 
+    // --- Hybrid Clearing: Clear the raw data area ---
+    const uint32_t* raw_timestamps = dataManager->getRawTimestamps();
+    const uint16_t raw_data_count = dataManager->getRawDataCount();
+    if (raw_data_count > 0) {
+        uint32_t windowEnd = raw_timestamps[raw_data_count - 1];
+        uint32_t windowStart = raw_timestamps[0];
+        uint32_t xMax = windowEnd - dataManager->getRawTimeDelta();
+        if (windowEnd > windowStart) {
+            float compression_ratio = (float)(xMax - windowStart) / (float)(windowEnd - windowStart);
+            int compressed_width = PLOT_WIDTH * compression_ratio;
+            int raw_graph_start_x = PLOT_X_START + compressed_width;
+            int raw_graph_width = PLOT_WIDTH - compressed_width;
+            if (raw_graph_width > 0) {
+                tft.fillRect(raw_graph_start_x, PLOT_Y_START, raw_graph_width, PLOT_HEIGHT, TFT_BLACK);
+            }
+        }
+    }
+
     // Overlay both raw graphs on top of the compressed graphs.
     drawRawGraph(dataManager, true);
     drawRawGraph(dataManager, false);
+
+    // Draw axis labels last so they are not overwritten.
+    drawGridAndAxes(dataManager);
 
     // Redraw border on top
     tft.drawRect(PLOT_X_START - 1, PLOT_Y_START - 1, PLOT_WIDTH + 2, PLOT_HEIGHT + 2, TFT_WHITE);
