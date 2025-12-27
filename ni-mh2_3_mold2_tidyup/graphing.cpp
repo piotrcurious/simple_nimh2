@@ -2,7 +2,6 @@
 #include "definitions.h"
 #include <cfloat>
 
-TFT_eSPI tft = TFT_eSPI();
 
 float temp1_values[PLOT_WIDTH];
 float temp2_values[PLOT_WIDTH];
@@ -165,7 +164,7 @@ void plotVoltageData() {
         if (voltage == min_voltage) {
         } else if (voltage == max_voltage) {
         } else {
-            tft.drawFloat(voltage, 2, grid_x - 5, grid_y + 8, 1);
+            tft.printf("%.2f", voltage);
         }
     }
 
@@ -179,8 +178,10 @@ void plotVoltageData() {
 
     tft.setTextColor(GRAPH_COLOR_VOLTAGE);
     tft.setTextSize(1);
-    tft.drawFloat(min_voltage, 2, PLOT_X_START + PLOT_WIDTH - 40, PLOT_Y_START + PLOT_HEIGHT - 15, 1);
-    tft.drawFloat(max_voltage, 2, PLOT_X_START + PLOT_WIDTH - 40, PLOT_Y_START, 1);
+    tft.setCursor(PLOT_X_START + PLOT_WIDTH - 40, PLOT_Y_START + PLOT_HEIGHT - 15);
+    tft.printf("%.2f", min_voltage);
+    tft.setCursor(PLOT_X_START + PLOT_WIDTH - 40, PLOT_Y_START);
+    tft.printf("%.2f", max_voltage);
 }
 
 void plotTemperatureData() {
@@ -826,8 +827,8 @@ void drawChargePlot(bool autoscaleX, bool autoscaleY) {
         uint16_t darkColor = color;
         if (darkeningFactor > 0) { darkColor = darkerColor(color, darkeningFactor); }
 
-        int tw = tft.textWidth(text.c_str(), 1);
-        int th = tft.fontHeight(1);
+        int tw = tft.textWidth(text.c_str());
+        int th = tft.fontHeight();
 
         Label label;
         label.text = text;
