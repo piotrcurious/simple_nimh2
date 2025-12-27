@@ -9,6 +9,8 @@
 #include "home_screen.h"
 #include <IRremote.h>
 
+LGFX tft;
+
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -462,9 +464,8 @@ void updateDisplay() {
 // --- Initialization ---
 void setup() {
     Serial.begin(115200);
-    tft.init();
+    tft.begin();
     tft.setRotation(1);
-    tft.initDMA();
     tft.fillScreen(TFT_BLACK);
 
     IrReceiver.begin(IR_RECEIVE_PIN);
