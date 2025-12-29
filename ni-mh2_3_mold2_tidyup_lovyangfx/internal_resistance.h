@@ -15,8 +15,7 @@ enum IRState {
     IR_STATE_GET_MEASUREMENT,
     IR_STATE_EVALUATE,
     IR_STATE_REMEASURE_OUTLIERS,
-    IR_STATE_FINAL_CALCULATION,
-    IR_STATE_COMPLETE
+    IR_STATE_FINAL_CALCULATION
 };
 
 extern IRState currentIRState;
@@ -25,8 +24,8 @@ void handleGeneratePairs();
 void handleMeasurePairs();
 void handlePairGeneration();
 void handleMeasureLoadedUnloaded();
-void completeResistanceMeasurement();
 void measureInternalResistanceStep();
+void buildCurrentToDutyCycleModel();
 void storeResistanceData(float current, float resistance, float dataArray[MAX_RESISTANCE_POINTS][2], int& count);
 void storeOrAverageResistanceData(float current, float resistance, float data[][2], int& count);
 void bubbleSort(float data[][2], int n);

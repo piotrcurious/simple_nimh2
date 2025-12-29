@@ -45,6 +45,19 @@ std::vector<int> outlier_indices;
 int remeasure_index = 0;
 float remeasure_low_voltage = 0.0f;
 float remeasure_low_current = 0.0f;
+int remeasure_sub_step = 0;
+float target_current = 0.0f;
+int remeasure_low_bound_dc = 0;
+int remeasure_high_bound_dc = 0;
+int remeasure_mid_dc = 0;
+int best_remeasure_dc = 0;
+float min_current_diff_remeasure = 1e9f;
+
+
+// Model for predicting DC from Current
+std::vector<std::pair<float, int>> current_dc_map; // current -> dc
+float model_slope = 0.0f;
+float model_intercept = 0.0f;
 
 // Results storage
 float internalResistanceData[MAX_RESISTANCE_POINTS][2];
@@ -120,7 +133,6 @@ void measureInternalResistanceStep() {
 
         case IR_STATE_REMEASURE_OUTLIERS:
             {
-                // This state re-measures one outlier pair at a time.
                 if (remeasure_index >= outlier_indices.size()) {
                     Serial.println("All outliers re-measured.");
                     currentIRState = IR_STATE_FINAL_CALCULATION;
@@ -129,30 +141,79 @@ void measureInternalResistanceStep() {
 
                 int outlier_pair_index = outlier_indices[remeasure_index];
 
-                switch (measureStep) {
-                    case 0: // Start measurement for the low DC of the pair
+                switch (remeasure_sub_step) {
+                    case 0: // Setup for the re-measurement of a single outlier
                         {
                             Serial.printf("Re-measuring outlier %d/%d (original pair index %d)\n",
                                           remeasure_index + 1, outlier_indices.size(), outlier_pair_index);
-                            int dcLow = dutyCyclePairs[outlier_pair_index].first;
-                            getSingleMeasurement(dcLow, IR_STATE_REMEASURE_OUTLIERS);
-                            measureStep = 1;
+
+                            target_current = internalResistanceDataPairs[outlier_pair_index][0];
+
+                            // Use the model to predict the starting DC
+                            int predicted_dc = round(model_slope * target_current + model_intercept);
+                            predicted_dc = constrain(predicted_dc, minimalDutyCycle, MAX_DUTY_CYCLE);
+
+                            // Set up binary search bounds around the prediction
+                            remeasure_low_bound_dc = max(minimalDutyCycle, predicted_dc - 10);
+                            remeasure_high_bound_dc = min(MAX_DUTY_CYCLE, predicted_dc + 10);
+
+                            best_remeasure_dc = -1;
+                            min_current_diff_remeasure = 1e9f;
+
+                            Serial.printf("  Target current: %.3fA. Model predicts DC %d. Searching in [%d, %d]\n",
+                                          target_current, predicted_dc, remeasure_low_bound_dc, remeasure_high_bound_dc);
+
+                            remeasure_sub_step = 1; // Fall through to start the search
+                        }
+
+                    case 1: // Binary search for the best DC to match target_current
+                        if (remeasure_low_bound_dc <= remeasure_high_bound_dc) {
+                            remeasure_mid_dc = remeasure_low_bound_dc + (remeasure_high_bound_dc - remeasure_low_bound_dc) / 2;
+                            getSingleMeasurement(remeasure_mid_dc, IR_STATE_REMEASURE_OUTLIERS);
+                            remeasure_sub_step = 2; // Wait for measurement
+                        } else {
+                            // Binary search finished, we have the best DC
+                            if (best_remeasure_dc != -1) {
+                                Serial.printf("  Best DC found: %d. Now measuring the pair.\n", best_remeasure_dc);
+                                // Now we have the best high DC, let's re-measure the pair
+                                int dcLow = dutyCyclePairs[outlier_pair_index].first;
+                                getSingleMeasurement(dcLow, IR_STATE_REMEASURE_OUTLIERS);
+                                remeasure_sub_step = 3; // Proceed to measure low side
+                            } else {
+                                Serial.println("  Could not find a suitable DC. Skipping re-measurement.");
+                                remeasure_index++;
+                                remeasure_sub_step = 0;
+                            }
                         }
                         break;
 
-                    case 1: // Store low DC results, start measurement for high DC
+                    case 2: // Process binary search measurement
                         {
-                            remeasure_low_voltage = currentMeasurement.voltage;
-                            remeasure_low_current = currentMeasurement.current;
-                            int dcHigh = dutyCyclePairs[outlier_pair_index].second;
-                            getSingleMeasurement(dcHigh, IR_STATE_REMEASURE_OUTLIERS);
-                            measureStep = 2;
+                            float current_diff = fabs(currentMeasurement.current - target_current);
+                            if (current_diff < min_current_diff_remeasure) {
+                                min_current_diff_remeasure = current_diff;
+                                best_remeasure_dc = currentMeasurement.dutyCycle;
+                            }
+
+                            if (currentMeasurement.current > target_current) {
+                                remeasure_high_bound_dc = currentMeasurement.dutyCycle - 1;
+                            } else {
+                                remeasure_low_bound_dc = currentMeasurement.dutyCycle + 1;
+                            }
+                            remeasure_sub_step = 1; // Go back to searching
                         }
                         break;
 
-                    case 2: // Calculate and update the resistance value
+                    case 3: // Low side of the pair is measured, now measure high side
+                        remeasure_low_voltage = currentMeasurement.voltage;
+                        remeasure_low_current = currentMeasurement.current;
+                        getSingleMeasurement(best_remeasure_dc, IR_STATE_REMEASURE_OUTLIERS);
+                        remeasure_sub_step = 4; // Wait for high side measurement
+                        break;
+
+                    case 4: // High side is measured, calculate and store the new value
                         {
-                            float currentDiff = currentMeasurement.current - remeasure_low_current;
+                           float currentDiff = currentMeasurement.current - remeasure_low_current;
                             if (currentDiff > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
                                 float voltageDiff = remeasure_low_voltage - currentMeasurement.voltage;
                                 float new_internalResistance = voltageDiff / currentDiff;
@@ -160,20 +221,17 @@ void measureInternalResistanceStep() {
                                 Serial.printf("  Original R: %.4f Ohm -> New R: %.4f Ohm\n",
                                               internalResistanceDataPairs[outlier_pair_index][1], fabs(new_internalResistance));
 
-                                // Update the value in the original data array
                                 internalResistanceDataPairs[outlier_pair_index][1] = fabs(new_internalResistance);
-                                // Also update the current, in case it changed slightly
-                                internalResistanceDataPairs[outlier_pair_index][0] = currentMeasurement.current;
+                                internalResistanceDataPairs[outlier_pair_index][0] = currentMeasurement.current; // Update current as well
 
                             } else {
                                 Serial.printf("  Re-measurement for pair %d failed: insufficient current difference (%.3fA)\n",
                                               outlier_pair_index, currentDiff);
-                                // Keep the old value if re-measurement fails
                             }
 
                             // Move to the next outlier
                             remeasure_index++;
-                            measureStep = 0; // Reset for the next outlier
+                            remeasure_sub_step = 0; // Reset for the next outlier
                         }
                         break;
                 }
@@ -259,6 +317,12 @@ void measureInternalResistanceStep() {
                                      currentMeasurement.voltage, currentMeasurement.current);
                 currentMeasurement.dutyCycle = dutyCycle;
                 currentMeasurement.timestamp = millis();
+
+                // Store all measurements to build a model later
+                if (currentMeasurement.current > 0) {
+                    current_dc_map.push_back({currentMeasurement.current, currentMeasurement.dutyCycle});
+                }
+
                 currentIRState = nextIRState;
             }
             break;
@@ -266,6 +330,8 @@ void measureInternalResistanceStep() {
         case IR_STATE_EVALUATE:
             {
                 Serial.println("\n=== Evaluating Measurements for Outliers ===");
+
+                buildCurrentToDutyCycleModel();
 
                 // We will focus on the 'pairs' data as it's generally more reliable
                 if (resistanceDataCountPairs < 4) { // Need enough points to identify outliers
@@ -371,10 +437,6 @@ void measureInternalResistanceStep() {
                 isMeasuringResistance = false;
                 currentIRState = IR_STATE_IDLE;
             }
-            break;
-
-        case IR_STATE_COMPLETE:
-            completeResistanceMeasurement();
             break;
     }
 }
@@ -569,9 +631,35 @@ void handleMeasurePairs() {
     }
 }
 
-void completeResistanceMeasurement() {
-    currentIRState = IR_STATE_FINAL_CALCULATION;
+
+void buildCurrentToDutyCycleModel() {
+    if (current_dc_map.size() < 2) {
+        Serial.println("Not enough data to build Current-to-DC model.");
+        return;
+    }
+
+    float sumX = 0.0f, sumY = 0.0f, sumXY = 0.0f, sumX2 = 0.0f;
+    int n = current_dc_map.size();
+
+    for (const auto& pair : current_dc_map) {
+        float x = pair.first;  // Current
+        float y = pair.second; // Duty Cycle
+        sumX += x;
+        sumY += y;
+        sumXY += x * y;
+        sumX2 += x * x;
+    }
+
+    float denominator = n * sumX2 - sumX * sumX;
+    if (fabs(denominator) > 1e-6f) {
+        model_slope = (n * sumXY - sumX * sumY) / denominator;
+        model_intercept = (sumY - model_slope * sumX) / n;
+        Serial.printf("Built Current-to-DC Model: DC = %.2f * Current + %.2f\n", model_slope, model_intercept);
+    } else {
+        Serial.println("Failed to build Current-to-DC model (singular matrix).");
+    }
 }
+
 
 void bubbleSort(float data[][2], int n) {
     for (int i = 0; i < n - 1; i++) {
