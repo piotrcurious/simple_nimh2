@@ -212,8 +212,21 @@ enum FindPhase {
     FIND_INIT_HIGHDC,
     FIND_BINARY_PREPARE,
     FIND_BINARY_WAIT,
+    RE_EVAL_START,
+    RE_EVAL_DETECT_OUTLIERS,
+    RE_EVAL_CORRECTIVE_MEASUREMENT_PREPARE,
+    RE_EVAL_CORRECTIVE_MEASUREMENT_WAIT,
+    RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE,
+    RE_EVAL_EXPLORATORY_MEASUREMENT_WAIT,
+    RE_EVAL_FINISH,
     FIND_FINAL_WAIT,
     FIND_COMPLETE
+};
+
+struct OutlierInfo {
+    int original_index;
+    float current;
+    float resistance;
 };
 
 struct FindOptManager {
@@ -228,6 +241,9 @@ struct FindOptManager {
     std::vector<MHElectrodeData> cache;
     FindPhase phase = FIND_IDLE;
     bool isReevaluation = false;
+    std::vector<OutlierInfo> outliers;
+    int outlier_measurement_index = 0;
+    int exploratory_measurement_phase = 0; // 0 for low, 1 for high
 };
 
 enum MeasState {
