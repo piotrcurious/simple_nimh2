@@ -9,6 +9,7 @@ extern float estimateCurrent(int dutyCycle);
 extern AppState currentAppState;
 extern float model_slope;
 extern float model_intercept;
+void measureInternalResistanceStep();
 
 uint32_t chargingStartTime = 0;
 ChargingState chargingState = CHARGE_IDLE;
@@ -385,16 +386,14 @@ bool findOptimalChargingDutyCycleStepAsync() {
         if (findOpt.exploration_step == 0) {
             int explore_dc_low = max(MIN_CHARGE_DUTY_CYCLE, findOpt.optimalDC - EXPLORATORY_DC_OFFSET);
             startMHElectrodeMeasurement(explore_dc_low, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
-            findOpt.exploration_step = 1;
+            findOpt.phase = FIND_EXPLORE_WAIT;
             Serial.printf("FindOpt: starting low exploratory measurement at DC %d\n", explore_dc_low);
         } else if (findOpt.exploration_step == 1) {
-            // Low exploration measurement is done, now do high
             int explore_dc_high = min(findOpt.maxDC, findOpt.optimalDC + EXPLORATORY_DC_OFFSET);
             startMHElectrodeMeasurement(explore_dc_high, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
-            findOpt.exploration_step = 2;
+            findOpt.phase = FIND_EXPLORE_WAIT;
             Serial.printf("FindOpt: starting high exploratory measurement at DC %d\n", explore_dc_high);
-        } else {
-            // Both exploratory measurements are done, now proceed to finalization
+        } else { // Both exploratory measurements are done, now proceed to finalization
             distribute_error(internalResistanceData, resistanceDataCount, 0.05f, 1.05f);
             distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, 0.05f, 1.05f);
 
@@ -423,13 +422,23 @@ bool findOptimalChargingDutyCycleStepAsync() {
             startMHElectrodeMeasurement(finalDC, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
             findOpt.phase = FIND_FINAL_WAIT;
             Serial.printf("FindOpt finishing: scheduling final measurement at %d\n", finalDC);
-            return true;
         }
+        return true;
+    }
 
-        int midDC = (findOpt.lowDC + findOpt.highDC) / 2;
-        startMHElectrodeMeasurement(midDC, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
-        findOpt.phase = FIND_BINARY_WAIT;
-        Serial.printf("FindOpt: requested mid measurement DC=%d (low=%d high=%d)\n", midDC, findOpt.lowDC, findOpt.highDC);
+    if (findOpt.phase == FIND_EXPLORE_WAIT) {
+        if (meas.resultReady) {
+            MHElectrodeData data;
+            if (fetchMeasurementResult(data)) {
+                // Process the result of the exploratory measurement
+                if ((int)findOpt.cache.size() >= MAX_RESISTANCE_POINTS) findOpt.cache.erase(findOpt.cache.begin());
+                findOpt.cache.push_back(data);
+
+                // Now that the measurement is done, increment the step and go back to the explore phase
+                findOpt.exploration_step++;
+                findOpt.phase = FIND_EXPLORE;
+            }
+        }
         return true;
     }
 
@@ -866,6 +875,7 @@ bool chargeBattery() {
         }
 
         case CHARGE_WAIT_IR: {
+            measureInternalResistanceStep(); // Drive the IR state machine
             if (!isInternalResistanceMeasurementActive()) {
                 Serial.println("Internal resistance measurement complete. Proceeding with duty cycle re-evaluation...");
 
