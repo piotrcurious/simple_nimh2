@@ -248,7 +248,6 @@ struct FindOptManager {
 
 enum RemeasurePhase {
     REMEASURE_IDLE,
-    REMEASURE_START,
     REMEASURE_BINARY_SEARCH_PREPARE,
     REMEASURE_BINARY_SEARCH_WAIT,
     REMEASURE_COMPLETE
@@ -367,6 +366,7 @@ extern double THERMISTOR_1_OFFSET;
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
 void buildCurrentModel(bool warmStart);
 float estimateCurrent(int dutyCycle);
+int estimateDutyCycleForCurrent(float targetCurrent);
 MeasurementData takeMeasurement(int dc, uint32_t stabilization_delay);
 void processThermistorData(const MeasurementData& data, const String& measurementType);
 inline unsigned long unmanagedCastUL(unsigned long v){ return v; }

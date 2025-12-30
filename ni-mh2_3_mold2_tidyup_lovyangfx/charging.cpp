@@ -676,8 +676,14 @@ void startRemeasure(float targetCurrent) {
     remeasure = RemeasureManager();
     remeasure.active = true;
     remeasure.targetCurrent = targetCurrent;
-    remeasure.phase = REMEASURE_START;
-    Serial.printf("Remeasure started for target current %.3fA\n", targetCurrent);
+
+    int predicted_dc = estimateDutyCycleForCurrent(targetCurrent);
+    remeasure.lowDC = max(MIN_CHARGE_DUTY_CYCLE, predicted_dc - 20);
+    remeasure.highDC = min(MAX_CHARGE_DUTY_CYCLE, predicted_dc + 20);
+
+    remeasure.phase = REMEASURE_BINARY_SEARCH_PREPARE;
+    Serial.printf("Remeasure started for target current %.3fA with warm start DC=%d (range %d-%d)\n",
+                  targetCurrent, predicted_dc, remeasure.lowDC, remeasure.highDC);
 }
 
 bool remeasureStep() {
@@ -686,12 +692,6 @@ bool remeasureStep() {
     measurementStep(); // Process any ongoing measurement
 
     switch (remeasure.phase) {
-        case REMEASURE_START: {
-            int initial_dc = estimateCurrent(remeasure.targetCurrent);
-            startMHElectrodeMeasurement(initial_dc, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
-            remeasure.phase = REMEASURE_BINARY_SEARCH_WAIT;
-            return true;
-        }
         case REMEASURE_BINARY_SEARCH_PREPARE: {
             if (remeasure.highDC - remeasure.lowDC <= CHARGE_CURRENT_STEP * 2) {
                 remeasure.phase = REMEASURE_COMPLETE;
