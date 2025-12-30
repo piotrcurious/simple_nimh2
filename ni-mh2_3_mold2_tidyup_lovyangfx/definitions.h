@@ -246,6 +246,22 @@ struct FindOptManager {
     int exploratory_measurement_phase = 0; // 0 for low, 1 for high
 };
 
+enum RemeasurePhase {
+    REMEASURE_IDLE,
+    REMEASURE_START,
+    REMEASURE_BINARY_SEARCH_PREPARE,
+    REMEASURE_BINARY_SEARCH_WAIT,
+    REMEASURE_COMPLETE
+};
+
+struct RemeasureManager {
+    bool active = false;
+    float targetCurrent = 0.0f;
+    int lowDC = MIN_CHARGE_DUTY_CYCLE;
+    int highDC = MAX_CHARGE_DUTY_CYCLE;
+    RemeasurePhase phase = REMEASURE_IDLE;
+};
+
 enum MeasState {
     MEAS_IDLE,
     MEAS_STOPLOAD_WAIT,
@@ -299,6 +315,7 @@ extern ThermistorSensor thermistorSensor;
 extern CurrentModel currentModel;
 extern AsyncMeasure meas;
 extern FindOptManager findOpt;
+extern RemeasureManager remeasure;
 
 extern float temp1_values[PLOT_WIDTH];
 extern float temp2_values[PLOT_WIDTH];
@@ -384,6 +401,8 @@ void abortMeasurement();
 void startFindOptimalManagerAsync(int maxChargeDutyCycle, int suggestedStartDutyCycle, bool isReeval);
 bool findOptimalChargingDutyCycleStepAsync();
 float estimateTempDiff(float voltageUnderLoad, float voltageNoLoad, float current, float internalResistanceParam, float ambientTempC, uint32_t currentTime, uint32_t lastChargeEvaluationTime, float BatteryTempC, float cellMassKg, float specificHeat, float area, float convectiveH, float emissivity);
+void startRemeasure(float targetCurrent);
+bool remeasureStep();
 
 
 #endif // DEFINITIONS_H
