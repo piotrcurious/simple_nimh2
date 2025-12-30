@@ -87,10 +87,6 @@ const int MIN_DUTY_CYCLE_ADJUSTMENT_STEP = 5;
 const float MIN_CURRENT_DIFFERENCE_FOR_PAIR = 0.02f;
 const float MIN_VALID_RESISTANCE = 0.0f;
 const int MAX_RESISTANCE_POINTS = 100;
-const float OUTLIER_THRESHOLD_STD_DEV = 2.0f;
-const float WARM_START_TARGET_CURRENT = 0.150f;
-const int WARM_START_DC_SEARCH_RANGE = 10;
-const int EXPLORATORY_DC_OFFSET = 15;
 
 // Plotting parameters
 #define PLOT_WIDTH          320
@@ -207,7 +203,6 @@ struct MHElectrodeData {
 enum ChargingState {
     CHARGE_IDLE = 0,
     CHARGE_FIND_OPT,
-    CHARGE_WAIT_IR,
     CHARGE_MONITOR,
     CHARGE_STOPPED
 };
@@ -217,8 +212,6 @@ enum FindPhase {
     FIND_INIT_HIGHDC,
     FIND_BINARY_PREPARE,
     FIND_BINARY_WAIT,
-    FIND_EXPLORE,
-    FIND_EXPLORE_WAIT,
     FIND_FINAL_WAIT,
     FIND_COMPLETE
 };
@@ -235,20 +228,6 @@ struct FindOptManager {
     std::vector<MHElectrodeData> cache;
     FindPhase phase = FIND_IDLE;
     bool isReevaluation = false;
-    int exploration_step = 0;
-};
-
-struct RemeasureManager {
-    int remeasure_index = 0;
-    float remeasure_low_voltage = 0.0f;
-    float remeasure_low_current = 0.0f;
-    int remeasure_sub_step = 0;
-    float target_current = 0.0f;
-    int remeasure_low_bound_dc = 0;
-    int remeasure_high_bound_dc = 0;
-    int remeasure_mid_dc = 0;
-    int best_remeasure_dc = 0;
-    float min_current_diff_remeasure = 1e9f;
 };
 
 enum MeasState {

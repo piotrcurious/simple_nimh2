@@ -41,14 +41,6 @@ std::vector<float> voltagesLoaded;
 std::vector<float> currentsLoaded;
 std::vector<float> ir_dutyCycles;
 std::vector<float> consecutiveInternalResistances;
-std::vector<int> outlier_indices;
-
-RemeasureManager remeasure;
-
-// Model for predicting DC from Current
-std::vector<std::pair<float, int>> current_dc_map; // current -> dc
-float model_slope = 0.0f;
-float model_intercept = 0.0f;
 
 // Results storage
 float internalResistanceData[MAX_RESISTANCE_POINTS][2];
@@ -100,16 +92,6 @@ void resetMeasurementState() {
     minCurrentDifference = 0.0f;
 }
 
-void startInternalResistanceMeasurement() {
-    if (currentIRState == IR_STATE_IDLE) {
-        currentIRState = IR_STATE_START;
-    }
-}
-
-bool isInternalResistanceMeasurementActive() {
-    return currentIRState != IR_STATE_IDLE;
-}
-
 void measureInternalResistanceStep() {
     unsigned long now = millis();
 
@@ -129,113 +111,6 @@ void measureInternalResistanceStep() {
         case IR_STATE_STOP_LOAD_WAIT:
             if (now - irStateChangeTime >= UNLOADED_VOLTAGE_DELAY_MS) {
                 currentIRState = IR_STATE_GET_UNLOADED_VOLTAGE;
-            }
-            break;
-
-        case IR_STATE_REMEASURE_OUTLIERS:
-            {
-                if (remeasure.remeasure_index >= outlier_indices.size()) {
-                    Serial.println("All outliers re-measured.");
-                    currentIRState = IR_STATE_FINAL_CALCULATION;
-                    break;
-                }
-
-                int outlier_pair_index = outlier_indices[remeasure.remeasure_index];
-
-                switch (remeasure.remeasure_sub_step) {
-                    case 0: // Setup for the re-measurement of a single outlier
-                        {
-                            Serial.printf("Re-measuring outlier %d/%d (original pair index %d)\n",
-                                          remeasure.remeasure_index + 1, outlier_indices.size(), outlier_pair_index);
-
-                            remeasure.target_current = internalResistanceDataPairs[outlier_pair_index][0];
-
-                            // Use the model to predict the starting DC
-                            int predicted_dc = round(model_slope * remeasure.target_current + model_intercept);
-                            predicted_dc = constrain(predicted_dc, minimalDutyCycle, MAX_DUTY_CYCLE);
-
-                            // Set up binary search bounds around the prediction
-                            remeasure.remeasure_low_bound_dc = max(minimalDutyCycle, predicted_dc - WARM_START_DC_SEARCH_RANGE);
-                            remeasure.remeasure_high_bound_dc = min(MAX_DUTY_CYCLE, predicted_dc + WARM_START_DC_SEARCH_RANGE);
-
-                            remeasure.best_remeasure_dc = -1;
-                            remeasure.min_current_diff_remeasure = 1e9f;
-
-                            Serial.printf("  Target current: %.3fA. Model predicts DC %d. Searching in [%d, %d]\n",
-                                          remeasure.target_current, predicted_dc, remeasure.remeasure_low_bound_dc, remeasure.remeasure_high_bound_dc);
-
-                            remeasure.remeasure_sub_step = 1; // Fall through to start the search
-                        }
-
-                    case 1: // Binary search for the best DC to match target_current
-                        if (remeasure.remeasure_low_bound_dc <= remeasure.remeasure_high_bound_dc) {
-                            remeasure.remeasure_mid_dc = remeasure.remeasure_low_bound_dc + (remeasure.remeasure_high_bound_dc - remeasure.remeasure_low_bound_dc) / 2;
-                            getSingleMeasurement(remeasure.remeasure_mid_dc, IR_STATE_REMEASURE_OUTLIERS);
-                            remeasure.remeasure_sub_step = 2; // Wait for measurement
-                        } else {
-                            // Binary search finished, we have the best DC
-                            if (remeasure.best_remeasure_dc != -1) {
-                                Serial.printf("  Best DC found: %d. Now measuring the pair.\n", remeasure.best_remeasure_dc);
-                                // Now we have the best high DC, let's re-measure the pair
-                                int dcLow = dutyCyclePairs[outlier_pair_index].first;
-                                getSingleMeasurement(dcLow, IR_STATE_REMEASURE_OUTLIERS);
-                                remeasure.remeasure_sub_step = 3; // Proceed to measure low side
-                            } else {
-                                Serial.println("  Could not find a suitable DC. Skipping re-measurement.");
-                                remeasure.remeasure_index++;
-                                remeasure.remeasure_sub_step = 0;
-                            }
-                        }
-                        break;
-
-                    case 2: // Process binary search measurement
-                        {
-                            float current_diff = fabs(currentMeasurement.current - remeasure.target_current);
-                            if (current_diff < remeasure.min_current_diff_remeasure) {
-                                remeasure.min_current_diff_remeasure = current_diff;
-                                remeasure.best_remeasure_dc = currentMeasurement.dutyCycle;
-                            }
-
-                            if (currentMeasurement.current > remeasure.target_current) {
-                                remeasure.remeasure_high_bound_dc = currentMeasurement.dutyCycle - 1;
-                            } else {
-                                remeasure.remeasure_low_bound_dc = currentMeasurement.dutyCycle + 1;
-                            }
-                            remeasure.remeasure_sub_step = 1; // Go back to searching
-                        }
-                        break;
-
-                    case 3: // Low side of the pair is measured, now measure high side
-                        remeasure.remeasure_low_voltage = currentMeasurement.voltage;
-                        remeasure.remeasure_low_current = currentMeasurement.current;
-                        getSingleMeasurement(remeasure.best_remeasure_dc, IR_STATE_REMEASURE_OUTLIERS);
-                        remeasure.remeasure_sub_step = 4; // Wait for high side measurement
-                        break;
-
-                    case 4: // High side is measured, calculate and store the new value
-                        {
-                           float currentDiff = currentMeasurement.current - remeasure.remeasure_low_current;
-                            if (currentDiff > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
-                                float voltageDiff = remeasure.remeasure_low_voltage - currentMeasurement.voltage;
-                                float new_internalResistance = voltageDiff / currentDiff;
-
-                                Serial.printf("  Original R: %.4f Ohm -> New R: %.4f Ohm\n",
-                                              internalResistanceDataPairs[outlier_pair_index][1], fabs(new_internalResistance));
-
-                                internalResistanceDataPairs[outlier_pair_index][1] = fabs(new_internalResistance);
-                                internalResistanceDataPairs[outlier_pair_index][0] = currentMeasurement.current; // Update current as well
-
-                            } else {
-                                Serial.printf("  Re-measurement for pair %d failed: insufficient current difference (%.3fA)\n",
-                                              outlier_pair_index, currentDiff);
-                            }
-
-                            // Move to the next outlier
-                            remeasure.remeasure_index++;
-                            remeasure.remeasure_sub_step = 0; // Reset for the next outlier
-                        }
-                        break;
-                }
             }
             break;
 
@@ -318,124 +193,12 @@ void measureInternalResistanceStep() {
                                      currentMeasurement.voltage, currentMeasurement.current);
                 currentMeasurement.dutyCycle = dutyCycle;
                 currentMeasurement.timestamp = millis();
-
-                // Store all measurements to build a model later
-                if (currentMeasurement.current > 0) {
-                    current_dc_map.push_back({currentMeasurement.current, currentMeasurement.dutyCycle});
-                }
-
                 currentIRState = nextIRState;
             }
             break;
 
-        case IR_STATE_EVALUATE:
-            {
-                Serial.println("\n=== Evaluating Measurements for Outliers ===");
-
-                buildCurrentToDutyCycleModel();
-
-                // We will focus on the 'pairs' data as it's generally more reliable
-                if (resistanceDataCountPairs < 4) { // Need enough points to identify outliers
-                    Serial.println("Not enough data points to evaluate for outliers. Finalizing.");
-                    currentIRState = IR_STATE_FINAL_CALCULATION;
-                    break;
-                }
-
-                // Step 1: Perform an initial linear regression
-                float initial_slope, initial_intercept;
-                if (!performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, initial_slope, initial_intercept)) {
-                    Serial.println("Initial regression failed. Cannot evaluate outliers. Finalizing.");
-                    currentIRState = IR_STATE_FINAL_CALCULATION;
-                    break;
-                }
-                Serial.printf("Initial Regression (Pairs): Slope=%.4f, Intercept=%.4f\n", initial_slope, initial_intercept);
-
-
-                // Step 2: Calculate residuals
-                std::vector<float> residuals;
-                for (int i = 0; i < resistanceDataCountPairs; ++i) {
-                    float current = internalResistanceDataPairs[i][0];
-                    float measured_resistance = internalResistanceDataPairs[i][1];
-                    float predicted_resistance = initial_slope * current + initial_intercept;
-                    residuals.push_back(measured_resistance - predicted_resistance);
-                }
-
-                // Step 3: Calculate the standard deviation of the residuals
-                float mean_residual = 0.0f;
-                for (float r : residuals) {
-                    mean_residual += r;
-                }
-                mean_residual /= residuals.size();
-
-                float sum_sq_diff = 0.0f;
-                for (float r : residuals) {
-                    sum_sq_diff += (r - mean_residual) * (r - mean_residual);
-                }
-                float std_dev_residuals = sqrt(sum_sq_diff / residuals.size());
-                Serial.printf("Residuals Stats: Mean=%.4f, StdDev=%.4f\n", mean_residual, std_dev_residuals);
-
-                // Step 4: Identify outliers
-                outlier_indices.clear();
-                float threshold = OUTLIER_THRESHOLD_STD_DEV * std_dev_residuals;
-
-                for (int i = 0; i < resistanceDataCountPairs; ++i) {
-                    if (fabs(residuals[i] - mean_residual) > threshold) {
-                        outlier_indices.push_back(i);
-                    }
-                }
-
-                // Step 5: Transition to the next state
-                if (!outlier_indices.empty()) {
-                    Serial.printf("Found %d outliers to re-measure:\n", outlier_indices.size());
-                    for (int index : outlier_indices) {
-                         Serial.printf(" - Index %d (I=%.3fA, R=%.4f Ohm)\n", index, internalResistanceDataPairs[index][0], internalResistanceDataPairs[index][1]);
-                    }
-                    remeasure = RemeasureManager(); // Reset the remeasure state
-                    currentIRState = IR_STATE_REMEASURE_OUTLIERS;
-                } else {
-                    Serial.println("No significant outliers found. Proceeding to final calculation.");
-                    currentIRState = IR_STATE_FINAL_CALCULATION;
-                }
-            }
-            break;
-
-        case IR_STATE_FINAL_CALCULATION:
-            {
-                Serial.println("\n=== Final Calculation ===");
-
-                // Sort the data again in case re-measured points shifted the current order
-                bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
-
-                // Perform final regression on loaded/unloaded data
-                if (resistanceDataCount >= 2) {
-                    if (performLinearRegression(internalResistanceData, resistanceDataCount,
-                                                regressedInternalResistanceSlope,
-                                                regressedInternalResistanceIntercept)) {
-                        Serial.printf("Final Regressed IR (Loaded/Unloaded): Slope=%.4f, Intercept=%.4f\n",
-                                     regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
-                    }
-                } else {
-                    Serial.println("Insufficient data for final L/UL regression");
-                }
-
-                // Perform final regression on paired data
-                if (resistanceDataCountPairs >= 2) {
-                    if (performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs,
-                                                regressedInternalResistancePairsSlope,
-                                                regressedInternalResistancePairsIntercept)) {
-                        Serial.printf("Final Regressed IR (Pairs): Slope=%.4f, Intercept=%.4f\n",
-                                     regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
-                    }
-                } else {
-                    Serial.println("Insufficient data for final pairs regression");
-                }
-
-                Serial.printf("\nCollected %d L/UL points, %d pair points\n",
-                             resistanceDataCount, resistanceDataCountPairs);
-
-                isMeasuringResistance = false;
-                currentIRState = IR_STATE_IDLE;
-            }
+        case IR_STATE_COMPLETE:
+            completeResistanceMeasurement();
             break;
     }
 }
@@ -583,7 +346,7 @@ void handleMeasureLoadedUnloaded() {
 
 void handleMeasurePairs() {
     if (pairIndex >= dutyCyclePairs.size()) {
-        currentIRState = IR_STATE_EVALUATE;
+        currentIRState = IR_STATE_COMPLETE;
         Serial.println("Pair measurements complete");
         return;
     }
@@ -630,35 +393,58 @@ void handleMeasurePairs() {
     }
 }
 
+void completeResistanceMeasurement() {
+    Serial.println("\n=== Measurement Complete ===");
 
-void buildCurrentToDutyCycleModel() {
-    if (current_dc_map.size() < 2) {
-        Serial.println("Not enough data to build Current-to-DC model.");
-        return;
-    }
+    // Sort data by current
+    bubbleSort(internalResistanceData, resistanceDataCount);
+    bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
 
-    float sumX = 0.0f, sumY = 0.0f, sumXY = 0.0f, sumX2 = 0.0f;
-    int n = current_dc_map.size();
+    // Derive spacing_threshold from overall span or mean spacing:
+    auto compute_spacing_threshold = [](float data[][2], int n) -> float {
+        if (n < 2) return 0.05f;
+        // use typical spacing:
+        float minX = data[0][0], maxX = data[n-1][0];
+        float avgSpacing = (maxX - minX) / max(1, n-1);
+        return max(0.02f, avgSpacing * 1.5f); // tune multiplier
+    };
 
-    for (const auto& pair : current_dc_map) {
-        float x = pair.first;  // Current
-        float y = pair.second; // Duty Cycle
-        sumX += x;
-        sumY += y;
-        sumXY += x * y;
-        sumX2 += x * x;
-    }
+    float spacing_thresh = compute_spacing_threshold(internalResistanceData, resistanceDataCount);
+    distribute_error(internalResistanceData, resistanceDataCount, spacing_thresh, 1.5f);
 
-    float denominator = n * sumX2 - sumX * sumX;
-    if (fabs(denominator) > 1e-6f) {
-        model_slope = (n * sumXY - sumX * sumY) / denominator;
-        model_intercept = (sumY - model_slope * sumX) / n;
-        Serial.printf("Built Current-to-DC Model: DC = %.2f * Current + %.2f\n", model_slope, model_intercept);
+    float spacing_thresh_pairs = compute_spacing_threshold(internalResistanceDataPairs, resistanceDataCountPairs);
+    distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, spacing_thresh_pairs, 1.5f);
+
+    // Perform regression on loaded/unloaded data
+    if (resistanceDataCount >= 2) {
+        if (performLinearRegression(internalResistanceData, resistanceDataCount,
+                                    regressedInternalResistanceSlope,
+                                    regressedInternalResistanceIntercept)) {
+            Serial.printf("Regressed IR (Loaded/Unloaded): Slope=%.4f, Intercept=%.4f\n",
+                         regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
+        }
     } else {
-        Serial.println("Failed to build Current-to-DC model (singular matrix).");
+        Serial.println("Insufficient data for L/UL regression");
     }
-}
 
+    // Perform regression on paired data
+    if (resistanceDataCountPairs >= 2) {
+        if (performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs,
+                                    regressedInternalResistancePairsSlope,
+                                    regressedInternalResistancePairsIntercept)) {
+            Serial.printf("Regressed IR (Pairs): Slope=%.4f, Intercept=%.4f\n",
+                         regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
+        }
+    } else {
+        Serial.println("Insufficient data for pairs regression");
+    }
+
+    Serial.printf("\nCollected %d L/UL points, %d pair points\n",
+                 resistanceDataCount, resistanceDataCountPairs);
+
+    isMeasuringResistance = false;
+    currentIRState = IR_STATE_IDLE;
+}
 
 void bubbleSort(float data[][2], int n) {
     for (int i = 0; i < n - 1; i++) {
