@@ -20,6 +20,9 @@ enum IRState {
 
 extern IRState currentIRState;
 
+void startInternalResistanceMeasurement();
+bool isInternalResistanceMeasurementActive();
+
 void handleGeneratePairs();
 void handleMeasurePairs();
 void handlePairGeneration();

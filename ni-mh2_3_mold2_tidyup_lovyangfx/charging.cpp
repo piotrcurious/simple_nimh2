@@ -1,11 +1,14 @@
 #include "charging.h"
 #include "definitions.h"
 #include "logging.h"
+#include "internal_resistance.h"
 
 extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
 //extern void processThermistorData(const MeasurementData& data, const String& measurementType);
 extern float estimateCurrent(int dutyCycle);
 extern AppState currentAppState;
+extern float model_slope;
+extern float model_intercept;
 
 uint32_t chargingStartTime = 0;
 ChargingState chargingState = CHARGE_IDLE;
@@ -309,8 +312,19 @@ void startFindOptimalManagerAsync(int maxChargeDutyCycle, int suggestedStartDuty
     findOpt = FindOptManager();
     findOpt.active = true;
     findOpt.maxDC = (maxChargeDutyCycle < MIN_CHARGE_DUTY_CYCLE) ? MAX_CHARGE_DUTY_CYCLE : maxChargeDutyCycle;
-    findOpt.lowDC = max(MIN_CHARGE_DUTY_CYCLE, suggestedStartDutyCycle);
-    findOpt.highDC = findOpt.maxDC;
+
+    // Warm start logic
+    if (model_slope != 0.0f) { // Check if the model has been built
+        int predicted_dc = round(model_slope * WARM_START_TARGET_CURRENT + model_intercept);
+        predicted_dc = constrain(predicted_dc, MIN_CHARGE_DUTY_CYCLE, findOpt.maxDC);
+        findOpt.lowDC = max(MIN_CHARGE_DUTY_CYCLE, predicted_dc - WARM_START_DC_SEARCH_RANGE);
+        findOpt.highDC = min(findOpt.maxDC, predicted_dc + WARM_START_DC_SEARCH_RANGE);
+        Serial.printf("Warm Start: Model predicts DC %d for %.3fA. Search range [%d, %d]\n",
+                      predicted_dc, WARM_START_TARGET_CURRENT, findOpt.lowDC, findOpt.highDC);
+    } else {
+        findOpt.lowDC = max(MIN_CHARGE_DUTY_CYCLE, suggestedStartDutyCycle);
+        findOpt.highDC = findOpt.maxDC;
+    }
     findOpt.optimalDC = findOpt.lowDC;
     findOpt.closestVoltageDifference = 1000.0f;
     findOpt.cache.reserve(MAX_RESISTANCE_POINTS);
@@ -355,6 +369,32 @@ bool findOptimalChargingDutyCycleStepAsync() {
 
     if (findOpt.phase == FIND_BINARY_PREPARE) {
         if (findOpt.highDC - findOpt.lowDC <= CHARGE_CURRENT_STEP * 2) {
+            // Binary search is done, now do exploratory measurements
+            findOpt.phase = FIND_EXPLORE;
+            // Fall through to start the first exploratory measurement
+        } else {
+            int midDC = (findOpt.lowDC + findOpt.highDC) / 2;
+            startMHElectrodeMeasurement(midDC, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
+            findOpt.phase = FIND_BINARY_WAIT;
+            Serial.printf("FindOpt: requested mid measurement DC=%d (low=%d high=%d)\n", midDC, findOpt.lowDC, findOpt.highDC);
+            return true;
+        }
+    }
+
+    if (findOpt.phase == FIND_EXPLORE) {
+        if (findOpt.exploration_step == 0) {
+            int explore_dc_low = max(MIN_CHARGE_DUTY_CYCLE, findOpt.optimalDC - EXPLORATORY_DC_OFFSET);
+            startMHElectrodeMeasurement(explore_dc_low, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
+            findOpt.exploration_step = 1;
+            Serial.printf("FindOpt: starting low exploratory measurement at DC %d\n", explore_dc_low);
+        } else if (findOpt.exploration_step == 1) {
+            // Low exploration measurement is done, now do high
+            int explore_dc_high = min(findOpt.maxDC, findOpt.optimalDC + EXPLORATORY_DC_OFFSET);
+            startMHElectrodeMeasurement(explore_dc_high, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
+            findOpt.exploration_step = 2;
+            Serial.printf("FindOpt: starting high exploratory measurement at DC %d\n", explore_dc_high);
+        } else {
+            // Both exploratory measurements are done, now proceed to finalization
             distribute_error(internalResistanceData, resistanceDataCount, 0.05f, 1.05f);
             distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, 0.05f, 1.05f);
 
@@ -817,17 +857,26 @@ bool chargeBattery() {
             }
 
                 if (chargingState == CHARGE_MONITOR) {
-                    Serial.println("Re-evaluating charging parameters (non-blocking)...");
-                    reeval_active = true;
-                    reeval_start_mAh = mAh_charged;
-                    reeval_start_ms = now; //snapshot of energy and time
-
- //                   int suggestedStartDutyCycle = min(lastOptimalDutyCycle + (int)(1.0 * lastOptimalDutyCycle),MAX_CHARGE_DUTY_CYCLE);
-                    int suggestedStartDutyCycle = min( (int)(0.5 * lastOptimalDutyCycle),MAX_CHARGE_DUTY_CYCLE);
-                    int suggestedEndDutyCycle   = max( (int)(2 * lastOptimalDutyCycle),MIN_CHARGE_DUTY_CYCLE);
-                    startFindOptimalManagerAsync(suggestedEndDutyCycle, suggestedStartDutyCycle, true);
-                    chargingState = CHARGE_FIND_OPT;
+                    Serial.println("Starting internal resistance measurement as part of re-evaluation...");
+                    startInternalResistanceMeasurement();
+                    chargingState = CHARGE_WAIT_IR;
                 }
+            }
+            break;
+        }
+
+        case CHARGE_WAIT_IR: {
+            if (!isInternalResistanceMeasurementActive()) {
+                Serial.println("Internal resistance measurement complete. Proceeding with duty cycle re-evaluation...");
+
+                reeval_active = true;
+                reeval_start_mAh = mAh_charged;
+                reeval_start_ms = now;
+
+                int suggestedStartDutyCycle = min( (int)(0.5 * lastOptimalDutyCycle),MAX_CHARGE_DUTY_CYCLE);
+                int suggestedEndDutyCycle   = max( (int)(2 * lastOptimalDutyCycle),MIN_CHARGE_DUTY_CYCLE);
+                startFindOptimalManagerAsync(suggestedEndDutyCycle, suggestedStartDutyCycle, true);
+                chargingState = CHARGE_FIND_OPT;
             }
             break;
         }

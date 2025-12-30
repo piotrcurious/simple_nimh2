@@ -42,17 +42,8 @@ std::vector<float> currentsLoaded;
 std::vector<float> ir_dutyCycles;
 std::vector<float> consecutiveInternalResistances;
 std::vector<int> outlier_indices;
-int remeasure_index = 0;
-float remeasure_low_voltage = 0.0f;
-float remeasure_low_current = 0.0f;
-int remeasure_sub_step = 0;
-float target_current = 0.0f;
-int remeasure_low_bound_dc = 0;
-int remeasure_high_bound_dc = 0;
-int remeasure_mid_dc = 0;
-int best_remeasure_dc = 0;
-float min_current_diff_remeasure = 1e9f;
 
+RemeasureManager remeasure;
 
 // Model for predicting DC from Current
 std::vector<std::pair<float, int>> current_dc_map; // current -> dc
@@ -109,6 +100,16 @@ void resetMeasurementState() {
     minCurrentDifference = 0.0f;
 }
 
+void startInternalResistanceMeasurement() {
+    if (currentIRState == IR_STATE_IDLE) {
+        currentIRState = IR_STATE_START;
+    }
+}
+
+bool isInternalResistanceMeasurementActive() {
+    return currentIRState != IR_STATE_IDLE;
+}
+
 void measureInternalResistanceStep() {
     unsigned long now = millis();
 
@@ -133,89 +134,89 @@ void measureInternalResistanceStep() {
 
         case IR_STATE_REMEASURE_OUTLIERS:
             {
-                if (remeasure_index >= outlier_indices.size()) {
+                if (remeasure.remeasure_index >= outlier_indices.size()) {
                     Serial.println("All outliers re-measured.");
                     currentIRState = IR_STATE_FINAL_CALCULATION;
                     break;
                 }
 
-                int outlier_pair_index = outlier_indices[remeasure_index];
+                int outlier_pair_index = outlier_indices[remeasure.remeasure_index];
 
-                switch (remeasure_sub_step) {
+                switch (remeasure.remeasure_sub_step) {
                     case 0: // Setup for the re-measurement of a single outlier
                         {
                             Serial.printf("Re-measuring outlier %d/%d (original pair index %d)\n",
-                                          remeasure_index + 1, outlier_indices.size(), outlier_pair_index);
+                                          remeasure.remeasure_index + 1, outlier_indices.size(), outlier_pair_index);
 
-                            target_current = internalResistanceDataPairs[outlier_pair_index][0];
+                            remeasure.target_current = internalResistanceDataPairs[outlier_pair_index][0];
 
                             // Use the model to predict the starting DC
-                            int predicted_dc = round(model_slope * target_current + model_intercept);
+                            int predicted_dc = round(model_slope * remeasure.target_current + model_intercept);
                             predicted_dc = constrain(predicted_dc, minimalDutyCycle, MAX_DUTY_CYCLE);
 
                             // Set up binary search bounds around the prediction
-                            remeasure_low_bound_dc = max(minimalDutyCycle, predicted_dc - 10);
-                            remeasure_high_bound_dc = min(MAX_DUTY_CYCLE, predicted_dc + 10);
+                            remeasure.remeasure_low_bound_dc = max(minimalDutyCycle, predicted_dc - WARM_START_DC_SEARCH_RANGE);
+                            remeasure.remeasure_high_bound_dc = min(MAX_DUTY_CYCLE, predicted_dc + WARM_START_DC_SEARCH_RANGE);
 
-                            best_remeasure_dc = -1;
-                            min_current_diff_remeasure = 1e9f;
+                            remeasure.best_remeasure_dc = -1;
+                            remeasure.min_current_diff_remeasure = 1e9f;
 
                             Serial.printf("  Target current: %.3fA. Model predicts DC %d. Searching in [%d, %d]\n",
-                                          target_current, predicted_dc, remeasure_low_bound_dc, remeasure_high_bound_dc);
+                                          remeasure.target_current, predicted_dc, remeasure.remeasure_low_bound_dc, remeasure.remeasure_high_bound_dc);
 
-                            remeasure_sub_step = 1; // Fall through to start the search
+                            remeasure.remeasure_sub_step = 1; // Fall through to start the search
                         }
 
                     case 1: // Binary search for the best DC to match target_current
-                        if (remeasure_low_bound_dc <= remeasure_high_bound_dc) {
-                            remeasure_mid_dc = remeasure_low_bound_dc + (remeasure_high_bound_dc - remeasure_low_bound_dc) / 2;
-                            getSingleMeasurement(remeasure_mid_dc, IR_STATE_REMEASURE_OUTLIERS);
-                            remeasure_sub_step = 2; // Wait for measurement
+                        if (remeasure.remeasure_low_bound_dc <= remeasure.remeasure_high_bound_dc) {
+                            remeasure.remeasure_mid_dc = remeasure.remeasure_low_bound_dc + (remeasure.remeasure_high_bound_dc - remeasure.remeasure_low_bound_dc) / 2;
+                            getSingleMeasurement(remeasure.remeasure_mid_dc, IR_STATE_REMEASURE_OUTLIERS);
+                            remeasure.remeasure_sub_step = 2; // Wait for measurement
                         } else {
                             // Binary search finished, we have the best DC
-                            if (best_remeasure_dc != -1) {
-                                Serial.printf("  Best DC found: %d. Now measuring the pair.\n", best_remeasure_dc);
+                            if (remeasure.best_remeasure_dc != -1) {
+                                Serial.printf("  Best DC found: %d. Now measuring the pair.\n", remeasure.best_remeasure_dc);
                                 // Now we have the best high DC, let's re-measure the pair
                                 int dcLow = dutyCyclePairs[outlier_pair_index].first;
                                 getSingleMeasurement(dcLow, IR_STATE_REMEASURE_OUTLIERS);
-                                remeasure_sub_step = 3; // Proceed to measure low side
+                                remeasure.remeasure_sub_step = 3; // Proceed to measure low side
                             } else {
                                 Serial.println("  Could not find a suitable DC. Skipping re-measurement.");
-                                remeasure_index++;
-                                remeasure_sub_step = 0;
+                                remeasure.remeasure_index++;
+                                remeasure.remeasure_sub_step = 0;
                             }
                         }
                         break;
 
                     case 2: // Process binary search measurement
                         {
-                            float current_diff = fabs(currentMeasurement.current - target_current);
-                            if (current_diff < min_current_diff_remeasure) {
-                                min_current_diff_remeasure = current_diff;
-                                best_remeasure_dc = currentMeasurement.dutyCycle;
+                            float current_diff = fabs(currentMeasurement.current - remeasure.target_current);
+                            if (current_diff < remeasure.min_current_diff_remeasure) {
+                                remeasure.min_current_diff_remeasure = current_diff;
+                                remeasure.best_remeasure_dc = currentMeasurement.dutyCycle;
                             }
 
-                            if (currentMeasurement.current > target_current) {
-                                remeasure_high_bound_dc = currentMeasurement.dutyCycle - 1;
+                            if (currentMeasurement.current > remeasure.target_current) {
+                                remeasure.remeasure_high_bound_dc = currentMeasurement.dutyCycle - 1;
                             } else {
-                                remeasure_low_bound_dc = currentMeasurement.dutyCycle + 1;
+                                remeasure.remeasure_low_bound_dc = currentMeasurement.dutyCycle + 1;
                             }
-                            remeasure_sub_step = 1; // Go back to searching
+                            remeasure.remeasure_sub_step = 1; // Go back to searching
                         }
                         break;
 
                     case 3: // Low side of the pair is measured, now measure high side
-                        remeasure_low_voltage = currentMeasurement.voltage;
-                        remeasure_low_current = currentMeasurement.current;
-                        getSingleMeasurement(best_remeasure_dc, IR_STATE_REMEASURE_OUTLIERS);
-                        remeasure_sub_step = 4; // Wait for high side measurement
+                        remeasure.remeasure_low_voltage = currentMeasurement.voltage;
+                        remeasure.remeasure_low_current = currentMeasurement.current;
+                        getSingleMeasurement(remeasure.best_remeasure_dc, IR_STATE_REMEASURE_OUTLIERS);
+                        remeasure.remeasure_sub_step = 4; // Wait for high side measurement
                         break;
 
                     case 4: // High side is measured, calculate and store the new value
                         {
-                           float currentDiff = currentMeasurement.current - remeasure_low_current;
+                           float currentDiff = currentMeasurement.current - remeasure.remeasure_low_current;
                             if (currentDiff > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
-                                float voltageDiff = remeasure_low_voltage - currentMeasurement.voltage;
+                                float voltageDiff = remeasure.remeasure_low_voltage - currentMeasurement.voltage;
                                 float new_internalResistance = voltageDiff / currentDiff;
 
                                 Serial.printf("  Original R: %.4f Ohm -> New R: %.4f Ohm\n",
@@ -230,8 +231,8 @@ void measureInternalResistanceStep() {
                             }
 
                             // Move to the next outlier
-                            remeasure_index++;
-                            remeasure_sub_step = 0; // Reset for the next outlier
+                            remeasure.remeasure_index++;
+                            remeasure.remeasure_sub_step = 0; // Reset for the next outlier
                         }
                         break;
                 }
@@ -375,7 +376,6 @@ void measureInternalResistanceStep() {
 
                 // Step 4: Identify outliers
                 outlier_indices.clear();
-                const float OUTLIER_THRESHOLD_STD_DEV = 2.0f; // Points > 2 std devs away are outliers
                 float threshold = OUTLIER_THRESHOLD_STD_DEV * std_dev_residuals;
 
                 for (int i = 0; i < resistanceDataCountPairs; ++i) {
@@ -390,8 +390,7 @@ void measureInternalResistanceStep() {
                     for (int index : outlier_indices) {
                          Serial.printf(" - Index %d (I=%.3fA, R=%.4f Ohm)\n", index, internalResistanceDataPairs[index][0], internalResistanceDataPairs[index][1]);
                     }
-                    remeasure_index = 0;
-                    measureStep = 0; // Reset measure step for re-measurement logic
+                    remeasure = RemeasureManager(); // Reset the remeasure state
                     currentIRState = IR_STATE_REMEASURE_OUTLIERS;
                 } else {
                     Serial.println("No significant outliers found. Proceeding to final calculation.");
