@@ -7,7 +7,8 @@
 #include <cstring>
 
 // ADC configuration constants
-static constexpr uint32_t ADC_SAMPLE_RATE_HZ = 48000;
+// Classic ESP32 sample rate must be between 20kHz and 2MHz
+static constexpr uint32_t ADC_SAMPLE_RATE_HZ = 20000;
 static constexpr uint32_t CONV_FRAME_SIZE    = 256;
 static constexpr uint32_t DMA_POOL_BYTES     = 8192;
 
@@ -110,7 +111,9 @@ void setupAdcDma() {
     cfg.conv_frame_size = CONV_FRAME_SIZE;
     ESP_ERROR_CHECK(adc_continuous_new_handle(&cfg, &adc_handle));
 
-    adc_digi_pattern_config_t patterns[ADC_CH_COUNT];
+    // Must be static and initialized as per reference code
+    static adc_digi_pattern_config_t patterns[ADC_CH_COUNT];
+    memset(patterns, 0, sizeof(patterns));
 
     patterns[0].atten = CH_ATTEN[ADC_IDX_THERM1];
     patterns[0].channel = ADC1_CHANNEL_0;
