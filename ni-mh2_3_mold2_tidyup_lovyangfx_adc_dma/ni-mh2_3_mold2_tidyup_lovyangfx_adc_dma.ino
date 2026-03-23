@@ -302,6 +302,8 @@ void task_processAdcDma(void* parameter) {
 
 void task_readThermistor(void* parameter) {
     mAh_last_time = millis();
+    AdcSnapshot last_snapshot_current = {0, 0};
+    AdcSnapshot last_snapshot_voltage = {0, 0};
 
     while (true) {
         const uint32_t current_time = millis();
@@ -313,14 +315,27 @@ void task_readThermistor(void* parameter) {
 
         thermistorSensor.read(sht4Sensor.getTemperature());
 
-        // Read shunt current (now handled by DMA)
-        const double voltageAcrossShunt = (double)analogReadMillivolts(CURRENT_SHUNT_PIN, CURRENT_SHUNT_ATTENUATION, CURRENT_SHUNT_OVERSAMPLING) - CURRENT_SHUNT_PIN_ZERO_OFFSET;
-        current_ma = static_cast<float>(voltageAcrossShunt / CURRENT_SHUNT_RESISTANCE);
+        // Read shunt current using superior oversampling (snapshot)
+        AdcSnapshot new_snapshot_current;
+        getAdcSnapshot(ADC_IDX_CURRENT, new_snapshot_current);
+        uint32_t avg_raw_current = calculateSnapshotAverage(last_snapshot_current, new_snapshot_current);
+        if (avg_raw_current > 0) {
+            float current_mv_raw = snapshotToMillivolts(ADC_IDX_CURRENT, avg_raw_current);
+            const double voltageAcrossShunt = (double)current_mv_raw - CURRENT_SHUNT_PIN_ZERO_OFFSET;
+            current_ma = static_cast<float>(voltageAcrossShunt / CURRENT_SHUNT_RESISTANCE);
+            last_snapshot_current = new_snapshot_current;
+        }
 
-        // Throttled voltage sampling (now handled by DMA)
+        // Throttled voltage sampling using superior oversampling (snapshot)
         if ((current_time - voltage_last_time) > voltage_update_interval) {
-            const double sampledVoltage = (double)analogReadMillivolts(VOLTAGE_READ_PIN, VOLTAGE_ATTENUATION, VOLTAGE_OVERSAMPLING);
-            voltage_mv = static_cast<float>((thermistorSensor.getVCC() * MAIN_VCC_RATIO) - sampledVoltage);
+            AdcSnapshot new_snapshot_voltage;
+            getAdcSnapshot(ADC_IDX_VOLTAGE, new_snapshot_voltage);
+            uint32_t avg_raw_voltage = calculateSnapshotAverage(last_snapshot_voltage, new_snapshot_voltage);
+            if (avg_raw_voltage > 0) {
+                float sampledVoltage = snapshotToMillivolts(ADC_IDX_VOLTAGE, avg_raw_voltage);
+                voltage_mv = static_cast<float>((thermistorSensor.getVCC() * MAIN_VCC_RATIO) - sampledVoltage);
+                last_snapshot_voltage = new_snapshot_voltage;
+            }
             voltage_last_time = current_time;
         }
 

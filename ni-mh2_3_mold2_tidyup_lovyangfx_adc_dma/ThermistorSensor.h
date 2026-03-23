@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include "analog.h"
+#include "adc_dma.h"
 
 class ThermistorSensor {
 public:
@@ -17,16 +18,17 @@ public:
     double getDifference();
     double getVCC();
     float getRawMillivolts1();
-//    void setVccMillivolts(double vcc);
     bool isLocked();
 
 private:
-    // Thermistor parameters - ADJUST THESE BASED ON YOUR THERMISTOR DATASHEET
-    const double THERMISTORNOMINAL = 10000.0; // Resistance at 25 degrees C (Ohms)
-    const double TEMPERATURENOMINAL = 25.0;    // Temperature for nominal resistance (degrees C)
-    const double BCOEFFICIENT = 3950.0;       // Beta coefficient (from datasheet)
-    const double SERIESRESISTOR = 10000.0;     // Series resistor value in voltage divider circuit (Ohms)
-#define MAIN_VCC_RATIO 2.0 // multiplier to determine VCC from thermistor divider VCC
+    // Thermistor parameters
+    const double THERMISTORNOMINAL = 10000.0;
+    const double TEMPERATURENOMINAL = 25.0;
+    const double BCOEFFICIENT = 3950.0;
+    const double SERIESRESISTOR = 10000.0;
+#ifndef MAIN_VCC_RATIO
+#define MAIN_VCC_RATIO 2.0
+#endif
 
     double vcc_millivolts;
     double thermistor1Value;
@@ -36,14 +38,17 @@ private:
     float thermistor1RawMillivolts;
     bool lock;
     uint32_t last_time;
-    const uint32_t update_interval = 500; // Adjust as needed
+    const uint32_t update_interval = 500;
     int thermistor1Pin;
     int thermistorVccPin;
     double thermistor1Offset;
 
-    double readVCCInternal(int pin, int numSamples = 128);
-    double readThermistorInternal(int pin, int numSamples = 1);
-    double readThermistorRelativeInternal(int pin, double topThermistorTemperatureCelsius, int numSamples = 1, double VCC_offset = 0);
+    // Snapshot tracking for DMA superior oversampling
+    AdcSnapshot last_snapshot_vcc;
+    AdcSnapshot last_snapshot_therm1;
+
+    double readVCCInternal(int pin);
+    double readThermistorRelativeInternal(int pin, double topThermistorTemperatureCelsius, double offset);
     double resistanceToTemperature(double resistance);
     double temperatureToResistance(double temperatureCelsius);
     float mapfInternal(float value, float in_min, float in_max, float out_min, float out_max);

@@ -14,10 +14,23 @@ enum AdcChannelIndex {
     ADC_CH_COUNT = 4
 };
 
+// Snapshot structure for superior oversampling
+struct AdcSnapshot {
+    uint64_t sum;
+    uint32_t count;
+};
+
 // Function prototypes
 void setupAdcDma();
 void processAdcDma();
+
+// Direct retrieval of latest single-batch averages (legacy/simple support)
 float getAdcMillivolts(AdcChannelIndex idx);
 uint32_t getAdcRawAverage(AdcChannelIndex idx);
+
+// Snapshot retrieval for cumulative oversampling across arbitrary windows
+void getAdcSnapshot(AdcChannelIndex idx, AdcSnapshot &snapshot);
+uint32_t calculateSnapshotAverage(const AdcSnapshot &old_s, const AdcSnapshot &new_s);
+float snapshotToMillivolts(AdcChannelIndex idx, uint32_t avg_raw);
 
 #endif // ADC_DMA_H

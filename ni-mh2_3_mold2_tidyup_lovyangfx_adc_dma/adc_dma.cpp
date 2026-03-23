@@ -29,8 +29,12 @@ struct SampleEntry {
 };
 
 struct ChannelAccum {
-    uint64_t sum = 0;
-    uint32_t count = 0;
+    uint64_t sum_batch = 0;   // Sum for the 10ms processing batch
+    uint32_t count_batch = 0; // Count for the 10ms processing batch
+
+    uint64_t sum_total = 0;   // Running total sum since start
+    uint32_t count_total = 0; // Running total count since start
+
     float latest_avg_mv = 0.0f;
     uint32_t latest_raw_avg = 0;
 };
@@ -157,13 +161,11 @@ void processAdcDma() {
     uint32_t wr = __atomic_load_n(&frame_write_idx, __ATOMIC_ACQUIRE);
 
     while (rd != wr) {
-        // Access volatile frame buffer by casting away volatile for local use or reading members directly
         uint16_t data_size = frame_buffer[rd].data_size;
         int n = data_size / sizeof(adc_digi_output_data_t);
         const adc_digi_output_data_t *p = (const adc_digi_output_data_t*)frame_buffer[rd].raw_data;
 
         for (int i = 0; i < n; i++) {
-            // Check channel and index
             uint8_t ch = p[i].type1.channel;
             if (ch < 10) {
                 int8_t idx = CH_TO_IDX[ch];
@@ -179,19 +181,27 @@ void processAdcDma() {
     if (xSemaphoreTake(data_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         while (sample_read_idx != sample_write_idx) {
             const SampleEntry &e = sample_ring[sample_read_idx];
-            channel_data[e.idx].sum += e.raw;
-            channel_data[e.idx].count++;
+
+            // Update batch accumulators
+            channel_data[e.idx].sum_batch += e.raw;
+            channel_data[e.idx].count_batch++;
+
+            // Update running total accumulators for snapshotting
+            channel_data[e.idx].sum_total += e.raw;
+            channel_data[e.idx].count_total++;
+
             sample_read_idx = (sample_read_idx + 1) & SAMPLE_RING_MASK;
         }
 
         for (int i = 0; i < ADC_CH_COUNT; i++) {
-            if (channel_data[i].count >= 32) {
-                uint32_t avg_raw = (uint32_t)((channel_data[i].sum + (channel_data[i].count / 2)) / channel_data[i].count);
+            if (channel_data[i].count_batch >= 32) {
+                uint32_t avg_raw = (uint32_t)((channel_data[i].sum_batch + (channel_data[i].count_batch / 2)) / channel_data[i].count_batch);
                 channel_data[i].latest_raw_avg = avg_raw;
                 channel_data[i].latest_avg_mv = (float)esp_adc_cal_raw_to_voltage(avg_raw, &adc_chars[i]);
 
-                channel_data[i].sum = 0;
-                channel_data[i].count = 0;
+                // Reset batch accumulators
+                channel_data[i].sum_batch = 0;
+                channel_data[i].count_batch = 0;
             }
         }
         xSemaphoreGive(data_mutex);
@@ -214,4 +224,24 @@ uint32_t getAdcRawAverage(AdcChannelIndex idx) {
         xSemaphoreGive(data_mutex);
     }
     return val;
+}
+
+void getAdcSnapshot(AdcChannelIndex idx, AdcSnapshot &snapshot) {
+    if (data_mutex && xSemaphoreTake(data_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        snapshot.sum = channel_data[idx].sum_total;
+        snapshot.count = channel_data[idx].count_total;
+        xSemaphoreGive(data_mutex);
+    }
+}
+
+uint32_t calculateSnapshotAverage(const AdcSnapshot &old_s, const AdcSnapshot &new_s) {
+    uint64_t sum_diff = new_s.sum - old_s.sum;
+    uint32_t count_diff = new_s.count - old_s.count;
+    if (count_diff == 0) return 0;
+    return (uint32_t)((sum_diff + (count_diff / 2)) / count_diff);
+}
+
+float snapshotToMillivolts(AdcChannelIndex idx, uint32_t avg_raw) {
+    if (!cal_initialized[idx]) return 0.0f;
+    return (float)esp_adc_cal_raw_to_voltage(avg_raw, &adc_chars[idx]);
 }
