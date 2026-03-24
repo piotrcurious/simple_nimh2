@@ -254,12 +254,13 @@ void displayTemperatureLabels(double temp1, double temp2, double tempDiff, float
     tft.print(" M");
 
     // VCC Label
+    SystemData d = systemData.getData();
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(LABEL_TEXT_SIZE);
     tft.setCursor(PLOT_X_START + 260, LABEL_Y_START + label_line_height * 0);
     tft.print("VCC:");
-    if (!isnan(thermistorSensor.getVCC())) {
-        tft.printf("%.2f mV", thermistorSensor.getVCC());
+    if (!isnan(d.vcc_mv)) {
+        tft.printf("%.2f mV", d.vcc_mv);
     } else {
         tft.print("Error");
     }
