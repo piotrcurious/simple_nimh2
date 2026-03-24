@@ -230,6 +230,9 @@ void getAdcSnapshot(AdcChannelIndex idx, AdcSnapshot &snapshot) {
         snapshot.sum = channel_data[idx].sum_total;
         snapshot.count = channel_data[idx].count_total;
         xSemaphoreGive(data_mutex);
+    } else {
+        snapshot.sum = 0;
+        snapshot.count = 0;
     }
 }
 
