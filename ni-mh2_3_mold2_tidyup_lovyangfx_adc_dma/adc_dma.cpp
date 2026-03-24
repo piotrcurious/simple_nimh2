@@ -7,12 +7,12 @@
 #include <cstring>
 
 // ADC configuration constants
-// Classic ESP32 sample rate must be between 20kHz and 2MHz
-static constexpr uint32_t ADC_SAMPLE_RATE_HZ = 20000;
+// Match reference code exactly
+static constexpr uint32_t ADC_SAMPLE_RATE_HZ = 24000;
 static constexpr uint32_t CONV_FRAME_SIZE    = 256;
-static constexpr uint32_t DMA_POOL_BYTES     = 8192;
+static constexpr uint32_t DMA_POOL_BYTES     = 32768; // 32KB
 
-static constexpr uint32_t FRAME_BUFFER_SIZE   = 64;
+static constexpr uint32_t FRAME_BUFFER_SIZE   = 128; // Increased
 static constexpr uint32_t FRAME_BUFFER_MASK   = FRAME_BUFFER_SIZE - 1;
 
 static constexpr uint32_t SAMPLE_RING_SIZE    = 8192;
@@ -30,11 +30,11 @@ struct SampleEntry {
 };
 
 struct ChannelAccum {
-    uint64_t sum_batch = 0;   // Sum for the 10ms processing batch
-    uint32_t count_batch = 0; // Count for the 10ms processing batch
+    uint64_t sum_batch = 0;
+    uint32_t count_batch = 0;
 
-    uint64_t sum_total = 0;   // Running total sum since start
-    uint32_t count_total = 0; // Running total count since start
+    uint64_t sum_total = 0;
+    uint32_t count_total = 0;
 
     float latest_avg_mv = 0.0f;
     uint32_t latest_raw_avg = 0;
@@ -51,8 +51,20 @@ static uint32_t sample_write_idx = 0;
 static uint32_t sample_read_idx  = 0;
 
 static ChannelAccum channel_data[ADC_CH_COUNT];
-static int8_t CH_TO_IDX[10]; // Map ADC1 channel to index
-static adc_atten_t CH_ATTEN[ADC_CH_COUNT];
+static int8_t CH_TO_IDX[10];
+
+// Match reference code's exact channels and order
+static constexpr uint8_t SCAN_CH_COUNT = 6;
+static constexpr adc1_channel_t SCAN_CH[SCAN_CH_COUNT] = {
+    ADC1_CHANNEL_0, // GPIO36 -> THERM1
+    ADC1_CHANNEL_3, // GPIO39 -> VOLTAGE
+    ADC1_CHANNEL_6, // GPIO34 -> CURRENT
+    ADC1_CHANNEL_7, // GPIO35 -> THERM_VCC
+    ADC1_CHANNEL_4, // GPIO32 -> DUMMY1
+    ADC1_CHANNEL_5  // GPIO33 -> DUMMY2
+};
+
+static adc_digi_pattern_config_t patterns[SCAN_CH_COUNT];
 
 static esp_adc_cal_characteristics_t adc_chars[ADC_CH_COUNT];
 static bool cal_initialized[ADC_CH_COUNT] = {false};
@@ -88,20 +100,22 @@ void setupAdcDma() {
 
     for (int i = 0; i < 10; i++) CH_TO_IDX[i] = -1;
 
-    // Map ESP32 channels to our indices
-    CH_TO_IDX[ADC1_CHANNEL_0] = ADC_IDX_THERM1;    // GPIO36
-    CH_TO_IDX[ADC1_CHANNEL_7] = ADC_IDX_THERM_VCC; // GPIO35
-    CH_TO_IDX[ADC1_CHANNEL_3] = ADC_IDX_VOLTAGE;   // GPIO39
-    CH_TO_IDX[ADC1_CHANNEL_6] = ADC_IDX_CURRENT;   // GPIO34
+    // Only map the channels we care about
+    CH_TO_IDX[ADC1_CHANNEL_0] = ADC_IDX_THERM1;
+    CH_TO_IDX[ADC1_CHANNEL_3] = ADC_IDX_VOLTAGE;
+    CH_TO_IDX[ADC1_CHANNEL_6] = ADC_IDX_CURRENT;
+    CH_TO_IDX[ADC1_CHANNEL_7] = ADC_IDX_THERM_VCC;
 
-    CH_ATTEN[ADC_IDX_THERM1] = THERMISTOR_PIN_1_ATTENUATION;
-    CH_ATTEN[ADC_IDX_THERM_VCC] = THERMISTOR_VCC_ATTENUATION;
-    CH_ATTEN[ADC_IDX_VOLTAGE] = VOLTAGE_ATTENUATION;
-    CH_ATTEN[ADC_IDX_CURRENT] = CURRENT_SHUNT_ATTENUATION;
+    // Initialize Calibration (only for real channels)
+    // Use DB_12 if available, else DB_11 (DB_12 is 11dB on classic ESP32)
+#if defined(ADC_ATTEN_DB_12)
+    const adc_atten_t atten = ADC_ATTEN_DB_12;
+#else
+    const adc_atten_t atten = ADC_ATTEN_DB_11;
+#endif
 
-    // Initialize Calibration
     for (int i = 0; i < ADC_CH_COUNT; i++) {
-        esp_adc_cal_characterize(ADC_UNIT_1, CH_ATTEN[i], ADC_WIDTH_BIT_12, 3300, &adc_chars[i]);
+        esp_adc_cal_characterize(ADC_UNIT_1, atten, ADC_WIDTH_BIT_12, 3300, &adc_chars[i]);
         cal_initialized[i] = true;
     }
 
@@ -111,32 +125,17 @@ void setupAdcDma() {
     cfg.conv_frame_size = CONV_FRAME_SIZE;
     ESP_ERROR_CHECK(adc_continuous_new_handle(&cfg, &adc_handle));
 
-    // Must be static and initialized as per reference code
-    static adc_digi_pattern_config_t patterns[ADC_CH_COUNT];
+    // Initialize patterns to exactly match reference code
     memset(patterns, 0, sizeof(patterns));
-
-    patterns[0].atten = CH_ATTEN[ADC_IDX_THERM1];
-    patterns[0].channel = ADC1_CHANNEL_0;
-    patterns[0].unit = ADC_UNIT_1;
-    patterns[0].bit_width = ADC_BITWIDTH_12;
-
-    patterns[1].atten = CH_ATTEN[ADC_IDX_THERM_VCC];
-    patterns[1].channel = ADC1_CHANNEL_7;
-    patterns[1].unit = ADC_UNIT_1;
-    patterns[1].bit_width = ADC_BITWIDTH_12;
-
-    patterns[2].atten = CH_ATTEN[ADC_IDX_VOLTAGE];
-    patterns[2].channel = ADC1_CHANNEL_3;
-    patterns[2].unit = ADC_UNIT_1;
-    patterns[2].bit_width = ADC_BITWIDTH_12;
-
-    patterns[3].atten = CH_ATTEN[ADC_IDX_CURRENT];
-    patterns[3].channel = ADC1_CHANNEL_6;
-    patterns[3].unit = ADC_UNIT_1;
-    patterns[3].bit_width = ADC_BITWIDTH_12;
+    for (int i = 0; i < SCAN_CH_COUNT; i++) {
+        patterns[i].atten     = atten;
+        patterns[i].channel   = SCAN_CH[i];
+        patterns[i].unit      = ADC_UNIT_1;
+        patterns[i].bit_width = ADC_BITWIDTH_12;
+    }
 
     adc_continuous_config_t dig = {};
-    dig.pattern_num = ADC_CH_COUNT;
+    dig.pattern_num = SCAN_CH_COUNT;
     dig.adc_pattern = patterns;
     dig.sample_freq_hz = ADC_SAMPLE_RATE_HZ;
     dig.conv_mode = ADC_CONV_SINGLE_UNIT_1;
@@ -185,11 +184,9 @@ void processAdcDma() {
         while (sample_read_idx != sample_write_idx) {
             const SampleEntry &e = sample_ring[sample_read_idx];
 
-            // Update batch accumulators
             channel_data[e.idx].sum_batch += e.raw;
             channel_data[e.idx].count_batch++;
 
-            // Update running total accumulators for snapshotting
             channel_data[e.idx].sum_total += e.raw;
             channel_data[e.idx].count_total++;
 
@@ -202,7 +199,6 @@ void processAdcDma() {
                 channel_data[i].latest_raw_avg = avg_raw;
                 channel_data[i].latest_avg_mv = (float)esp_adc_cal_raw_to_voltage(avg_raw, &adc_chars[i]);
 
-                // Reset batch accumulators
                 channel_data[i].sum_batch = 0;
                 channel_data[i].count_batch = 0;
             }
