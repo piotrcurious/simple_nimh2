@@ -19,7 +19,7 @@
 #include <Arduino.h>
 
 #include "SHT4xSensor.h"
-#include "ThermistorSensor.h"
+#include "SystemDataManager.h"
 #include "analog.h"
 
 #define DEBUG_LABELS
@@ -310,7 +310,7 @@ namespace RemoteKeys {
 // --- Extern Global Variables ---
 extern LGFX tft;
 extern SHT4xSensor sht4Sensor;
-extern ThermistorSensor thermistorSensor;
+extern SystemDataManager systemData;
 extern CurrentModel currentModel;
 extern AsyncMeasure meas;
 extern FindOptManager findOpt;

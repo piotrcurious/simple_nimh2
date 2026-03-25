@@ -5,6 +5,7 @@
 #include "internal_resistance.h"
 #include "home_screen.h"
 #include "adc_dma.h"
+#include "SystemDataManager.h"
 #include <IRremote.h>
 
 LGFX tft;
@@ -71,7 +72,7 @@ double THERMISTOR_1_OFFSET = 0.0; // kept for clarity
 CurrentModel currentModel;
 SHT4xSensor sht4Sensor;
 HomeScreen homeScreen;
-ThermistorSensor thermistorSensor(THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, THERMISTOR_1_OFFSET);
+SystemDataManager systemData(sht4Sensor, THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, THERMISTOR_1_OFFSET);
 
 
 
@@ -121,19 +122,20 @@ void setupPWM() {
 
 // --- Thermistor / sensor helpers ---
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current) {
-    // wait until thermistorSensor is free; yield to avoid busy-waiting
-    while (thermistorSensor.isLocked()) {
-        yield();
-    }
+    SystemData d = systemData.getData();
 
-    temp1 = sht4Sensor.getTemperature();
-    temp2 = thermistorSensor.getTemperature2();
-    tempDiff = thermistorSensor.getDifference();
-    t1_millivolts = thermistorSensor.getRawMillivolts1();
+    temp1 = d.ambient_temp_c;
+    temp2 = d.battery_temp_c;
+    tempDiff = d.temp_diff_c;
+    t1_millivolts = 0; // Deprecated
 
-    // snapshot volatile values once
-    voltage = static_cast<float>(voltage_mv) / 1000.0f;
-    current = static_cast<float>(current_ma) / 1000.0f;
+    voltage = d.battery_voltage_v;
+    current = d.charge_current_a;
+
+    // Update legacy globals for now
+    voltage_mv = voltage * 1000.0f;
+    current_ma = current * 1000.0f;
+    mAh_charged = d.mah_charged;
 }
 
 // Process thermistor data and update display/plots
@@ -300,66 +302,23 @@ void task_processAdcDma(void* parameter) {
     }
 }
 
-void task_readThermistor(void* parameter) {
-    mAh_last_time = millis();
-    AdcSnapshot last_snapshot_current = {0, 0};
-    AdcSnapshot last_snapshot_voltage = {0, 0};
-
+void task_updateSystemData(void* parameter) {
+    systemData.begin();
     while (true) {
-        const uint32_t current_time = millis();
-
-        // Ensure SHT4x is not mid-read
-        while (sht4Sensor.isLocked()) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-        }
-
-        thermistorSensor.read(sht4Sensor.getTemperature());
-
-        // Read shunt current using superior oversampling (snapshot)
-        AdcSnapshot new_snapshot_current;
-        getAdcSnapshot(ADC_IDX_CURRENT, new_snapshot_current);
-        uint32_t avg_raw_current = calculateSnapshotAverage(last_snapshot_current, new_snapshot_current);
-        if (avg_raw_current > 0) {
-            float current_mv_raw = snapshotToMillivolts(ADC_IDX_CURRENT, avg_raw_current);
-            const double voltageAcrossShunt = (double)current_mv_raw - CURRENT_SHUNT_PIN_ZERO_OFFSET;
-            current_ma = static_cast<float>(voltageAcrossShunt / CURRENT_SHUNT_RESISTANCE);
-            last_snapshot_current = new_snapshot_current;
-        }
-
-        // Throttled voltage sampling using superior oversampling (snapshot)
-        if ((current_time - voltage_last_time) > voltage_update_interval) {
-            AdcSnapshot new_snapshot_voltage;
-            getAdcSnapshot(ADC_IDX_VOLTAGE, new_snapshot_voltage);
-            uint32_t avg_raw_voltage = calculateSnapshotAverage(last_snapshot_voltage, new_snapshot_voltage);
-            if (avg_raw_voltage > 0) {
-                float sampledVoltage = snapshotToMillivolts(ADC_IDX_VOLTAGE, avg_raw_voltage);
-                voltage_mv = static_cast<float>((thermistorSensor.getVCC() * MAIN_VCC_RATIO) - sampledVoltage);
-                last_snapshot_voltage = new_snapshot_voltage;
-            }
-            voltage_last_time = current_time;
-        }
-
-        // mAh integration
-        const uint32_t now = millis();
-        const uint32_t time_elapsed_ms = now - mAh_last_time;
-        const double time_elapsed_hours = static_cast<double>(time_elapsed_ms) / 3600000.0;
-
-        double current_for_mah_calculation_ma = current_ma; // default
-
-        if (currentModel.isModelBuilt && (current_ma / 1000.0) < MEASURABLE_CURRENT_THRESHOLD) {
-            current_for_mah_calculation_ma = static_cast<double>(estimateCurrent(dutyCycle) * 1000.0);
-        }
-
-        mAh_charged += current_for_mah_calculation_ma * time_elapsed_hours;
-        mAh_last_time = now;
-
         if (resetAh) {
-            mAh_charged = 0.0;
+            systemData.resetMah();
             resetAh = false;
-            Serial.println("mAh counter reset.");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(TASK_DELAY_THERMISTOR_MS));
+        systemData.update();
+
+        // Update legacy globals for external components
+        SystemData d = systemData.getData();
+        voltage_mv = d.battery_voltage_v * 1000.0f;
+        current_ma = d.charge_current_a * 1000.0f;
+        mAh_charged = d.mah_charged;
+
+        vTaskDelay(pdMS_TO_TICKS(50)); // 20Hz update
     }
 }
 
@@ -506,14 +465,13 @@ void setup() {
     }
 
     sht4Sensor.begin();
-    thermistorSensor.begin();
     homeScreen.begin();
 
     setupAdcDma();
 
     xTaskCreate(task_readSHT4x, "SHT4", 4096, NULL, 1, NULL);
     xTaskCreate(task_processAdcDma, "ADC_DMA", 4096, NULL, 2, NULL); // Higher priority for DMA processing
-    xTaskCreate(task_readThermistor, "THERM", 4096, NULL, 1, NULL);
+    xTaskCreate(task_updateSystemData, "SYS_DATA", 4096, NULL, 1, NULL);
 
     setupPWM();
 
