@@ -1,7 +1,7 @@
 #ifndef DEFINITIONS_H
 #define DEFINITIONS_H
 
-#include <TFT_eSPI.h>
+#include "LGFX_Config.h"
 #include <SPI.h>
 
 #include <cmath>
@@ -277,7 +277,7 @@ namespace RemoteKeys {
 }
 
 // --- Extern Global Variables ---
-extern TFT_eSPI tft;
+extern LGFX tft;
 extern SHT4xSensor sht4Sensor;
 extern ThermistorSensor thermistorSensor;
 extern CurrentModel currentModel;
