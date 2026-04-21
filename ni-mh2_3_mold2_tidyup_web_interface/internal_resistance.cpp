@@ -9,7 +9,6 @@ extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff
 // State machine variables
 #ifndef MOCK_TEST
 IRState currentIRState = IR_STATE_IDLE;
-#endif
 IRState nextIRState = IR_STATE_IDLE;
 unsigned long irStateChangeTime = 0;
 MeasurementData currentMeasurement;
@@ -42,7 +41,6 @@ std::vector<float> ir_dutyCycles;
 std::vector<float> consecutiveInternalResistances;
 
 // Results storage
-#ifndef MOCK_TEST
 float internalResistanceData[MAX_RESISTANCE_POINTS][2];
 int resistanceDataCount = 0;
 float internalResistanceDataPairs[MAX_RESISTANCE_POINTS][2];
@@ -54,6 +52,41 @@ float regressedInternalResistanceIntercept = 0.0f;
 float regressedInternalResistancePairsSlope = 0.0f;
 float regressedInternalResistancePairsIntercept = 0.0f;
 bool isMeasuringResistance = false;
+#else
+extern IRState currentIRState;
+extern IRState nextIRState;
+extern unsigned long irStateChangeTime;
+extern MeasurementData currentMeasurement;
+extern int minimalDutyCycle;
+extern int findMinDcLow;
+extern int findMinDcHigh;
+extern int findMinDcMid;
+extern std::vector<std::pair<int, int>> dutyCyclePairs;
+extern int pairIndex;
+extern int pairGenerationStep;
+extern int pairGenerationSubStep;
+extern int lowDc;
+extern int previousHighDc;
+extern int lowBound;
+extern int highBound;
+extern int bestHighDc;
+extern float minCurrent;
+extern float maxCurrent;
+extern float minCurrentDifference;
+extern int measureStep;
+extern std::vector<float> voltagesLoaded;
+extern std::vector<float> currentsLoaded;
+extern std::vector<float> ir_dutyCycles;
+extern std::vector<float> consecutiveInternalResistances;
+extern float internalResistanceData[MAX_RESISTANCE_POINTS][2];
+extern int resistanceDataCount;
+extern float internalResistanceDataPairs[MAX_RESISTANCE_POINTS][2];
+extern int resistanceDataCountPairs;
+extern float regressedInternalResistanceSlope;
+extern float regressedInternalResistanceIntercept;
+extern float regressedInternalResistancePairsSlope;
+extern float regressedInternalResistancePairsIntercept;
+extern bool isMeasuringResistance;
 #endif
 
 // Helper function to initiate measurement

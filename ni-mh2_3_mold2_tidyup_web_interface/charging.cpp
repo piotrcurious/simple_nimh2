@@ -8,7 +8,6 @@ extern AppState currentAppState;
 
 #ifndef MOCK_TEST
 unsigned long chargingStartTime = 0;
-#endif
 ChargingState chargingState = CHARGE_IDLE;
 int cachedOptimalDuty = MAX_CHARGE_DUTY_CYCLE;
 unsigned long chargePhaseStartTime = 0;
@@ -18,22 +17,43 @@ float maximumCurrent = 0.150;
 float currentRampTarget = 0.0f;
 
 // Monitoring evaluation snapshots (persist across states)
-static float eval_mAh_snapshot = 0.0f;       // mAh at start of monitor evaluation interval
-static unsigned long eval_time_snapshot = 0; // ms at start of monitor evaluation interval
+float eval_mAh_snapshot = 0.0f;       // mAh at start of monitor evaluation interval
+unsigned long eval_time_snapshot = 0; // ms at start of monitor evaluation interval
 
 // Re-evaluation (binary-search) tracking for logging (does NOT affect monitor snapshots)
-static bool reeval_active = false;
-static float reeval_start_mAh = 0.0f;
-static unsigned long reeval_start_ms = 0;
+bool reeval_active = false;
+float reeval_start_mAh = 0.0f;
+unsigned long reeval_start_ms = 0;
 
 // last re-eval metrics for logging/inspection (optional)
-static float lastReeval_delta_mAh = 0.0f;
-static unsigned long lastReeval_duration_ms = 0;
-static float lastReeval_avgCurrent_A = 0.0f;
+float lastReeval_delta_mAh = 0.0f;
+unsigned long lastReeval_duration_ms = 0;
+float lastReeval_avgCurrent_A = 0.0f;
 
 AsyncMeasure meas;
 FindOptManager findOpt;
 RemeasureManager remeasure;
+#else
+extern unsigned long chargingStartTime;
+extern ChargingState chargingState;
+extern int cachedOptimalDuty;
+extern unsigned long chargePhaseStartTime;
+extern uint8_t overtemp_trip_counter;
+extern unsigned long lastChargeEvaluationTime;
+extern float maximumCurrent;
+extern float currentRampTarget;
+extern float eval_mAh_snapshot;
+extern unsigned long eval_time_snapshot;
+extern bool reeval_active;
+extern float reeval_start_mAh;
+extern unsigned long reeval_start_ms;
+extern float lastReeval_delta_mAh;
+extern unsigned long lastReeval_duration_ms;
+extern float lastReeval_avgCurrent_A;
+extern AsyncMeasure meas;
+extern FindOptManager findOpt;
+extern RemeasureManager remeasure;
+#endif
 
 // --- new configurable parameters for temprise absolute/blending ---
 #ifndef TEMPRISE_ABS_MAX_DEPTH
