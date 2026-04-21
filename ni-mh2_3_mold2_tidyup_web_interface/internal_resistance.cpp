@@ -7,7 +7,9 @@ extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff
                                    float& t1_millivolts, float& voltage, float& current);
 
 // State machine variables
+#ifndef MOCK_TEST
 IRState currentIRState = IR_STATE_IDLE;
+#endif
 IRState nextIRState = IR_STATE_IDLE;
 unsigned long irStateChangeTime = 0;
 MeasurementData currentMeasurement;
@@ -40,6 +42,7 @@ std::vector<float> ir_dutyCycles;
 std::vector<float> consecutiveInternalResistances;
 
 // Results storage
+#ifndef MOCK_TEST
 float internalResistanceData[MAX_RESISTANCE_POINTS][2];
 int resistanceDataCount = 0;
 float internalResistanceDataPairs[MAX_RESISTANCE_POINTS][2];
@@ -51,6 +54,7 @@ float regressedInternalResistanceIntercept = 0.0f;
 float regressedInternalResistancePairsSlope = 0.0f;
 float regressedInternalResistancePairsIntercept = 0.0f;
 bool isMeasuringResistance = false;
+#endif
 
 // Helper function to initiate measurement
 void getSingleMeasurement(int dc, IRState nextState) {

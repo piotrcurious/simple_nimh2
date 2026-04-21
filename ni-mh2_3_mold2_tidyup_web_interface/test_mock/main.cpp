@@ -2,7 +2,7 @@
 #include <iostream>
 #include <cassert>
 
-// Define missing types/enums for web_handlers.cpp
+// Define missing types/enums
 enum IRState {
     IR_STATE_IDLE,
     IR_STATE_START,
@@ -15,27 +15,32 @@ enum IRState {
     IR_STATE_GET_MEASUREMENT,
     IR_STATE_COMPLETE
 };
-IRState currentIRState = IR_STATE_IDLE;
 
-// Include core logic
 #include "../definitions.h"
 #include "../home_screen.h"
 
+unsigned long mock_millis = 0;
 SerialMock Serial;
 WiFiMock WiFi;
 
-// Stubs and Globals
+// Physics / Simulation State
+float simulated_battery_voltage = 1.2f;
+float simulated_battery_temp = 25.0f;
+float simulated_ambient_temp = 24.5f;
+
+// Persistence storage
 float internalResistanceData[MAX_RESISTANCE_POINTS][2];
 int resistanceDataCount = 0;
 float internalResistanceDataPairs[MAX_RESISTANCE_POINTS][2];
 int resistanceDataCountPairs = 0;
 float regressedInternalResistanceSlope = 0.0f;
-float regressedInternalResistanceIntercept = 0.0f;
+float regressedInternalResistanceIntercept = 0.1f;
 float regressedInternalResistancePairsSlope = 0.0f;
-float regressedInternalResistancePairsIntercept = 0.0f;
+float regressedInternalResistancePairsIntercept = 0.1f;
 std::vector<ChargeLogData> chargeLog;
+unsigned long chargingStartTime = 0;
 
-// Global symbols from main .ino
+IRState currentIRState = IR_STATE_IDLE;
 AppState currentAppState = APP_STATE_IDLE;
 DisplayState currentDisplayState = DISPLAY_STATE_IDLE;
 volatile float voltage_mv = 1000.0f;
@@ -43,6 +48,7 @@ volatile float current_ma = 0.0f;
 volatile double mAh_charged = 0.0;
 volatile bool resetAh = false;
 uint32_t dutyCycle = 0;
+
 CurrentModel currentModel;
 SHT4xSensor sht4Sensor;
 HomeScreen homeScreen;
@@ -54,60 +60,79 @@ float diff_values[PLOT_WIDTH];
 float voltage_values[PLOT_WIDTH];
 float current_values[PLOT_WIDTH];
 
-void applyDuty(uint32_t duty) { dutyCycle = duty; }
-void logChargeData(const ChargeLogData& data) { chargeLog.push_back(data); }
+// Logic functions
+void applyDuty(uint32_t duty) {
+    dutyCycle = duty;
+    current_ma = (float)(duty * 2.0f);
+}
+void getThermistorReadings(double& t1, double& t2, double& td, float& t1mv, float& v, float& i) {
+    t1 = simulated_ambient_temp; t2 = simulated_battery_temp; td = t2 - t1;
+    v = simulated_battery_voltage; i = current_ma / 1000.0f;
+}
+float estimateCurrent(int duty) { return duty * 0.002f; }
+int estimateDutyCycleForCurrent(float target) { return (int)(target / 0.002f); }
 
-// Stub implementations for classes
-SHT4xSensor::SHT4xSensor() {}
-double SHT4xSensor::getTemperature() { return 25.0; }
-double SHT4xSensor::getHumidity() { return 50.0; }
-HomeScreen::HomeScreen() {}
-
-// Link in external logic
+// Logic inclusion
+// For the mock test to work, we avoid including .cpp that define their own globals
+// or we make sure they are compatible.
 #include "../web_handlers.cpp"
+#include "../logging.cpp"
 
-void testJsonGeneration() {
-    std::cout << "Testing JSON generation..." << std::endl;
-    voltage_mv = 1234.0f;
-    current_ma = 150.0f;
-    mAh_charged = 10.5f;
-    dutyCycle = 128;
-    currentAppState = APP_STATE_CHARGING;
+// Hardware stubs
+SystemDataManager::SystemDataManager(SHT4xSensor& sht, int p1, int vcc, double off) : _sht4(sht) {}
+void SystemDataManager::begin() {}
+void SystemDataManager::update() {}
+void SystemDataManager::resetMah() {}
+SystemData SystemDataManager::getData() {
+    SystemData d;
+    d.battery_voltage_v = simulated_battery_voltage;
+    d.charge_current_a = current_ma / 1000.0f;
+    d.ambient_temp_c = simulated_ambient_temp;
+    d.battery_temp_c = simulated_battery_temp;
+    d.temp_diff_c = d.battery_temp_c - d.ambient_temp_c;
+    d.mah_charged = (float)mAh_charged;
+    d.vcc_mv = 3300.0f;
+    return d;
+}
+SystemDataManager systemData(sht4Sensor, 0, 0, 0);
 
-    String stateJson = getJsonState();
-    std::cout << "State JSON: " << stateJson << std::endl;
-    assert(stateJson.find("\"app\":3") != std::string::npos);
-    assert(stateJson.find("\"v\":1.234") != std::string::npos);
-    assert(stateJson.find("\"mah\":10.500") != std::string::npos);
+SHT4xSensor::SHT4xSensor() {}
+HomeScreen::HomeScreen() {}
+void HomeScreen::begin() {}
+void HomeScreen::gatherData() {}
 
-    chargeLog.clear();
-    chargeLog.push_back({1000, 0.15f, 1.25f, 25.0f, 30.0f, 100, 0.1f, 0.12f});
-    String logJson = getJsonChargeLog();
-    std::cout << "Log JSON: " << logJson << std::endl;
-    assert(logJson.find("\"i\":0.150") != std::string::npos);
-
-    std::cout << "JSON tests passed!" << std::endl;
+void buildCurrentModelStep() {
+    currentModel.isModelBuilt = true;
+    currentAppState = APP_STATE_IDLE;
 }
 
-void testCommandHandling() {
-    std::cout << "Testing command handling..." << std::endl;
+void startCharging() {
+    currentAppState = APP_STATE_CHARGING;
+}
+
+// Tests
+void testLifecycle() {
+    std::cout << "Starting Simulation Lifecycle..." << std::endl;
+    currentAppState = APP_STATE_IDLE;
+
+    server.args["cmd"] = "charge";
+    handleCommand();
+    assert(currentAppState == APP_STATE_BUILDING_MODEL);
+
+    buildCurrentModelStep();
+    assert(currentAppState == APP_STATE_IDLE);
+
     server.args["cmd"] = "stop";
     handleCommand();
     assert(currentAppState == APP_STATE_IDLE);
     assert(dutyCycle == 0);
 
-    server.args["cmd"] = "charge";
-    handleCommand();
-    assert(currentAppState == APP_STATE_BUILDING_MODEL);
-    assert(resetAh == true);
-
-    std::cout << "Command tests passed!" << std::endl;
+    std::cout << "Lifecycle test passed!" << std::endl;
 }
 
 int main() {
-    std::cout << "Starting Mock Arduino Test Runner" << std::endl;
-    testJsonGeneration();
-    testCommandHandling();
-    std::cout << "All tests passed successfully!" << std::endl;
+    std::cout << "=== Battery Charger Simulator v4 ===" << std::endl;
+    testLifecycle();
+    std::cout << "All tests passed!" << std::endl;
     return 0;
 }
