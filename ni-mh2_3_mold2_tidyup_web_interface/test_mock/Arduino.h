@@ -10,11 +10,38 @@
 #include <thread>
 #include <stdint.h>
 #include <stdarg.h>
+#include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 #define PROGMEM
 #define PSTR(s) s
 
-typedef std::string String;
+class String : public std::string {
+public:
+    String() : std::string("") {}
+    String(const char* s) : std::string(s) {}
+    String(const std::string& s) : std::string(s) {}
+    String(int val) : std::string(std::to_string(val)) {}
+    String(long val) : std::string(std::to_string(val)) {}
+    String(unsigned int val) : std::string(std::to_string(val)) {}
+    String(unsigned long val) : std::string(std::to_string(val)) {}
+    String(float val, int prec = 2) {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(prec) << val;
+        *this = ss.str();
+    }
+    String(double val, int prec = 2) {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(prec) << val;
+        *this = ss.str();
+    }
+
+    String operator+(const String& other) const { return String((std::string)*this + (std::string)other); }
+    String operator+(const char* other) const { return String((std::string)*this + std::string(other)); }
+    void operator+=(const String& other) { this->append(other); }
+    void operator+=(const char* other) { this->append(other); }
+};
 
 inline unsigned long millis() {
     static auto start = std::chrono::steady_clock::now();
@@ -62,9 +89,13 @@ public:
     void begin() {}
     void handleClient() {}
     void send(int code, const String& type, const String& content) {
-        std::cout << "HTTP " << code << " [" << type << "]: " << content.substr(0, 100) << "..." << std::endl;
+        // std::cout << "HTTP " << code << " [" << type << "]: " << content.substr(0, 100) << "..." << std::endl;
     }
-    String arg(const String& name) { return ""; }
+    String arg(const String& name) {
+        if (args.count((std::string)name)) return String(args[(std::string)name]);
+        return "";
+    }
+    std::map<std::string, std::string> args;
 private:
     std::map<String, Handler> handlers;
 };
@@ -75,12 +106,22 @@ typedef void* TaskHandle_t;
 inline void xTaskCreate(void (*f)(void*), const char* name, int stack, void* param, int prio, TaskHandle_t* h) {}
 inline void vTaskDelay(int ticks) { delay(ticks); }
 
-#define ADC_ATTEN_DB_11 0
-
-// Mock FreeRTOS
 #define portMUX_TYPE int
 #define portMUX_INITIALIZER_UNLOCKED 0
 inline void portENTER_CRITICAL(int* mux) {}
 inline void portEXIT_CRITICAL(int* mux) {}
+
+#define max(a,b) std::max(a,b)
+#define min(a,b) std::min(a,b)
+#define constrain(amt,low,high) std::clamp(amt,low,high)
+
+typedef void* SemaphoreHandle_t;
+
+namespace Eigen {
+    struct VectorXd {
+        int size() const { return 0; }
+        double operator()(int i) const { return 0.0; }
+    };
+}
 
 #endif
