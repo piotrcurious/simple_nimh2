@@ -112,6 +112,18 @@ inline void portEXIT_CRITICAL(int* mux) {}
 
 typedef void* SemaphoreHandle_t;
 
+// Provide global names for logic files
+using std::max;
+using std::min;
+using std::isnan;
+using std::isfinite;
+using std::pow;
+using std::sqrt;
+using std::fabs;
+using std::fmod;
+using std::exp;
+using std::log;
+
 namespace Eigen {
     struct VectorXd {
         std::vector<double> coeffs;
