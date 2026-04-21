@@ -1,0 +1,288 @@
+#include "definitions.h"
+#include "logging.h"
+#include "graphing.h"
+#include "charging.h"
+#include "internal_resistance.h"
+#include "home_screen.h"
+#include "adc_dma.h"
+#include "SystemDataManager.h"
+#include <WiFi.h>
+#include <WebServer.h>
+
+#include <vector>
+#include <cmath>
+#include <algorithm>
+#include <ArduinoEigenDense.h> // needed for QR solve
+
+// --- Constants / configuration ---
+
+constexpr int PWM_RESOLUTION_BITS = 8;
+constexpr int PWM_MAX_DUTY_CYCLE = (1 << PWM_RESOLUTION_BITS) - 1;
+
+// Replace repeated magic numbers with named constants when appropriate
+constexpr TickType_t TASK_DELAY_SHT4_MS = 100;
+constexpr TickType_t TASK_DELAY_THERMISTOR_MS = 50;
+
+// --- External symbols ---
+extern void startMHElectrodeMeasurement(int testDutyCycle, unsigned long stabilization_delay, unsigned long unloaded_delay);
+extern void updateTemperatureHistory(double temp1, double temp2, double tempDiff, float voltage, float current);
+extern void startCharging();
+extern void measureInternalResistanceStep();
+extern IRState currentIRState;
+extern void handleRoot();
+extern void handleData();
+extern void handleCommand();
+
+
+// --- Application state ---
+AppState currentAppState = APP_STATE_IDLE;
+DisplayState currentDisplayState = DISPLAY_STATE_IDLE;
+
+// Shared measurement / UI globals
+volatile float voltage_mv = 1000.0f;
+volatile float current_ma = 0.0f;
+volatile double mAh_charged = 0.0;
+volatile bool resetAh = false;
+volatile uint32_t mAh_last_time = 0;
+
+uint32_t dutyCycle = 0;
+
+// Timers
+unsigned long lastDataGatherTime = 0;
+unsigned long lastChargingHouseTime = 0;
+
+// PWM pin
+constexpr int pwmPin = PWM_PIN;
+double THERMISTOR_1_OFFSET = 0.0;
+
+// Hardware / sensor objects
+CurrentModel currentModel;
+SHT4xSensor sht4Sensor;
+HomeScreen homeScreen;
+SystemDataManager systemData(sht4Sensor, THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, THERMISTOR_1_OFFSET);
+
+// Web Server
+WebServer server(80);
+
+// --- Build model state ---
+enum class BuildModelPhase { Idle = 0, Start, SetDuty, WaitMeasurement, Finish };
+BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
+int buildModelDutyCycle = 0;
+unsigned long buildModelLastStepTime = 0;
+std::vector<float> dutyCycles;
+std::vector<float> currents;
+
+// --- Utility helpers ---
+void applyDuty(uint32_t duty) {
+    dutyCycle = std::min<uint32_t>(duty, PWM_MAX_DUTY_CYCLE);
+    analogWrite(pwmPin, static_cast<int>(dutyCycle));
+}
+
+static inline void setAppState(AppState s) {
+    currentAppState = s;
+}
+
+// --- PWM setup ---
+void setupPWM() {
+    analogWriteResolution(pwmPin,PWM_RESOLUTION_BITS);
+    analogWriteFrequency(pwmPin, PWM_FREQUENCY);
+    pinMode(pwmPin, OUTPUT);
+    applyDuty(0);
+}
+
+// --- Thermistor / sensor helpers ---
+void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current) {
+    SystemData d = systemData.getData();
+    temp1 = d.ambient_temp_c;
+    temp2 = d.battery_temp_c;
+    tempDiff = d.temp_diff_c;
+    t1_millivolts = 0;
+    voltage = d.battery_voltage_v;
+    current = d.charge_current_a;
+    voltage_mv = voltage * 1000.0f;
+    current_ma = current * 1000.0f;
+    mAh_charged = d.mah_charged;
+}
+
+// --- Non-blocking build current model ---
+void buildCurrentModelStep() {
+    const unsigned long now = millis();
+    switch (buildModelPhase) {
+        case BuildModelPhase::Idle:
+            dutyCycles.clear();
+            currents.clear();
+            dutyCycles.push_back(0.0f);
+            currents.push_back(0.0f);
+            buildModelDutyCycle = 1;
+            buildModelPhase = BuildModelPhase::SetDuty;
+            break;
+        case BuildModelPhase::SetDuty:
+            if (buildModelDutyCycle <= MAX_DUTY_CYCLE) {
+                applyDuty(buildModelDutyCycle);
+                buildModelLastStepTime = now;
+                buildModelPhase = BuildModelPhase::WaitMeasurement;
+            } else {
+                buildModelPhase = BuildModelPhase::Finish;
+            }
+            break;
+        case BuildModelPhase::WaitMeasurement:
+            if (now - buildModelLastStepTime >= BUILD_CURRENT_MODEL_DELAY) {
+                MeasurementData data;
+                getThermistorReadings(data.temp1, data.temp2, data.tempDiff, data.t1_millivolts, data.voltage, data.current);
+                if (data.current >= MEASURABLE_CURRENT_THRESHOLD) {
+                    dutyCycles.push_back(static_cast<float>(buildModelDutyCycle));
+                    currents.push_back(data.current);
+                }
+                buildModelDutyCycle += 5;
+                buildModelPhase = BuildModelPhase::SetDuty;
+            }
+            break;
+        case BuildModelPhase::Finish:
+            if (dutyCycles.size() >= 2) {
+                const int degree = 3;
+                const int numPoints = static_cast<int>(dutyCycles.size());
+                Eigen::MatrixXd A(numPoints, degree + 1);
+                Eigen::VectorXd b(numPoints);
+                for (int i = 0; i < numPoints; ++i) {
+                    for (int j = 0; j <= degree; ++j) {
+                        A(i, j) = std::pow(dutyCycles[i], j);
+                    }
+                    b(i) = currents[i];
+                }
+                currentModel.coefficients = A.householderQr().solve(b);
+                if (degree >= 0) currentModel.coefficients(0) = 0.0;
+                currentModel.isModelBuilt = true;
+                applyDuty(0);
+                setAppState(APP_STATE_IDLE);
+                startCharging();
+            } else {
+                currentModel.isModelBuilt = false;
+                applyDuty(0);
+                setAppState(APP_STATE_IDLE);
+            }
+            buildModelPhase = BuildModelPhase::Idle;
+            break;
+    }
+}
+
+float estimateCurrent(int duty) {
+    if (!currentModel.isModelBuilt) return 0.0f;
+    const float x = static_cast<float>(duty);
+    double sum = 0.0;
+    for (int i = 0; i < currentModel.coefficients.size(); ++i) {
+        sum += currentModel.coefficients(i) * std::pow(x, i);
+    }
+    return static_cast<float>(std::max(0.0, sum));
+}
+
+int estimateDutyCycleForCurrent(float targetCurrent) {
+    if (!currentModel.isModelBuilt) return 0;
+    int bestDC = 0;
+    float closestCurrentDiff = std::numeric_limits<float>::max();
+    for (int dc = MIN_CHARGE_DUTY_CYCLE; dc <= MAX_CHARGE_DUTY_CYCLE; ++dc) {
+        float estimated = estimateCurrent(dc);
+        float diff = std::abs(estimated - targetCurrent);
+        if (diff < closestCurrentDiff) {
+            closestCurrentDiff = diff;
+            bestDC = dc;
+        }
+    }
+    return bestDC;
+}
+
+// --- Tasks ---
+void task_readSHT4x(void* parameter) {
+    while (true) {
+        sht4Sensor.read();
+        vTaskDelay(pdMS_TO_TICKS(TASK_DELAY_SHT4_MS));
+    }
+}
+
+void task_processAdcDma(void* parameter) {
+    while (true) {
+        processAdcDma();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+void task_updateSystemData(void* parameter) {
+    systemData.begin();
+    while (true) {
+        if (resetAh) {
+            systemData.resetMah();
+            resetAh = false;
+        }
+        systemData.update();
+        SystemData d = systemData.getData();
+        voltage_mv = d.battery_voltage_v * 1000.0f;
+        current_ma = d.charge_current_a * 1000.0f;
+        mAh_charged = d.mah_charged;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+// --- Initialization ---
+void setup() {
+    Serial.begin(115200);
+
+    WiFi.softAP("NiMH-WebCharger", "password123");
+    Serial.print("Web Interface at: http://");
+    Serial.println(WiFi.softAPIP());
+
+    server.on("/", handleRoot);
+    server.on("/data", handleData);
+    server.on("/command", handleCommand);
+    server.begin();
+
+    for (int i = 0; i < PLOT_WIDTH; ++i) {
+        temp1_values[i] = 25.0f;
+        temp2_values[i] = 25.0f;
+        diff_values[i] = 0.0f;
+        voltage_values[i] = 1.0f;
+        current_values[i] = 0.0f;
+    }
+
+    sht4Sensor.begin();
+    homeScreen.begin();
+    setupAdcDma();
+
+    xTaskCreate(task_readSHT4x, "SHT4", 4096, NULL, 1, NULL);
+    xTaskCreate(task_processAdcDma, "ADC_DMA", 4096, NULL, 2, NULL);
+    xTaskCreate(task_updateSystemData, "SYS_DATA", 4096, NULL, 1, NULL);
+
+    setupPWM();
+    Serial.println("System Ready.");
+}
+
+void gatherData() {
+    double temp1 = 0.0, temp2 = 0.0, tempDiff = 0.0;
+    float t1_millivolts = 0.0f, voltage = 0.0f, current = 0.0f;
+    getThermistorReadings(temp1, temp2, tempDiff, t1_millivolts, voltage, current);
+    updateTemperatureHistory(temp1, temp2, tempDiff, voltage, current);
+}
+
+void loop() {
+    const unsigned long now = millis();
+    server.handleClient();
+
+    switch (currentAppState) {
+        case APP_STATE_IDLE: break;
+        case APP_STATE_BUILDING_MODEL: buildCurrentModelStep(); break;
+        case APP_STATE_MEASURING_IR:
+            measureInternalResistanceStep();
+            if (currentIRState == IR_STATE_IDLE) setAppState(APP_STATE_IDLE);
+            break;
+        case APP_STATE_CHARGING:
+            if (now - lastChargingHouseTime >= CHARGING_HOUSEKEEP_INTERVAL) {
+                lastChargingHouseTime = now;
+                if (!chargeBattery()) setAppState(APP_STATE_IDLE);
+            }
+            break;
+    }
+
+    if (now - lastDataGatherTime >= PLOT_DATA_UPDATE_INTERVAL) {
+        lastDataGatherTime = now;
+        gatherData();
+    }
+    homeScreen.gatherData();
+}
