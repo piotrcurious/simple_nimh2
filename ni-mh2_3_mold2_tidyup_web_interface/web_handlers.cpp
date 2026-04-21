@@ -68,7 +68,31 @@ String getJsonChargeLog() {
         json += "\"bt\":" + String(chargeLog[i].batteryTemperature, 2) + ",";
         json += "\"d\":" + String(chargeLog[i].dutyCycle) + ",";
         json += "\"irlu\":" + String(chargeLog[i].internalResistanceLoadedUnloaded, 3) + ",";
-        json += "\"irp\":" + String(chargeLog[i].internalResistancePairs, 3);
+        json += "\"irp\":" + String(chargeLog[i].internalResistancePairs, 3) + ",";
+
+        float td = chargeLog[i].batteryTemperature - chargeLog[i].ambientTemperature;
+        json += "\"td\":" + String(td, 2) + ",";
+
+        // Calculate estimated threshold like in graphing.cpp
+        size_t prevIdx = (i > 0) ? i - 1 : 0;
+        float estimatedDiff = estimateTempDiff(
+                chargeLog[i].voltage,
+                chargeLog[i].voltage,
+                chargeLog[i].current,
+                regressedInternalResistancePairsIntercept,
+                chargeLog[i].ambientTemperature,
+                chargeLog[i].timestamp,
+                chargeLog[prevIdx].timestamp,
+                chargeLog[i].batteryTemperature,
+                DEFAULT_CELL_MASS_KG,
+                DEFAULT_SPECIFIC_HEAT,
+                DEFAULT_SURFACE_AREA_M2,
+                DEFAULT_CONVECTIVE_H,
+                DEFAULT_EMISSIVITY
+            );
+        float thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
+        json += "\"th\":" + String(thresholdValue, 2);
+
         json += "}";
         if (i < chargeLog.size() - 1) json += ",";
     }
@@ -141,7 +165,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     <div class="container">
         <div class="panel">
-            Main Graph (V:Yellow, I:Magenta, T1:Red, T2:Green)
+            Main Graph (V:Yellow, I:Magenta, T1:Red, T2:Green, dT:Blue)
             <canvas id="mainGraph"></canvas>
         </div>
         <div class="panel">
@@ -153,7 +177,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             <canvas id="irGraph"></canvas>
         </div>
         <div class="panel">
-            Charge Log (V, I)
+            Charge Log (V:Y, I:M, %:Grey, dT:B, /dT:R, RiMH:Or, Ri:Cy)
             <canvas id="chargeGraph"></canvas>
         </div>
     </div>
@@ -203,6 +227,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             drawSeries(ctx, data.i, 'magenta', 0.0, 0.4);
             drawSeries(ctx, data.t1, 'red', 15, 40);
             drawSeries(ctx, data.t2, 'green', 15, 40);
+            drawSeries(ctx, data.td, 'blue', -0.5, 1.5);
         }
 
         function renderAmbient(data) {
@@ -239,8 +264,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
              if(!data || !data.length) return;
 
-             drawSeries(ctx, data.map(d => d.v), 'yellow', 1.0, 2.0);
              drawSeries(ctx, data.map(d => d.i), 'magenta', 0.0, 0.4);
+             drawSeries(ctx, data.map(d => d.v), 'yellow', 1.0, 2.0);
+             drawSeries(ctx, data.map(d => d.d), 'grey', 0, 255);
+             drawSeries(ctx, data.map(d => d.td), 'blue', -0.5, 1.5);
+             drawSeries(ctx, data.map(d => d.th), 'red', -0.5, 1.5);
+             drawSeries(ctx, data.map(d => d.irlu), 'orange', 0.0, 1.5);
+             drawSeries(ctx, data.map(d => d.irp), 'cyan', 0.0, 1.5);
         }
 
         function drawSeries(ctx, arr, color, min, max) {
