@@ -6,7 +6,9 @@ extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff
 extern float estimateCurrent(int dutyCycle);
 extern AppState currentAppState;
 
-uint32_t chargingStartTime = 0;
+#ifndef MOCK_TEST
+unsigned long chargingStartTime = 0;
+#endif
 ChargingState chargingState = CHARGE_IDLE;
 int cachedOptimalDuty = MAX_CHARGE_DUTY_CYCLE;
 unsigned long chargePhaseStartTime = 0;
@@ -109,7 +111,7 @@ float computeAbsoluteTempRiseFromHistory(int depth) {
         final_ambient = ambient ;
 
         float theta_new = estimateTempDiff(
-            vUnderLoad, vNoLoad, cur, Rparam, ambient, ts, prev_ts, T_sim
+            vUnderLoad, vNoLoad, cur, Rparam, ambient, ts, prev_ts, (float)T_sim
         );
 
         if (isfinite(theta_new)) {
@@ -125,7 +127,7 @@ float computeAbsoluteTempRiseFromHistory(int depth) {
         idx = (idx + 1) % TEMPRISE_ABS_MAX_DEPTH;
     }
 
-    float vs_ambient = T_sim - final_ambient;
+    float vs_ambient = (float)(T_sim - final_ambient);
     return vs_ambient;
 }
 
@@ -211,7 +213,7 @@ void startFindOptimalManagerAsync(int maxChargeDutyCycle, int suggestedStartDuty
     findOpt = FindOptManager();
     findOpt.active = true;
     findOpt.maxDC = (maxChargeDutyCycle < MIN_CHARGE_DUTY_CYCLE) ? MAX_CHARGE_DUTY_CYCLE : maxChargeDutyCycle;
-    findOpt.lowDC = max(MIN_CHARGE_DUTY_CYCLE, suggestedStartDutyCycle);
+    findOpt.lowDC = max(MIN_CHARGE_DUTY_CYCLE, (int)suggestedStartDutyCycle);
     findOpt.highDC = findOpt.maxDC;
     findOpt.optimalDC = findOpt.lowDC;
     findOpt.closestVoltageDifference = 1000.0f;
@@ -265,7 +267,7 @@ bool findOptimalChargingDutyCycleStepAsync() {
                     for (const auto& cached : findOpt.cache) {
                         if (std::fabs(result.current - cached.current) > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
                             float internalResistancePair = (cached.loadedVoltage - result.loadedVoltage) / (result.current - cached.current);
-                            float higherCurrent = std::max(result.current, cached.current);
+                            float higherCurrent = max(result.current, cached.current);
                             storeOrAverageResistanceData(higherCurrent, std::fabs(internalResistancePair),
                                                          internalResistanceDataPairs, resistanceDataCountPairs);
                         }
@@ -283,7 +285,7 @@ bool findOptimalChargingDutyCycleStepAsync() {
         return true;
     }
     if (findOpt.phase == RE_EVAL_CORRECTIVE_MEASUREMENT_PREPARE) {
-        if (findOpt.outlier_measurement_index >= findOpt.outliers.size()) {
+        if (findOpt.outlier_measurement_index >= (int)findOpt.outliers.size()) {
             findOpt.phase = RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE;
             return true;
         }
@@ -402,7 +404,7 @@ bool findOptimalChargingDutyCycleStepAsync() {
                 for (const auto& cached : findOpt.cache) {
                     if (std::fabs(cur.current - cached.current) > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
                         float internalResistancePair = (cached.loadedVoltage - cur.loadedVoltage) / (cur.current - cached.current);
-                        float higherCurrent = std::max(cur.current, cached.current);
+                        float higherCurrent = max(cur.current, cached.current);
                         storeOrAverageResistanceData(higherCurrent, std::fabs(internalResistancePair),
                                                      internalResistanceDataPairs, resistanceDataCountPairs);
                         bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
@@ -439,7 +441,7 @@ bool findOptimalChargingDutyCycleStepAsync() {
                 for (const auto& cached : findOpt.cache) {
                     if (std::fabs(finalData.current - cached.current) > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
                         float internalResistancePair = (cached.loadedVoltage - finalData.loadedVoltage) / (finalData.current - cached.current);
-                        float higherCurrent = std::max(finalData.current, cached.current);
+                        float higherCurrent = max(finalData.current, cached.current);
                         storeOrAverageResistanceData(higherCurrent, std::fabs(internalResistancePair),
                                                      internalResistanceDataPairs, resistanceDataCountPairs);
                         bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
@@ -473,8 +475,8 @@ void startRemeasure(float targetCurrent) {
     remeasure.active = true;
     remeasure.targetCurrent = targetCurrent;
     int predicted_dc = estimateDutyCycleForCurrent(targetCurrent);
-    remeasure.lowDC = max(MIN_CHARGE_DUTY_CYCLE, predicted_dc - 20);
-    remeasure.highDC = min(MAX_CHARGE_DUTY_CYCLE, predicted_dc + 20);
+    remeasure.lowDC = max(MIN_CHARGE_DUTY_CYCLE, (int)(predicted_dc - 20));
+    remeasure.highDC = min(MAX_CHARGE_DUTY_CYCLE, (int)(predicted_dc + 20));
     remeasure.phase = REMEASURE_BINARY_SEARCH_PREPARE;
 }
 
@@ -503,7 +505,7 @@ bool remeasureStep() {
                         for (const auto& cached : findOpt.cache) {
                             if (std::fabs(result.current - cached.current) > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
                                 float internalResistancePair = (cached.loadedVoltage - result.loadedVoltage) / (result.current - cached.current);
-                                float higherCurrent = std::max(result.current, cached.current);
+                                float higherCurrent = max(result.current, cached.current);
                                 storeOrAverageResistanceData(higherCurrent, std::fabs(internalResistancePair),
                                                              internalResistanceDataPairs, resistanceDataCountPairs);
                                 bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
@@ -597,7 +599,7 @@ bool chargeBattery() {
     switch (chargingState) {
         case CHARGE_IDLE: {
             chargingStartTime = now;
-            eval_mAh_snapshot = mAh_charged;
+            eval_mAh_snapshot = (float)mAh_charged;
             eval_time_snapshot = now;
             reeval_active = false;
             lastChargeEvaluationTime = now;
@@ -612,8 +614,8 @@ bool chargeBattery() {
             startLog.timestamp = now;
             startLog.current = initialData.current;
             startLog.voltage = initialData.voltage;
-            startLog.ambientTemperature = initialData.temp1;
-            startLog.batteryTemperature = initialData.temp2;
+            startLog.ambientTemperature = (float)initialData.temp1;
+            startLog.batteryTemperature = (float)initialData.temp2;
             startLog.dutyCycle = MAX_CHARGE_DUTY_CYCLE;
             startLog.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
             startLog.internalResistancePairs = regressedInternalResistancePairsIntercept;
@@ -631,12 +633,12 @@ bool chargeBattery() {
                 applyDuty(appliedDC);
                 lastOptimalDutyCycle = dutyCycle;
                 lastChargeEvaluationTime = now;
-                lastReeval_delta_mAh = mAh_charged - reeval_start_mAh;
+                lastReeval_delta_mAh = (float)(mAh_charged - reeval_start_mAh);
                 lastReeval_duration_ms = (now > reeval_start_ms) ? (now - reeval_start_ms) : 0;
                 double reeval_duration_h = lastReeval_duration_ms / 3600000.0f;
                 double reeval_Ah = lastReeval_delta_mAh / 1000.0f;
                 if (reeval_duration_h > 0.0f) {
-                    lastReeval_avgCurrent_A = reeval_Ah / reeval_duration_h;
+                    lastReeval_avgCurrent_A = (float)(reeval_Ah / reeval_duration_h);
                 } else {
                     lastReeval_avgCurrent_A = 0.0f;
                 }
@@ -664,15 +666,15 @@ bool chargeBattery() {
                 if (delta_h > 0.0f) avgCurrentA = (delta_mAh / 1000.0f) / delta_h;
 
                 float tempRise_relative = estimateTempDiff(
-                    voltage, voltage, avgCurrentA, regressedInternalResistancePairsIntercept,
-                    temp1, now, eval_time_snapshot, temp2
+                    voltage, voltage, (float)avgCurrentA, regressedInternalResistancePairsIntercept,
+                    (float)temp1, now, eval_time_snapshot, (float)temp2
                 );
                 ChargeLogData entry;
                 entry.timestamp = now;
-                entry.current = avgCurrentA;
+                entry.current = (float)avgCurrentA;
                 entry.voltage = voltage;
-                entry.ambientTemperature = temp1;
-                entry.batteryTemperature = temp2;
+                entry.ambientTemperature = (float)temp1;
+                entry.batteryTemperature = (float)temp2;
                 entry.dutyCycle = dutyCycle;
                 entry.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
                 entry.internalResistancePairs = regressedInternalResistancePairsIntercept;
@@ -690,7 +692,7 @@ bool chargeBattery() {
                 if (tempRise_relative < 0.0f && fabs(tempRise_relative) < 1e-4f) tempRise_relative = 0.0f;
                 float finalTempRise = temprise_balance * tempRise_relative + (1.0f - temprise_balance) * temprise_absolute;
 
-                eval_mAh_snapshot = mAh_charged;
+                eval_mAh_snapshot = (float)mAh_charged;
                 eval_time_snapshot = now;
                 lastChargeEvaluationTime = now;
                 if (currentRampTarget >= maximumCurrent) {
@@ -703,7 +705,7 @@ bool chargeBattery() {
                 }
                 if (chargingState == CHARGE_MONITOR) {
                     reeval_active = true;
-                    reeval_start_mAh = mAh_charged;
+                    reeval_start_mAh = (float)mAh_charged;
                     reeval_start_ms = now;
                     int suggestedStartDutyCycle = min( (int)(0.5 * lastOptimalDutyCycle),MAX_CHARGE_DUTY_CYCLE);
                     int suggestedEndDutyCycle   = max( (int)(2 * lastOptimalDutyCycle),MIN_CHARGE_DUTY_CYCLE);
