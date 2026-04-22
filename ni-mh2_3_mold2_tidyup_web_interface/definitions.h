@@ -84,7 +84,7 @@ const float MIN_VALID_RESISTANCE = 0.0f;
 const int MAX_RESISTANCE_POINTS = 100;
 
 // Plotting parameters (now used for memory buffers only)
-#define PLOT_WIDTH          160
+#define PLOT_WIDTH          120
 
 // --- Enums and Structs ---
 
@@ -122,8 +122,8 @@ struct MeasurementData {
     double temp2;
     double tempDiff;
     float t1_millivolts;
-    int dutyCycle;
-    unsigned long timestamp;
+    uint32_t timestamp;
+    uint8_t dutyCycle;
 };
 
 struct CurrentModel {
@@ -132,12 +132,12 @@ struct CurrentModel {
 };
 
 struct ChargeLogData {
-    unsigned long timestamp;
+    uint32_t timestamp;
     float current;
     float voltage;
     float ambientTemperature;
     float batteryTemperature;
-    int dutyCycle;
+    uint8_t dutyCycle;
     float internalResistanceLoadedUnloaded;
     float internalResistancePairs;
 };
@@ -148,8 +148,8 @@ struct MHElectrodeData {
     float targetVoltage;
     float voltageDifference;
     float current;
-    uint32_t dutyCycle;
     uint32_t timestamp;
+    uint8_t dutyCycle;
 };
 
 enum ChargingState {
