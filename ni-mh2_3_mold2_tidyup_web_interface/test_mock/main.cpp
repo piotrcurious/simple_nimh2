@@ -144,7 +144,6 @@ void advanceSimulation(int steps, unsigned long ms_per_step) {
 
 void testThermalModel() {
     std::cout << "Testing Thermal Model (estimateTempDiff)..." << std::endl;
-    // float estimateTempDiff(float vL, float vNL, float cur, float R, float amb, uint32_t now, uint32_t last, float bat, ...)
     float vL = 1.2f;
     float vNL = 1.3f;
     float cur = 0.1f;
@@ -156,21 +155,134 @@ void testThermalModel() {
 
     float theta = estimateTempDiff(vL, vNL, cur, R, amb, now, last, bat);
     std::cout << "Theta rise after 1s: " << theta << std::endl;
-    assert(theta >= 0); // Should have some rise or stay same
+    assert(theta >= 0);
     std::cout << "Thermal model test passed!" << std::endl;
+}
+
+void testWebInterfaceFunctions() {
+    std::cout << "Testing Web Interface JSON functions..." << std::endl;
+
+    // Setup some data
+    voltage_mv = 1450.0f;
+    current_ma = 250.0f;
+    mAh_charged = 123.456;
+    currentAppState = APP_STATE_CHARGING;
+
+    String state = getJsonState();
+    std::cout << "getJsonState: " << state.c_str() << std::endl;
+    assert(state.indexOf("\"app\":3") != -1);
+    assert(state.indexOf("\"v\":1.45") != -1);
+    assert(state.indexOf("\"mah\":123.456") != -1);
+
+    for(int i=0; i<PLOT_WIDTH; i++) {
+        temp1_values[i] = 20.0f + i/10.0f;
+        homeScreen.temp_history[i] = 22.0f;
+    }
+
+    String history = getJsonHistory();
+    assert(history.indexOf("\"t1\":[20.00") != -1);
+
+    String ambient = getJsonAmbient();
+    assert(ambient.indexOf("\"t\":[22.00") != -1);
+
+    chargeLog.clear();
+    ChargeLogData entry = {mock_millis, 0.25f, 1.45f, 24.0f, 26.0f, 128, 0.2f, 0.18f};
+    chargeLog.push_back(entry);
+    String clog = getJsonChargeLog();
+    std::cout << "getJsonChargeLog: " << clog.c_str() << std::endl;
+    assert(clog.indexOf("\"irlu\":0.200") != -1);
+    assert(clog.indexOf("\"td\":2.00") != -1);
+    assert(clog.indexOf("\"th\":") != -1); // Check threshold presence
+
+    internalResistanceData[0][0] = 0.1f; internalResistanceData[0][1] = 0.3f;
+    resistanceDataCount = 1;
+    String ir = getJsonIR();
+    assert(ir.indexOf("[0.100,0.300]") != -1);
+
+    std::cout << "Web Interface functions tests passed!" << std::endl;
+}
+
+void testCommandHandling() {
+    std::cout << "Testing Command Handling..." << std::endl;
+
+    currentAppState = APP_STATE_IDLE;
+    server.args["cmd"] = "charge";
+    handleCommand();
+    assert(currentAppState == APP_STATE_BUILDING_MODEL);
+    assert(resetAh == true);
+
+    server.args["cmd"] = "stop";
+    handleCommand();
+    assert(currentAppState == APP_STATE_IDLE);
+    assert(dutyCycle == 0);
+
+    std::cout << "Command handling test passed!" << std::endl;
+}
+
+void testFullCycleSimulation() {
+    std::cout << "Testing Full Cycle Simulation..." << std::endl;
+
+    // Reset system
+    currentAppState = APP_STATE_IDLE;
+    chargingState = CHARGE_IDLE;
+    mAh_charged = 0;
+    chargeLog.clear();
+
+    // 1. Start Charge -> Building Model
+    server.args["cmd"] = "charge";
+    handleCommand();
+    assert(currentAppState == APP_STATE_BUILDING_MODEL);
+
+    // 2. Advance -> transitions to charging (model built)
+    advanceSimulation(1, 1000);
+    assert(currentAppState == APP_STATE_CHARGING);
+    assert(chargingState == CHARGE_FIND_OPT);
+
+    // 3. Find Opt phase -> transitions to monitor
+    // We need to simulate findOpt finishing.
+    // In mock, findOptimalChargingDutyCycleStepAsync will return false when done.
+    while(findOpt.active) {
+        findOptimalChargingDutyCycleStepAsync();
+        mock_millis += 1000;
+        // Mock measurement completion
+        if(meas.state == MEAS_STOPLOAD_WAIT || meas.state == MEAS_APPLY_LOAD) {
+            meas.resultReady = true;
+            meas.state = MEAS_COMPLETE;
+        }
+    }
+
+    // Process one chargeBattery to move to MONITOR
+    chargeBattery();
+    assert(chargingState == CHARGE_MONITOR);
+
+    // 4. Monitoring -> Accumulate mAh and logs
+    advanceSimulation(300, 1000); // 5 minutes
+    std::cout << "mAh after 5m: " << mAh_charged << ", Logs: " << chargeLog.size() << std::endl;
+    assert(mAh_charged > 0);
+    assert(chargeLog.size() >= 1);
+
+    // 5. Trigger IR Measure
+    server.args["cmd"] = "ir";
+    handleCommand();
+    assert(currentAppState == APP_STATE_MEASURING_IR);
+    assert(currentIRState == IR_STATE_START);
+
+    // 6. Stop
+    server.args["cmd"] = "stop";
+    handleCommand();
+    assert(currentAppState == APP_STATE_IDLE);
+    assert(dutyCycle == 0);
+
+    std::cout << "Full cycle simulation test passed!" << std::endl;
 }
 
 int main() {
     std::cout << "Starting Advanced Simulator Tests..." << std::endl;
 
     testThermalModel();
-
-    server.args["cmd"] = "charge";
-    handleCommand();
-    advanceSimulation(100, 1000);
-    std::cout << "State: " << (int)currentAppState << ", mAh: " << mAh_charged << std::endl;
-    assert(currentAppState == APP_STATE_CHARGING);
-    assert(mAh_charged > 0);
+    testWebInterfaceFunctions();
+    testCommandHandling();
+    testFullCycleSimulation();
 
     std::cout << "All simulation tests passed!" << std::endl;
     return 0;

@@ -45,6 +45,14 @@ public:
 
     float toFloat() const { return std::stof(*this); }
     int toInt() const { return std::stoi(*this); }
+    int indexOf(const String& str) const {
+        size_t pos = this->find((std::string)str);
+        return (pos == std::string::npos) ? -1 : (int)pos;
+    }
+    int indexOf(const char* str) const {
+        size_t pos = this->find(str ? str : "");
+        return (pos == std::string::npos) ? -1 : (int)pos;
+    }
 };
 
 extern unsigned long mock_millis;
