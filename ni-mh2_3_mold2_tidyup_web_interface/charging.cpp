@@ -2,10 +2,6 @@
 #include "definitions.h"
 #include "logging.h"
 
-extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
-extern float estimateCurrent(int dutyCycle);
-extern AppState currentAppState;
-
 #ifndef MOCK_TEST
 unsigned long chargingStartTime = 0;
 ChargingState chargingState = CHARGE_IDLE;
