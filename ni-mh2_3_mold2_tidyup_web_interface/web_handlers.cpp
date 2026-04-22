@@ -221,31 +221,31 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         function renderMain(data) {
             const canvas = document.getElementById('mainGraph');
             const ctx = canvas.getContext('2d');
-            const margin = { top: 20, right: 40, bottom: 30, left: 50 };
+            const margin = { top: 20, right: 60, bottom: 30, left: 50 };
             ctx.clearRect(0,0,canvas.width, canvas.height);
 
             drawAxes(ctx, margin, 0, 320, "Time", 0, 40, "Value");
-            drawSeries(ctx, data.v, 'yellow', 1.0, 2.0, margin);
-            drawSeries(ctx, data.i, 'magenta', 0.0, 0.4, margin);
-            drawSeries(ctx, data.t1, 'red', 15, 40, margin);
-            drawSeries(ctx, data.t2, 'green', 15, 40, margin);
-            drawSeries(ctx, data.td, 'blue', -0.5, 1.5, margin);
+            drawSeries(ctx, data.v, 'yellow', 1.0, 2.0, margin, "V");
+            drawSeries(ctx, data.i, 'magenta', 0.0, 0.4, margin, "I");
+            drawSeries(ctx, data.t1, 'red', 15, 40, margin, "T1");
+            drawSeries(ctx, data.t2, 'green', 15, 40, margin, "T2");
+            drawSeries(ctx, data.td, 'blue', -0.5, 1.5, margin, "dT");
         }
 
         function renderAmbient(data) {
             const canvas = document.getElementById('ambientGraph');
             const ctx = canvas.getContext('2d');
-            const margin = { top: 20, right: 40, bottom: 30, left: 50 };
+            const margin = { top: 20, right: 60, bottom: 30, left: 50 };
             ctx.clearRect(0,0,canvas.width, canvas.height);
 
             drawAxes(ctx, margin, 0, 320, "Time", 0, 100, "T/H");
-            drawSeries(ctx, data.t, 'red', 10, 40, margin);
-            drawSeries(ctx, data.d, 'green', 10, 40, margin);
-            drawSeries(ctx, data.h, 'blue', 0, 100, margin);
+            drawSeries(ctx, data.t, 'red', 10, 40, margin, "T");
+            drawSeries(ctx, data.d, 'green', 10, 40, margin, "Dew");
+            drawSeries(ctx, data.h, 'blue', 0, 100, margin, "H");
 
             // Draw Mold Threshold line
             const y = (canvas.height - margin.bottom) - (65 / 100) * (canvas.height - margin.top - margin.bottom);
-            ctx.strokeStyle = 'orange';
+            ctx.strokeStyle = 'rgba(255, 165, 0, 0.6)';
             ctx.lineWidth = 1;
             ctx.setLineDash([5, 5]);
             ctx.beginPath(); ctx.moveTo(margin.left, y); ctx.lineTo(canvas.width - margin.right, y); ctx.stroke();
@@ -255,18 +255,18 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         function renderIR(data) {
              const canvas = document.getElementById('irGraph');
              const ctx = canvas.getContext('2d');
-             const margin = { top: 20, right: 40, bottom: 30, left: 50 };
+             const margin = { top: 20, right: 60, bottom: 30, left: 50 };
              ctx.clearRect(0,0,canvas.width, canvas.height);
 
              drawAxes(ctx, margin, 0, 0.5, "Current (A)", 0, 1.0, "Resistance (Ω)");
-             drawXY(ctx, data.lu, 'white', 0, 0.5, 0, 1.0, margin);
-             drawXY(ctx, data.pairs, 'cyan', 0, 0.5, 0, 1.0, margin);
+             drawXY(ctx, data.lu, 'white', 0, 0.5, 0, 1.0, margin, "LU");
+             drawXY(ctx, data.pairs, 'cyan', 0, 0.5, 0, 1.0, margin, "Pairs");
         }
 
         function renderCharge(data) {
              const canvas = document.getElementById('chargeGraph');
              const ctx = canvas.getContext('2d');
-             const margin = { top: 20, right: 40, bottom: 30, left: 50 };
+             const margin = { top: 20, right: 80, bottom: 30, left: 50 };
              ctx.clearRect(0,0,canvas.width, canvas.height);
 
              if(!data || !data.length) {
@@ -275,13 +275,20 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
              }
 
              drawAxes(ctx, margin, 0, data.length, "Index", 0, 255, "Scaled Val");
-             drawSeries(ctx, data.map(d => d.i), 'magenta', 0.0, 0.4, margin);
-             drawSeries(ctx, data.map(d => d.v), 'yellow', 1.0, 2.0, margin);
-             drawSeries(ctx, data.map(d => d.d), 'grey', 0, 255, margin);
-             drawSeries(ctx, data.map(d => d.td), 'blue', -0.5, 1.5, margin);
-             drawSeries(ctx, data.map(d => d.th), 'red', -0.5, 1.5, margin);
-             drawSeries(ctx, data.map(d => d.irlu), 'orange', 0.0, 1.5, margin);
-             drawSeries(ctx, data.map(d => d.irp), 'cyan', 0.0, 1.5, margin);
+
+             const tdArr = data.map(d => d.td);
+             const thArr = data.map(d => d.th);
+             // Use a larger scale for thermal data to ensure visibility
+             const tMin = -1.0, tMax = 10.0;
+             drawRegion(ctx, tdArr, thArr, 'rgba(255, 0, 0, 0.2)', tMin, tMax, margin);
+
+             drawSeries(ctx, data.map(d => d.i), 'magenta', 0.0, 0.5, margin, "I");
+             drawSeries(ctx, data.map(d => d.v), 'yellow', 1.0, 2.0, margin, "V");
+             drawSeries(ctx, data.map(d => d.d), 'grey', 0, 255, margin, "Duty");
+             drawSeries(ctx, data.map(d => d.td), 'blue', tMin, tMax, margin, "dT");
+             drawSeries(ctx, data.map(d => d.th), 'red', tMin, tMax, margin, "Th");
+             drawSeries(ctx, data.map(d => d.irlu), 'orange', 0.0, 1.0, margin, "RiLU");
+             drawSeries(ctx, data.map(d => d.irp), 'cyan', 0.0, 1.0, margin, "RiP");
         }
 
         function drawAxes(ctx, margin, xMin, xMax, xLabel, yMin, yMax, yLabel) {
@@ -342,7 +349,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             ctx.restore();
         }
 
-        function drawSeries(ctx, arr, color, min, max, margin) {
+        function drawSeries(ctx, arr, color, min, max, margin, label = "") {
             if(!arr || !arr.length) return;
             const plotW = ctx.canvas.width - margin.left - margin.right;
             const plotH = ctx.canvas.height - margin.top - margin.bottom;
@@ -350,17 +357,51 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             ctx.strokeStyle = color;
             ctx.lineWidth = 2;
             ctx.beginPath();
+            let lastX, lastY, lastVal;
             let first = true;
             arr.forEach((v, i) => {
                 if (v === null || isNaN(v)) return;
                 const x = margin.left + (i / (arr.length-1)) * plotW;
                 const y = (ctx.canvas.height - margin.bottom) - ((v - min) / (max - min)) * plotH;
                 if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
+                lastX = x; lastY = y; lastVal = v;
             });
             ctx.stroke();
+
+            if (label && !isNaN(lastY)) {
+                ctx.fillStyle = color;
+                ctx.textAlign = 'left';
+                ctx.font = 'bold 10px sans-serif';
+                let yPos = Math.min(Math.max(lastY, margin.top + 10), ctx.canvas.height - margin.bottom - 2);
+                ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
+            }
         }
 
-        function drawXY(ctx, points, color, xMin, xMax, yMin, yMax, margin) {
+        function drawRegion(ctx, arr1, arr2, color, min, max, margin) {
+            if(!arr1 || !arr1.length || !arr2 || !arr2.length) return;
+            const plotW = ctx.canvas.width - margin.left - margin.right;
+            const plotH = ctx.canvas.height - margin.top - margin.bottom;
+
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            let first = true;
+            for(let i=0; i<arr1.length; i++) {
+                if (arr1[i] === null || isNaN(arr1[i])) continue;
+                const x = margin.left + (i / (arr1.length-1)) * plotW;
+                const y = (ctx.canvas.height - margin.bottom) - ((arr1[i] - min) / (max - min)) * plotH;
+                if (first) { ctx.moveTo(x, y); first = false; } else ctx.lineTo(x, y);
+            }
+            for(let i=arr2.length-1; i>=0; i--) {
+                if (arr2[i] === null || isNaN(arr2[i])) continue;
+                const x = margin.left + (i / (arr2.length-1)) * plotW;
+                const y = (ctx.canvas.height - margin.bottom) - ((arr2[i] - min) / (max - min)) * plotH;
+                ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        function drawXY(ctx, points, color, xMin, xMax, yMin, yMax, margin, label = "") {
              if(!points || !points.length) return;
              const plotW = ctx.canvas.width - margin.left - margin.right;
              const plotH = ctx.canvas.height - margin.top - margin.bottom;
@@ -368,14 +409,37 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
              ctx.strokeStyle = color;
              ctx.lineWidth = 2;
              ctx.beginPath();
+             let lastX, lastY, lastVal;
              points.forEach((p, i) => {
                  const x = margin.left + ((p[0] - xMin) / (xMax - xMin)) * plotW;
                  const y = (ctx.canvas.height - margin.bottom) - ((p[1] - yMin) / (yMax - yMin)) * plotH;
                  if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+                 lastX = x; lastY = y; lastVal = p[1];
              });
              ctx.stroke();
+
+             if (label && !isNaN(lastY)) {
+                ctx.fillStyle = color;
+                ctx.textAlign = 'left';
+                ctx.font = 'bold 10px sans-serif';
+                let yPos = Math.min(Math.max(lastY, margin.top + 10), ctx.canvas.height - margin.bottom - 2);
+                ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
+            }
         }
 
+        function resizeAll() {
+            const canvases = document.querySelectorAll('canvas');
+            canvases.forEach(canvas => {
+                const rect = canvas.getBoundingClientRect();
+                if (canvas.width !== rect.width || canvas.height !== rect.height) {
+                    canvas.width = rect.width;
+                    canvas.height = rect.height;
+                }
+            });
+        }
+
+        window.addEventListener('resize', resizeAll);
+        resizeAll();
         setInterval(updateData, 1000);
         updateData();
     </script>
