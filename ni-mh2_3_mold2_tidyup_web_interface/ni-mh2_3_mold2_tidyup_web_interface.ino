@@ -24,9 +24,6 @@ constexpr TickType_t TASK_DELAY_SHT4_MS = 100;
 constexpr TickType_t TASK_DELAY_THERMISTOR_MS = 50;
 
 // --- External symbols ---
-extern void startMHElectrodeMeasurement(int testDutyCycle, unsigned long stabilization_delay, unsigned long unloaded_delay);
-extern void updateTemperatureHistory(double temp1, double temp2, double tempDiff, float voltage, float current);
-extern void startCharging();
 extern void measureInternalResistanceStep();
 extern IRState currentIRState;
 extern void handleRoot();

@@ -2,10 +2,6 @@
 #include "definitions.h"
 #include "logging.h"
 
-extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
-extern float estimateCurrent(int dutyCycle);
-extern AppState currentAppState;
-
 #ifndef MOCK_TEST
 unsigned long chargingStartTime = 0;
 ChargingState chargingState = CHARGE_IDLE;
@@ -130,8 +126,9 @@ float computeAbsoluteTempRiseFromHistory(int depth) {
         if (!isfinite(ambient)) ambient = 25.0f;
         final_ambient = ambient ;
 
+        float local_unapplied = 0.0f; // History replay doesn't carry over unapplied energy across separate reevaluations in this simple model
         float theta_new = estimateTempDiff(
-            vUnderLoad, vNoLoad, cur, Rparam, ambient, ts, prev_ts, (float)T_sim
+            vUnderLoad, vNoLoad, cur, Rparam, ambient, ts, prev_ts, (float)T_sim, &local_unapplied
         );
 
         if (isfinite(theta_new)) {
@@ -573,6 +570,7 @@ static float thermalConductance_W_per_K(float area, float h, float emissivity, f
 float estimateTempDiff(
   float voltageUnderLoad, float voltageNoLoad, float current, float internalResistanceParam,
   float ambientTempC, uint32_t currentTime, uint32_t lastChargeEvaluationTime, float BatteryTempC,
+  float* unappliedEnergy_J,
   float cellMassKg, float specificHeat, float area, float convectiveH, float emissivity
 ) {
   uint32_t dt_ms = (uint32_t)(currentTime - lastChargeEvaluationTime);
@@ -587,14 +585,14 @@ float estimateTempDiff(
   float theta0 = BatteryTempC - ambientTempC;
   float E_generated_J = P * dt_s;
   float E_released_J = 0.0f;
-  if (g_unappliedEnergy_J > 0.0f) {
+  if (unappliedEnergy_J && *unappliedEnergy_J > 0.0f) {
     float tau_rel = (g_internalReleaseTau_s > tiny) ? g_internalReleaseTau_s : tiny;
     float frac = 1.0f - expf(-dt_s / tau_rel);
     if (frac < 0.0f) frac = 0.0f;
     if (frac > 1.0f) frac = 1.0f;
-    E_released_J = g_unappliedEnergy_J * frac;
-    g_unappliedEnergy_J -= E_released_J;
-    if (g_unappliedEnergy_J < 0.0f) g_unappliedEnergy_J = 0.0f;
+    E_released_J = *unappliedEnergy_J * frac;
+    *unappliedEnergy_J -= E_released_J;
+    if (*unappliedEnergy_J < 0.0f) *unappliedEnergy_J = 0.0f;
   }
   float E_input_total_J = E_generated_J + E_released_J;
   if (G <= tiny || Cth <= tiny) {
@@ -687,7 +685,7 @@ bool chargeBattery() {
 
                 float tempRise_relative = estimateTempDiff(
                     voltage, voltage, (float)avgCurrentA, regressedInternalResistancePairsIntercept,
-                    (float)temp1, now, eval_time_snapshot, (float)temp2
+                    (float)temp1, now, eval_time_snapshot, (float)temp2, &g_unappliedEnergy_J
                 );
                 ChargeLogData entry;
                 entry.timestamp = now;

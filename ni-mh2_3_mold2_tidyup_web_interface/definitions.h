@@ -102,6 +102,17 @@ enum AppState {
     APP_STATE_CHARGING
 };
 
+enum IRState {
+    IR_STATE_IDLE,
+    IR_STATE_START,
+    IR_STATE_MEASURE_UNLOADED,
+    IR_STATE_WAIT_UNLOADED,
+    IR_STATE_GENERATE_PAIRS,
+    IR_STATE_MEASURE_LOADED_UNLOADED,
+    IR_STATE_MEASURE_PAIRS,
+    IR_STATE_FINISH
+};
+
 struct MeasurementData {
     float voltage;
     float current;
@@ -282,6 +293,7 @@ extern double THERMISTOR_1_OFFSET;
 // --- Function Declarations ---
 
 // from main .ino
+void applyDuty(uint32_t duty);
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
 void buildCurrentModel(bool warmStart);
 float estimateCurrent(int dutyCycle);
@@ -311,7 +323,7 @@ bool fetchMeasurementResult(MHElectrodeData &out);
 void abortMeasurement();
 void startFindOptimalManagerAsync(int maxChargeDutyCycle, int suggestedStartDutyCycle, bool isReeval);
 bool findOptimalChargingDutyCycleStepAsync();
-float estimateTempDiff(float voltageUnderLoad, float voltageNoLoad, float current, float internalResistanceParam, float ambientTempC, uint32_t currentTime, uint32_t lastChargeEvaluationTime, float BatteryTempC, float cellMassKg, float specificHeat, float area, float convectiveH, float emissivity);
+float estimateTempDiff(float voltageUnderLoad, float voltageNoLoad, float current, float internalResistanceParam, float ambientTempC, uint32_t currentTime, uint32_t lastChargeEvaluationTime, float BatteryTempC, float* unappliedEnergy_J = nullptr, float cellMassKg = DEFAULT_CELL_MASS_KG, float specificHeat = DEFAULT_SPECIFIC_HEAT, float area = DEFAULT_SURFACE_AREA_M2, float convectiveH = DEFAULT_CONVECTIVE_H, float emissivity = DEFAULT_EMISSIVITY);
 void startRemeasure(float targetCurrent);
 bool remeasureStep();
 

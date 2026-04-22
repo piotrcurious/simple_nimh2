@@ -22,11 +22,12 @@ float estimateTempDiff(
   uint32_t currentTime,
   uint32_t lastChargeEvaluationTime,
   float BatteryTempC,
-  float cellMassKg = DEFAULT_CELL_MASS_KG,
-  float specificHeat = DEFAULT_SPECIFIC_HEAT,
-  float area = DEFAULT_SURFACE_AREA_M2,
-  float convectiveH = DEFAULT_CONVECTIVE_H,
-  float emissivity = DEFAULT_EMISSIVITY
+  float* unappliedEnergy_J,
+  float cellMassKg,
+  float specificHeat,
+  float area,
+  float convectiveH,
+  float emissivity
 );
 
 void startMHElectrodeMeasurement(
