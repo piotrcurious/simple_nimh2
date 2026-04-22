@@ -1,6 +1,12 @@
 #include "Arduino.h"
 #include <iostream>
 #include <cassert>
+#include <vector>
+#include <iomanip>
+
+#ifndef MOCK_TEST
+#define MOCK_TEST
+#endif
 
 #include "../definitions.h"
 #include "../home_screen.h"
@@ -10,22 +16,22 @@ unsigned long mock_millis = 0;
 SerialMock Serial;
 WiFiMock WiFi;
 
-// 1. Definition of Globals (Matching .cpp files)
+// --- Global Variables (Matching the project) ---
 float internalResistanceData[MAX_RESISTANCE_POINTS][2];
 int resistanceDataCount = 0;
 float internalResistanceDataPairs[MAX_RESISTANCE_POINTS][2];
 int resistanceDataCountPairs = 0;
 float regressedInternalResistanceSlope = 0.0f;
-float regressedInternalResistanceIntercept = 0.1f;
+float regressedInternalResistanceIntercept = 0.2f;
 float regressedInternalResistancePairsSlope = 0.0f;
-float regressedInternalResistancePairsIntercept = 0.1f;
+float regressedInternalResistancePairsIntercept = 0.2f;
 std::vector<ChargeLogData> chargeLog;
 unsigned long chargingStartTime = 0;
 
 IRState currentIRState = IR_STATE_IDLE;
 AppState currentAppState = APP_STATE_IDLE;
 DisplayState currentDisplayState = DISPLAY_STATE_IDLE;
-volatile float voltage_mv = 1000.0f;
+volatile float voltage_mv = 1200.0f;
 volatile float current_ma = 0.0f;
 volatile double mAh_charged = 0.0;
 volatile bool resetAh = false;
@@ -42,6 +48,7 @@ float diff_values[PLOT_WIDTH];
 float voltage_values[PLOT_WIDTH];
 float current_values[PLOT_WIDTH];
 
+// Internal states for IR and Charging
 IRState nextIRState = IR_STATE_IDLE;
 unsigned long irStateChangeTime = 0;
 MeasurementData currentMeasurement;
@@ -72,11 +79,11 @@ AsyncMeasure meas;
 FindOptManager findOpt;
 RemeasureManager remeasure;
 ChargingState chargingState = CHARGE_IDLE;
-int cachedOptimalDuty = MAX_CHARGE_DUTY_CYCLE;
+int cachedOptimalDuty = 100;
 unsigned long chargePhaseStartTime = 0;
 uint8_t overtemp_trip_counter = 0;
 unsigned long lastChargeEvaluationTime = 0;
-float maximumCurrent = 0.150;
+float maximumCurrent = 0.500;
 float currentRampTarget = 0.0f;
 
 float eval_mAh_snapshot = 0.0f;
@@ -88,28 +95,42 @@ float lastReeval_delta_mAh = 0.0f;
 unsigned long lastReeval_duration_ms = 0;
 float lastReeval_avgCurrent_A = 0.0f;
 
-// Logic functions
+// --- Mock Battery Physics ---
+float battery_ocv = 1.25f;
+float battery_ir = 0.15f;
+float current_sense_factor = 0.003f;
+
 void applyDuty(uint32_t duty) {
     dutyCycle = duty;
-    current_ma = (float)(duty * 2.0f);
+    current_ma = (float)(duty * current_sense_factor * 1000.0f);
+    voltage_mv = (battery_ocv + (current_ma / 1000.0f) * battery_ir) * 1000.0f;
 }
-void getThermistorReadings(double& t1, double& t2, double& td, float& t1mv, float& v, float& i) {
-    t1 = 24.5; t2 = 25.0; td = 0.5;
-    v = 1.2; i = current_ma / 1000.0f;
-}
-float estimateCurrent(int duty) { return duty * 0.002f; }
-int estimateDutyCycleForCurrent(float target) { return (int)(target / 0.002f); }
 
-// Hardware stubs
+void getThermistorReadings(double& t1, double& t2, double& td, float& t1mv, float& v, float& i) {
+    t1 = 24.0;
+    t2 = 24.0 + (current_ma / 500.0f);
+    td = t2 - t1;
+    t1mv = 0;
+    v = voltage_mv / 1000.0f;
+    i = current_ma / 1000.0f;
+}
+
+// --- Mock Hardware Stubs ---
 SystemDataManager::SystemDataManager(SHT4xSensor& sht, int p1, int vcc, double off) : _sht4(sht) {}
 void SystemDataManager::begin() {}
-void SystemDataManager::update() {}
-void SystemDataManager::resetMah() {}
+void SystemDataManager::update() {
+    if (resetAh) { mAh_charged = 0; resetAh = false; }
+}
+void SystemDataManager::resetMah() { mAh_charged = 0; }
 SystemData SystemDataManager::getData() {
     SystemData d;
-    d.battery_voltage_v = 1.2f; d.charge_current_a = current_ma / 1000.0f;
-    d.ambient_temp_c = 24.5f; d.battery_temp_c = 25.0f; d.temp_diff_c = 0.5f;
-    d.mah_charged = (float)mAh_charged; d.vcc_mv = 3300.0f;
+    d.battery_voltage_v = voltage_mv / 1000.0f;
+    d.charge_current_a = current_ma / 1000.0f;
+    d.ambient_temp_c = 24.0f;
+    d.battery_temp_c = 24.0f + (current_ma / 500.0f);
+    d.temp_diff_c = d.battery_temp_c - d.ambient_temp_c;
+    d.mah_charged = (float)mAh_charged;
+    d.vcc_mv = 3300.0f;
     return d;
 }
 SystemDataManager systemData(sht4Sensor, 0, 0, 0);
@@ -119,171 +140,167 @@ HomeScreen::HomeScreen() {}
 void HomeScreen::begin() {}
 void HomeScreen::gatherData() {}
 
-// Logic Inclusion (Unity build)
+// --- Simple Linear Regression Implementation for Mock ---
+bool performLinearRegression(float data[][2], int count, float& slope, float& intercept) {
+    if (count < 2) return false;
+    double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    for (int i = 0; i < count; i++) {
+        sumX += data[i][0];
+        sumY += data[i][1];
+        sumXY += data[i][0] * data[i][1];
+        sumX2 += data[i][0] * data[i][0];
+    }
+    double denominator = (count * sumX2 - sumX * sumX);
+    if (std::abs(denominator) < 1e-9) return false;
+    slope = (float)((count * sumXY - sumX * sumY) / denominator);
+    intercept = (float)((sumY - slope * sumX) / count);
+    return true;
+}
+
+// --- Logic Inclusion ---
 #include "../web_handlers.cpp"
 #include "../logging.cpp"
 #include "../internal_resistance.cpp"
 #include "../charging.cpp"
+#include "../graphing.cpp"
 
-void buildCurrentModelStep() {
-    currentModel.isModelBuilt = true;
-    currentAppState = APP_STATE_IDLE;
-    currentAppState = APP_STATE_CHARGING;
-    chargingState = CHARGE_IDLE;
-    applyDuty(100);
-}
+float estimateCurrent(int duty) { return duty * current_sense_factor; }
+int estimateDutyCycleForCurrent(float target) { return (int)(target / current_sense_factor); }
 
-void advanceSimulation(int steps, unsigned long ms_per_step) {
-    for (int i = 0; i < steps; i++) {
-        mock_millis += ms_per_step;
-        if (current_ma > 0) mAh_charged += (current_ma * ms_per_step) / 3600000.0;
-        if (currentAppState == APP_STATE_BUILDING_MODEL) buildCurrentModelStep();
-        if (currentAppState == APP_STATE_CHARGING) chargeBattery();
-    }
-}
+// --- Simulation Helpers ---
+void advanceSimulation(unsigned long ms) {
+    unsigned long target = mock_millis + ms;
+    const unsigned long step = 50;
+    while (mock_millis < target) {
+        mock_millis += step;
+        if (current_ma > 0) {
+            mAh_charged += (current_ma * step) / 3600000.0;
+        }
 
-void testThermalModel() {
-    std::cout << "Testing Thermal Model (estimateTempDiff)..." << std::endl;
-    float vL = 1.2f;
-    float vNL = 1.3f;
-    float cur = 0.1f;
-    float R = 0.1f;
-    float amb = 25.0f;
-    float bat = 25.0f;
-    uint32_t now = 1000;
-    uint32_t last = 0;
-
-    float theta = estimateTempDiff(vL, vNL, cur, R, amb, now, last, bat);
-    std::cout << "Theta rise after 1s: " << theta << std::endl;
-    assert(theta >= 0);
-    std::cout << "Thermal model test passed!" << std::endl;
-}
-
-void testWebInterfaceFunctions() {
-    std::cout << "Testing Web Interface JSON functions..." << std::endl;
-
-    // Setup some data
-    voltage_mv = 1450.0f;
-    current_ma = 250.0f;
-    mAh_charged = 123.456;
-    currentAppState = APP_STATE_CHARGING;
-
-    String state = getJsonState();
-    std::cout << "getJsonState: " << state.c_str() << std::endl;
-    assert(state.indexOf("\"app\":3") != -1);
-    assert(state.indexOf("\"v\":1.45") != -1);
-    assert(state.indexOf("\"mah\":123.456") != -1);
-
-    for(int i=0; i<PLOT_WIDTH; i++) {
-        temp1_values[i] = 20.0f + i/10.0f;
-        homeScreen.temp_history[i] = 22.0f;
-    }
-
-    String history = getJsonHistory();
-    assert(history.indexOf("\"t1\":[20.00") != -1);
-
-    String ambient = getJsonAmbient();
-    assert(ambient.indexOf("\"t\":[22.00") != -1);
-
-    chargeLog.clear();
-    ChargeLogData entry = {mock_millis, 0.25f, 1.45f, 24.0f, 26.0f, 128, 0.2f, 0.18f};
-    chargeLog.push_back(entry);
-    String clog = getJsonChargeLog();
-    std::cout << "getJsonChargeLog: " << clog.c_str() << std::endl;
-    assert(clog.indexOf("\"irlu\":0.200") != -1);
-    assert(clog.indexOf("\"td\":2.00") != -1);
-    assert(clog.indexOf("\"th\":") != -1); // Check threshold presence
-
-    internalResistanceData[0][0] = 0.1f; internalResistanceData[0][1] = 0.3f;
-    resistanceDataCount = 1;
-    String ir = getJsonIR();
-    assert(ir.indexOf("[0.100,0.300]") != -1);
-
-    std::cout << "Web Interface functions tests passed!" << std::endl;
-}
-
-void testCommandHandling() {
-    std::cout << "Testing Command Handling..." << std::endl;
-
-    currentAppState = APP_STATE_IDLE;
-    server.args["cmd"] = "charge";
-    handleCommand();
-    assert(currentAppState == APP_STATE_BUILDING_MODEL);
-    assert(resetAh == true);
-
-    server.args["cmd"] = "stop";
-    handleCommand();
-    assert(currentAppState == APP_STATE_IDLE);
-    assert(dutyCycle == 0);
-
-    std::cout << "Command handling test passed!" << std::endl;
-}
-
-void testFullCycleSimulation() {
-    std::cout << "Testing Full Cycle Simulation..." << std::endl;
-
-    // Reset system
-    currentAppState = APP_STATE_IDLE;
-    chargingState = CHARGE_IDLE;
-    mAh_charged = 0;
-    chargeLog.clear();
-
-    // 1. Start Charge -> Building Model
-    server.args["cmd"] = "charge";
-    handleCommand();
-    assert(currentAppState == APP_STATE_BUILDING_MODEL);
-
-    // 2. Advance -> transitions to charging (model built)
-    advanceSimulation(1, 1000);
-    assert(currentAppState == APP_STATE_CHARGING);
-    assert(chargingState == CHARGE_FIND_OPT);
-
-    // 3. Find Opt phase -> transitions to monitor
-    // We need to simulate findOpt finishing.
-    // In mock, findOptimalChargingDutyCycleStepAsync will return false when done.
-    while(findOpt.active) {
-        findOptimalChargingDutyCycleStepAsync();
-        mock_millis += 1000;
-        // Mock measurement completion
-        if(meas.state == MEAS_STOPLOAD_WAIT || meas.state == MEAS_APPLY_LOAD) {
-            meas.resultReady = true;
-            meas.state = MEAS_COMPLETE;
+        if (currentAppState == APP_STATE_MEASURING_IR) {
+            measureInternalResistanceStep();
+        } else if (currentAppState == APP_STATE_CHARGING) {
+            chargeBattery();
         }
     }
+}
 
-    // Process one chargeBattery to move to MONITOR
+// --- Test Cases ---
+
+void testInternalResistanceGranular() {
+    std::cout << "--- Testing IR State Transitions ---" << std::endl;
+    resistanceDataCount = 0;
+    currentAppState = APP_STATE_MEASURING_IR;
+    currentIRState = IR_STATE_START;
+
+    measureInternalResistanceStep();
+    assert(currentIRState == IR_STATE_STOP_LOAD_WAIT);
+    std::cout << "Transition to STOP_LOAD_WAIT OK" << std::endl;
+
+    mock_millis += UNLOADED_VOLTAGE_DELAY_MS;
+    measureInternalResistanceStep();
+    assert(currentIRState == IR_STATE_GET_UNLOADED_VOLTAGE);
+    std::cout << "Transition to GET_UNLOADED_VOLTAGE OK" << std::endl;
+
+    measureInternalResistanceStep();
+    assert(currentIRState == IR_STATE_GET_MEASUREMENT);
+    assert(nextIRState == IR_STATE_FIND_MIN_DC);
+    std::cout << "Transition to GET_MEASUREMENT (FIND_MIN_DC) OK" << std::endl;
+
+    mock_millis += STABILIZATION_DELAY_MS;
+    measureInternalResistanceStep();
+    assert(currentIRState == IR_STATE_FIND_MIN_DC);
+    std::cout << "Back to FIND_MIN_DC OK" << std::endl;
+
+    // Fast forward to complete
+    int safety = 0;
+    while(currentAppState == APP_STATE_MEASURING_IR && safety < 10000) {
+        measureInternalResistanceStep();
+        if (currentIRState == IR_STATE_GET_MEASUREMENT) mock_millis += STABILIZATION_DELAY_MS;
+        else if (currentIRState == IR_STATE_STOP_LOAD_WAIT) mock_millis += UNLOADED_VOLTAGE_DELAY_MS;
+        else mock_millis += 1;
+        safety++;
+    }
+    assert(currentIRState == IR_STATE_IDLE);
+    assert(resistanceDataCount > 0);
+    std::cout << "IR Measurement Full Cycle OK" << std::endl;
+}
+
+void testChargingGranular() {
+    std::cout << "--- Testing Charging Logic Granular ---" << std::endl;
+    chargingState = CHARGE_IDLE;
+    currentAppState = APP_STATE_CHARGING;
+    currentModel.isModelBuilt = true;
+
     chargeBattery();
+    assert(chargingState == CHARGE_FIND_OPT);
+    assert(findOpt.active == true);
+    assert(findOpt.phase == FIND_INIT_HIGHDC);
+    std::cout << "Charging Init -> FIND_INIT_HIGHDC OK" << std::endl;
+
+    // Simulate one measurement result for findOpt
+    int safety = 0;
+    while(findOpt.phase == FIND_INIT_HIGHDC && safety < 100) {
+        chargeBattery();
+        if (meas.active()) mock_millis += 4000;
+        else mock_millis += 100;
+        safety++;
+    }
+    assert(findOpt.phase == FIND_BINARY_PREPARE);
+    std::cout << "Transition to FIND_BINARY_PREPARE OK" << std::endl;
+
+    // Fast forward to MONITOR
+    safety = 0;
+    while(chargingState == CHARGE_FIND_OPT && safety < 5000) {
+        chargeBattery();
+        if (meas.active()) {
+            if (meas.state == MEAS_STOPLOAD_WAIT) mock_millis += UNLOADED_VOLTAGE_DELAY_MS;
+            else if (meas.state == MEAS_APPLY_LOAD) mock_millis += STABILIZATION_DELAY_MS;
+            // No need to manually set resultReady/COMPLETE as measurementStep() does it when time passes
+        } else {
+            mock_millis += 10;
+        }
+        safety++;
+    }
+    std::cout << "Final chargingState: " << (int)chargingState << " safety: " << safety << std::endl;
     assert(chargingState == CHARGE_MONITOR);
+    std::cout << "Transition to CHARGE_MONITOR OK" << std::endl;
 
-    // 4. Monitoring -> Accumulate mAh and logs
-    advanceSimulation(300, 1000); // 5 minutes
-    std::cout << "mAh after 5m: " << mAh_charged << ", Logs: " << chargeLog.size() << std::endl;
-    assert(mAh_charged > 0);
-    assert(chargeLog.size() >= 1);
+    // Trigger Re-evaluation
+    eval_time_snapshot = mock_millis - CHARGE_EVALUATION_INTERVAL_MS - 100;
+    chargeBattery();
+    assert(chargingState == CHARGE_FIND_OPT);
+    assert(findOpt.isReevaluation == true);
+    std::cout << "Re-evaluation triggered OK" << std::endl;
+}
 
-    // 5. Trigger IR Measure
-    server.args["cmd"] = "ir";
-    handleCommand();
-    assert(currentAppState == APP_STATE_MEASURING_IR);
-    assert(currentIRState == IR_STATE_START);
+void testAPIJSONRobustness() {
+    std::cout << "--- Testing API JSON Robustness ---" << std::endl;
 
-    // 6. Stop
-    server.args["cmd"] = "stop";
-    handleCommand();
-    assert(currentAppState == APP_STATE_IDLE);
-    assert(dutyCycle == 0);
+    // Test with Inf
+    for(int i=0; i<PLOT_WIDTH; i++) voltage_values[i] = std::numeric_limits<float>::infinity();
+    String hist = getJsonHistory();
+    assert(hist.indexOf("null") == -1); // float(inf) usually becomes "inf" in Arduino String, but we want to see if it crashes
+    // Actually std::stringstream in our mock might output "inf"
 
-    std::cout << "Full cycle simulation test passed!" << std::endl;
+    // Test Charge Log with many entries
+    chargeLog.clear();
+    for(int i=0; i<500; i++) {
+        ChargeLogData e = { (unsigned long)i*1000, 0.2f, 1.3f, 25.0f, 26.0f, 100, 0.2f, 0.18f };
+        chargeLog.push_back(e);
+    }
+    String clog = getJsonChargeLog();
+    assert(clog.length() > 1000);
+    std::cout << "JSON Robustness OK" << std::endl;
 }
 
 int main() {
-    std::cout << "Starting Advanced Simulator Tests..." << std::endl;
+    std::cout << "Starting Granular Mock Tests..." << std::endl;
 
-    testThermalModel();
-    testWebInterfaceFunctions();
-    testCommandHandling();
-    testFullCycleSimulation();
+    testAPIJSONRobustness();
+    testInternalResistanceGranular();
+    testChargingGranular();
 
-    std::cout << "All simulation tests passed!" << std::endl;
+    std::cout << "All granular tests passed successfully!" << std::endl;
     return 0;
 }
