@@ -517,6 +517,7 @@ void distribute_error(float data[][2], int count, float spacing_threshold, float
     }
 }
 
+#ifndef MOCK_TEST
 bool performLinearRegression(float data[][2], int count, float& slope, float& intercept) {
     if (count < 2) return false;
     float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
@@ -530,3 +531,4 @@ bool performLinearRegression(float data[][2], int count, float& slope, float& in
     intercept = (sumY - slope * sumX) / n;
     return true;
 }
+#endif

@@ -2,11 +2,19 @@
 #include "definitions.h"
 #include <cfloat>
 
+#ifndef MOCK_TEST
 float temp1_values[PLOT_WIDTH];
 float temp2_values[PLOT_WIDTH];
 float diff_values[PLOT_WIDTH];
 float voltage_values[PLOT_WIDTH];
 float current_values[PLOT_WIDTH];
+#else
+extern float temp1_values[PLOT_WIDTH];
+extern float temp2_values[PLOT_WIDTH];
+extern float diff_values[PLOT_WIDTH];
+extern float voltage_values[PLOT_WIDTH];
+extern float current_values[PLOT_WIDTH];
+#endif
 float MAX_DIFF_TEMP = 1.5;
 
 // Function to update the temperature, voltage, and current history arrays
