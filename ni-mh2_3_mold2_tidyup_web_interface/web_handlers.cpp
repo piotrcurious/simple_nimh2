@@ -75,6 +75,7 @@ String getJsonChargeLog() {
 
         // Calculate estimated threshold like in graphing.cpp
         size_t prevIdx = (i > 0) ? i - 1 : 0;
+        float localEnergy = 0.0f;
         float estimatedDiff = estimateTempDiff(
                 chargeLog[i].voltage,
                 chargeLog[i].voltage,
@@ -84,6 +85,7 @@ String getJsonChargeLog() {
                 chargeLog[i].timestamp,
                 chargeLog[prevIdx].timestamp,
                 chargeLog[i].batteryTemperature,
+                &localEnergy,
                 DEFAULT_CELL_MASS_KG,
                 DEFAULT_SPECIFIC_HEAT,
                 DEFAULT_SURFACE_AREA_M2,

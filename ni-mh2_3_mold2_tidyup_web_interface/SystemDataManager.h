@@ -1,6 +1,9 @@
 #ifndef SYSTEM_DATA_MANAGER_H
 #define SYSTEM_DATA_MANAGER_H
 
+#ifndef SYSTEM_DATA_MANAGER_H_IMPL
+#define SYSTEM_DATA_MANAGER_H_IMPL
+
 #include <Arduino.h>
 #include "adc_dma.h"
 #include "SHT4xSensor.h"
@@ -48,4 +51,5 @@ private:
     double calculateBatteryTemp(double ambientTemp, float therm1Mv, float vccMv);
 };
 
+#endif // SYSTEM_DATA_MANAGER_H_IMPL
 #endif // SYSTEM_DATA_MANAGER_H

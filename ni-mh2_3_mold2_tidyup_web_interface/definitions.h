@@ -252,6 +252,7 @@ extern volatile bool resetAh;
 extern volatile uint32_t mAh_last_time;
 
 extern uint32_t dutyCycle;
+extern bool isCharging;
 extern bool isMeasuringResistance;
 extern ChargingState chargingState;
 extern int cachedOptimalDuty;
@@ -310,7 +311,7 @@ bool fetchMeasurementResult(MHElectrodeData &out);
 void abortMeasurement();
 void startFindOptimalManagerAsync(int maxChargeDutyCycle, int suggestedStartDutyCycle, bool isReeval);
 bool findOptimalChargingDutyCycleStepAsync();
-float estimateTempDiff(float voltageUnderLoad, float voltageNoLoad, float current, float internalResistanceParam, float ambientTempC, uint32_t currentTime, uint32_t lastChargeEvaluationTime, float BatteryTempC, float cellMassKg, float specificHeat, float area, float convectiveH, float emissivity);
+float estimateTempDiff(float voltageUnderLoad, float voltageNoLoad, float current, float internalResistanceParam, float ambientTempC, uint32_t currentTime, uint32_t lastChargeEvaluationTime, float BatteryTempC, float* unappliedEnergy_J = nullptr, float cellMassKg = DEFAULT_CELL_MASS_KG, float specificHeat = DEFAULT_SPECIFIC_HEAT, float area = DEFAULT_SURFACE_AREA_M2, float convectiveH = DEFAULT_CONVECTIVE_H, float emissivity = DEFAULT_EMISSIVITY);
 void startRemeasure(float targetCurrent);
 bool remeasureStep();
 
