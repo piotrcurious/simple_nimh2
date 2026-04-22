@@ -99,16 +99,29 @@ float lastReeval_avgCurrent_A = 0.0f;
 float battery_ocv = 1.25f;
 float battery_ir = 0.15f;
 float current_sense_factor = 0.003f;
+float battery_temp = 24.0f;
+float ambient_temp = 24.0f;
+float thermal_mass = 50.0f; // Simplified thermal mass
+float convection_coeff = 0.01f;
 
 void applyDuty(uint32_t duty) {
     dutyCycle = duty;
     current_ma = (float)(duty * current_sense_factor * 1000.0f);
+    // Simple V = OCV + I*R
     voltage_mv = (battery_ocv + (current_ma / 1000.0f) * battery_ir) * 1000.0f;
 }
 
+void updatePhysics(unsigned long step_ms) {
+    float current_a = current_ma / 1000.0f;
+    float power_w = current_a * current_a * battery_ir;
+    float heat_loss = convection_coeff * (battery_temp - ambient_temp);
+    float dt = (power_w - heat_loss) / thermal_mass * (step_ms / 1000.0f);
+    battery_temp += dt;
+}
+
 void getThermistorReadings(double& t1, double& t2, double& td, float& t1mv, float& v, float& i) {
-    t1 = 24.0;
-    t2 = 24.0 + (current_ma / 500.0f);
+    t1 = ambient_temp;
+    t2 = battery_temp;
     td = t2 - t1;
     t1mv = 0;
     v = voltage_mv / 1000.0f;
@@ -176,6 +189,8 @@ void advanceSimulation(unsigned long ms) {
         if (current_ma > 0) {
             mAh_charged += (current_ma * step) / 3600000.0;
         }
+
+        updatePhysics(step);
 
         if (currentAppState == APP_STATE_MEASURING_IR) {
             measureInternalResistanceStep();
@@ -274,6 +289,65 @@ void testChargingGranular() {
     std::cout << "Re-evaluation triggered OK" << std::endl;
 }
 
+void testSafetyOverTemperature() {
+    std::cout << "--- Testing Safety: Over-Temperature Shutdown ---" << std::endl;
+    battery_temp = 24.0f;
+    ambient_temp = 24.0f;
+    battery_ir = 0.15f;
+    currentAppState = APP_STATE_CHARGING;
+    currentModel.isModelBuilt = true;
+    chargingState = CHARGE_MONITOR;
+    dutyCycle = 100;
+    applyDuty(dutyCycle);
+
+    // Ensure currentRampTarget is high enough
+    currentRampTarget = maximumCurrent;
+    // Set last evaluation time to long ago to trigger check immediately
+    eval_time_snapshot = mock_millis - CHARGE_EVALUATION_INTERVAL_MS - 1;
+
+    // Artificially heat the battery
+    battery_temp = ambient_temp + 20.0f;
+
+    // We need 3 trips (OVERTEMP_TRIP_TRESHOLD)
+    for(int i=0; i<4; i++) {
+        eval_time_snapshot = mock_millis - CHARGE_EVALUATION_INTERVAL_MS - 1;
+        chargeBattery();
+        // After each evaluation, it might go back to FIND_OPT if re-evaluation is triggered
+        if (chargingState == CHARGE_FIND_OPT) {
+            // Fast forward FIND_OPT
+            while(chargingState == CHARGE_FIND_OPT) {
+                chargeBattery();
+                mock_millis += 1000;
+            }
+        }
+    }
+
+    assert(chargingState == CHARGE_STOPPED || dutyCycle == 0);
+    std::cout << "Safety Shutdown OK" << std::endl;
+}
+
+void testVoltageDipBehavior() {
+    std::cout << "--- Testing Behavior: Voltage Dip ---" << std::endl;
+    battery_ocv = 1.4f;
+    battery_temp = 24.0f;
+    currentAppState = APP_STATE_CHARGING;
+    chargingState = CHARGE_MONITOR;
+    dutyCycle = 100;
+    applyDuty(dutyCycle);
+
+    float initial_v = voltage_mv;
+    battery_ocv = 1.1f; // Simulated dip (e.g. cell internal short or contact issue)
+    applyDuty(dutyCycle);
+
+    assert(voltage_mv < initial_v);
+    std::cout << "Voltage Dip Simulated: " << initial_v << " -> " << voltage_mv << " mV" << std::endl;
+
+    // Check if system continues or handles it
+    chargeBattery();
+    assert(chargingState == CHARGE_MONITOR || chargingState == CHARGE_FIND_OPT);
+    std::cout << "System survived dip (transitions as expected) OK" << std::endl;
+}
+
 void testAPIJSONRobustness() {
     std::cout << "--- Testing API JSON Robustness ---" << std::endl;
 
@@ -300,7 +374,9 @@ int main() {
     testAPIJSONRobustness();
     testInternalResistanceGranular();
     testChargingGranular();
+    testSafetyOverTemperature();
+    testVoltageDipBehavior();
 
-    std::cout << "All granular tests passed successfully!" << std::endl;
+    std::cout << "All stress and granular tests passed successfully!" << std::endl;
     return 0;
 }
