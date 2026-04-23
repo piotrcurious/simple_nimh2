@@ -129,9 +129,27 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
              const margin = { top: 20, right: 60, bottom: 30, left: 50 };
              ctx.clearRect(0,0,canvas.width, canvas.height);
 
-             drawAxes(ctx, margin, 0, 0.5, "Current (A)", 0, 1.0, "Resistance (Ω)");
-             drawXY(ctx, data.lu, 'white', 0, 0.5, 0, 1.0, margin, "LU");
-             drawXY(ctx, data.pairs, 'cyan', 0, 0.5, 0, 1.0, margin, "Pairs");
+             const allPoints = (data.lu || []).concat(data.pairs || []);
+             let xMin = 0, xMax = 0.5, yMin = 0, yMax = 0.5;
+
+             if (allPoints.length > 0) {
+                 xMin = Math.min(...allPoints.map(p => p[0]));
+                 xMax = Math.max(...allPoints.map(p => p[0]));
+                 yMin = Math.min(...allPoints.map(p => p[1]));
+                 yMax = Math.max(...allPoints.map(p => p[1]));
+
+                 // Add 10% padding
+                 const xRange = xMax - xMin || 0.1;
+                 const yRange = yMax - yMin || 0.1;
+                 xMin = Math.max(0, xMin - xRange * 0.1);
+                 xMax = xMax + xRange * 0.1;
+                 yMin = Math.max(0, yMin - yRange * 0.1);
+                 yMax = yMax + yRange * 0.1;
+             }
+
+             drawAxes(ctx, margin, xMin, xMax, "Current (A)", yMin, yMax, "Resistance (Ω)");
+             drawXY(ctx, data.lu, 'white', xMin, xMax, yMin, yMax, margin, "LU");
+             drawXY(ctx, data.pairs, 'cyan', xMin, xMax, yMin, yMax, margin, "Pairs");
         }
 
         function renderCharge(data) {
