@@ -1,13 +1,13 @@
 #include "internal_resistance.h"
 #include "definitions.h"
 #include <algorithm> // for nth_element
+#include <cmath>
 
 // External functions
 extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff,
                                    float& t1_millivolts, float& voltage, float& current);
 
 // State machine variables
-#ifndef MOCK_TEST
 IRState currentIRState = IR_STATE_IDLE;
 IRState nextIRState = IR_STATE_IDLE;
 unsigned long irStateChangeTime = 0;
@@ -51,43 +51,8 @@ float regressedInternalResistanceSlope = 0.0f;
 float regressedInternalResistanceIntercept = 0.0f;
 float regressedInternalResistancePairsSlope = 0.0f;
 float regressedInternalResistancePairsIntercept = 0.0f;
+
 bool isMeasuringResistance = false;
-#else
-extern IRState currentIRState;
-extern IRState nextIRState;
-extern unsigned long irStateChangeTime;
-extern MeasurementData currentMeasurement;
-extern int minimalDutyCycle;
-extern int findMinDcLow;
-extern int findMinDcHigh;
-extern int findMinDcMid;
-extern std::vector<std::pair<int, int>> dutyCyclePairs;
-extern int pairIndex;
-extern int pairGenerationStep;
-extern int pairGenerationSubStep;
-extern int lowDc;
-extern int previousHighDc;
-extern int lowBound;
-extern int highBound;
-extern int bestHighDc;
-extern float minCurrent;
-extern float maxCurrent;
-extern float minCurrentDifference;
-extern int measureStep;
-extern std::vector<float> voltagesLoaded;
-extern std::vector<float> currentsLoaded;
-extern std::vector<float> ir_dutyCycles;
-extern std::vector<float> consecutiveInternalResistances;
-extern float internalResistanceData[MAX_RESISTANCE_POINTS][2];
-extern int resistanceDataCount;
-extern float internalResistanceDataPairs[MAX_RESISTANCE_POINTS][2];
-extern int resistanceDataCountPairs;
-extern float regressedInternalResistanceSlope;
-extern float regressedInternalResistanceIntercept;
-extern float regressedInternalResistancePairsSlope;
-extern float regressedInternalResistancePairsIntercept;
-extern bool isMeasuringResistance;
-#endif
 
 // Helper function to initiate measurement
 void getSingleMeasurement(int dc, IRState nextState) {
@@ -217,8 +182,8 @@ void measureInternalResistanceStep() {
                 getThermistorReadings(currentMeasurement.temp1, currentMeasurement.temp2,
                                      currentMeasurement.tempDiff, currentMeasurement.t1_millivolts,
                                      currentMeasurement.voltage, currentMeasurement.current);
-                currentMeasurement.dutyCycle = dutyCycle;
-                currentMeasurement.timestamp = millis();
+                currentMeasurement.dutyCycle = (uint8_t)dutyCycle;
+                currentMeasurement.timestamp = (uint32_t)millis();
                 currentIRState = nextIRState;
             }
             break;
@@ -289,7 +254,7 @@ void handlePairGeneration() {
             pairGenerationSubStep = 2;
         } else {
             int currentHighDc = (bestHighDc != -1) ? bestHighDc : previousHighDc;
-            currentHighDc = max(currentHighDc, minimalDutyCycle);
+            currentHighDc = std::max(currentHighDc, minimalDutyCycle);
             dutyCyclePairs.push_back({lowDc, currentHighDc});
             previousHighDc = currentHighDc - 1;
             pairIndex++;
@@ -298,7 +263,7 @@ void handlePairGeneration() {
     } else if (pairGenerationSubStep == 2) {
         float targetHighCurrent = maxCurrent -
             (pairIndex * (maxCurrent - minCurrent) / (MAX_RESISTANCE_POINTS / 2));
-        float currentDifference = fabs(currentMeasurement.current - targetHighCurrent);
+        float currentDifference = std::fabs(currentMeasurement.current - targetHighCurrent);
         if (currentDifference < minCurrentDifference) {
             minCurrentDifference = currentDifference;
             bestHighDc = currentMeasurement.dutyCycle;
@@ -313,7 +278,7 @@ void handlePairGeneration() {
 }
 
 void handleMeasureLoadedUnloaded() {
-    if (pairIndex >= dutyCyclePairs.size()) {
+    if (pairIndex >= (int)dutyCyclePairs.size()) {
         currentIRState = IR_STATE_MEASURE_PAIRS;
         pairIndex = 0;
         measureStep = 0;
@@ -336,7 +301,7 @@ void handleMeasureLoadedUnloaded() {
                 float loadedCurrent = currentsLoaded.back();
                 if (loadedCurrent > 0.01f) {
                     float internalResistance = (currentMeasurement.voltage - voltagesLoaded.back()) / loadedCurrent;
-                    storeResistanceData(loadedCurrent, fabs(internalResistance),
+                    storeResistanceData(loadedCurrent, std::fabs(internalResistance),
                                       internalResistanceData, resistanceDataCount);
                 }
                 pairIndex++;
@@ -347,7 +312,7 @@ void handleMeasureLoadedUnloaded() {
 }
 
 void handleMeasurePairs() {
-    if (pairIndex >= dutyCyclePairs.size()) {
+    if (pairIndex >= (int)dutyCyclePairs.size()) {
         currentIRState = IR_STATE_COMPLETE;
         return;
     }
@@ -368,8 +333,8 @@ void handleMeasurePairs() {
                 if (currentDiff > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
                     float voltageDiff = voltagesLoaded.back() - currentMeasurement.voltage;
                     float internalResistance = voltageDiff / currentDiff;
-                    consecutiveInternalResistances.push_back(fabs(internalResistance));
-                    storeResistanceData(currentMeasurement.current, fabs(internalResistance),
+                    consecutiveInternalResistances.push_back(std::fabs(internalResistance));
+                    storeResistanceData(currentMeasurement.current, std::fabs(internalResistance),
                                       internalResistanceDataPairs, resistanceDataCountPairs);
                 } else {
                     consecutiveInternalResistances.push_back(-1.0f);
@@ -388,8 +353,8 @@ void completeResistanceMeasurement() {
     auto compute_spacing_threshold = [](float data[][2], int n) -> float {
         if (n < 2) return 0.05f;
         float minX = data[0][0], maxX = data[n-1][0];
-        float avgSpacing = (maxX - minX) / max(1, n-1);
-        return max(0.02f, avgSpacing * 1.5f);
+        float avgSpacing = (maxX - minX) / std::max(1, n-1);
+        return std::max(0.02f, avgSpacing * 1.5f);
     };
 
     distribute_error(internalResistanceData, resistanceDataCount, compute_spacing_threshold(internalResistanceData, resistanceDataCount), 1.5f);
@@ -434,13 +399,13 @@ int findClosestIndex(float data[][2], int count, float targetCurrent) {
     int low = 0, high = count - 1;
     while (low <= high) {
         int mid = low + (high - low) / 2;
-        if (fabs(data[mid][0] - targetCurrent) < 1e-6f) return mid;
+        if (std::fabs(data[mid][0] - targetCurrent) < 1e-6f) return mid;
         else if (data[mid][0] < targetCurrent) low = mid + 1;
         else high = mid - 1;
     }
     if (low >= count) return high;
     if (high < 0) return low;
-    return (fabs(targetCurrent - data[high][0]) < fabs(data[low][0] - targetCurrent)) ? high : low;
+    return (std::fabs(targetCurrent - data[high][0]) < std::fabs(data[low][0] - targetCurrent)) ? high : low;
 }
 
 void insertDataPoint(float data[][2], int& count, float current, float resistance, int index) {
@@ -469,8 +434,8 @@ void storeOrAverageResistanceData(float current, float resistance, float data[][
         return;
     }
     int closestIndex = findClosestIndex(data, count, current);
-    const float CLOSE_TOLERANCE = 1e-3f * max(1.0f, current);
-    if (fabs(data[closestIndex][0] - current) <= CLOSE_TOLERANCE) {
+    const float CLOSE_TOLERANCE = 1e-3f * std::max(1.0f, current);
+    if (std::fabs(data[closestIndex][0] - current) <= CLOSE_TOLERANCE) {
         const float alpha = 0.5f;
         data[closestIndex][1] = alpha * resistance + (1.0f - alpha) * data[closestIndex][1];
         data[closestIndex][0] = alpha * current + (1.0f - alpha) * data[closestIndex][0];
@@ -481,7 +446,7 @@ void storeOrAverageResistanceData(float current, float resistance, float data[][
     for (int i = 0; i < count; ++i) {
         float leftGap = (i > 0) ? data[i][0] - data[i-1][0] : 0.0f;
         float rightGap = (i < count-1) ? data[i+1][0] - data[i][0] : 0.0f;
-        float localGap = max(leftGap, rightGap);
+        float localGap = std::max(leftGap, rightGap);
         if (localGap > maxGap) { maxGap = localGap; evictIndex = i; }
     }
     removeDataPoint(data, count, evictIndex);
@@ -515,10 +480,10 @@ void distribute_error(float data[][2], int count, float spacing_threshold, float
                 if (res.size() >= 4) {
                     float median = computeMedian(res), sumSq = 0.0f;
                     for (float r : res) { float d = r - median; sumSq += d * d; }
-                    float stdDev = sqrt(sumSq / res.size()), errorThreshold = error_threshold_multiplier * stdDev;
+                    float stdDev = std::sqrt(sumSq / res.size()), errorThreshold = error_threshold_multiplier * stdDev;
                     const float alpha = 0.6f;
                     for (int k = i; k <= j; ++k) {
-                        if (fabs(data[k][1] - median) > errorThreshold && stdDev > 1e-9f) {
+                        if (std::fabs(data[k][1] - median) > errorThreshold && stdDev > 1e-9f) {
                             data[k][1] = alpha * median + (1.0f - alpha) * data[k][1];
                         }
                     }
@@ -529,8 +494,8 @@ void distribute_error(float data[][2], int count, float spacing_threshold, float
     }
 }
 
-#ifndef MOCK_TEST
 bool performLinearRegression(float data[][2], int count, float& slope, float& intercept) {
+#ifndef MOCK_TEST
     if (count < 2) return false;
     float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
     for (int i = 0; i < count; ++i) {
@@ -538,9 +503,11 @@ bool performLinearRegression(float data[][2], int count, float& slope, float& in
         sumXY += data[i][0] * data[i][1]; sumX2 += data[i][0] * data[i][0];
     }
     float n = (float)count, denom = n * sumX2 - sumX * sumX;
-    if (fabs(denom) < 1e-6f) return false;
+    if (std::fabs(denom) < 1e-6f) return false;
     slope = (n * sumXY - sumX * sumY) / denom;
     intercept = (sumY - slope * sumX) / n;
     return true;
-}
+#else
+    slope = 0; intercept = 0.2f; return true;
 #endif
+}

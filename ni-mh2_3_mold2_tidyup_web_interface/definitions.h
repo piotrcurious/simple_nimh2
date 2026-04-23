@@ -1,7 +1,9 @@
 #ifndef DEFINITIONS_H
 #define DEFINITIONS_H
 
+#ifndef MOCK_TEST
 #include <SPI.h>
+#endif
 
 #include <cmath>
 #include <limits>
@@ -11,15 +13,25 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
+#ifndef MOCK_TEST
 #include <ArduinoEigenDense.h>
+#else
+#include "test_mock/ArduinoEigenDense.h"
+#endif
 #include <cstdlib>
 #include <map>
 #include <ctime>
+#ifndef MOCK_TEST
 #include <Arduino.h>
+#else
+#include "test_mock/Arduino.h"
+#endif
 
 #include "SHT4xSensor.h"
 #include "SystemDataManager.h"
+#ifndef MOCK_TEST
 #include "analog.h"
+#endif
 
 #define DEBUG_LABELS
 

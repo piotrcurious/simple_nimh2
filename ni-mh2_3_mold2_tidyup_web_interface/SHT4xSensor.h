@@ -1,30 +1,29 @@
-// SHT4xSensor.h
 #ifndef SHT4X_SENSOR_H
 #define SHT4X_SENSOR_H
 
+#ifndef MOCK_TEST
 #include <Adafruit_SHT4x.h>
-#include <stdint.h>
+#else
+#include "test_mock/Adafruit_SHT4x.h"
+#endif
 
 class SHT4xSensor {
 public:
     SHT4xSensor();
     bool begin();
     void read();
-    double getTemperature();
-    double getHumidity();
     void setPrecision(sht4x_precision_t precision);
-    sht4x_precision_t getPrecision();
     void setHeater(sht4x_heater_t heater);
-    sht4x_heater_t getHeater();
-    bool isLocked();
+
+    float getTemperature() const { return _temperature; }
+    float getHumidity() const { return _humidity; }
 
 private:
-    Adafruit_SHT4x sht4;
-    uint32_t last_time;
-    uint32_t update_interval;
-    bool lock;
-    double temperature;
-    double humidity;
+#ifndef MOCK_TEST
+    Adafruit_SHT4x _sht4;
+#endif
+    float _temperature;
+    float _humidity;
 };
 
 #endif // SHT4X_SENSOR_H
