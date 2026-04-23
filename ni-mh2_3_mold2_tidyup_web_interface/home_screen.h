@@ -24,6 +24,8 @@ private:
 
     void shiftHistoryLeft(float *arr, size_t len) noexcept;
     inline bool isValidSample(float x) const { return !std::isnan(x); }
+
+public:
     double calculateDewPoint(double temperature, double humidity);
 };
 
