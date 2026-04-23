@@ -10,6 +10,7 @@ namespace Eigen {
         std::vector<double> coeffs;
         VectorXd() {}
         VectorXd(int s) : coeffs(s, 0.0) {}
+        void resize(int s) { coeffs.assign(s, 0.0); }
         int size() const { return (int)coeffs.size(); }
         double operator()(int i) const { return coeffs[i]; }
         double& operator()(int i) { return coeffs[i]; }

@@ -1,5 +1,6 @@
 #include "internal_resistance.h"
 #include "definitions.h"
+#include "AdvancedPolynomialFitter.hpp"
 #include <algorithm> // for nth_element
 #include <cmath>
 
@@ -495,18 +496,21 @@ void distribute_error(float data[][2], int count, float spacing_threshold, float
 }
 
 bool performLinearRegression(float data[][2], int count, float& slope, float& intercept) {
-#ifndef MOCK_TEST
     if (count < 2) return false;
-    float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+#ifndef MOCK_TEST
+    std::vector<float> x(count), y(count);
     for (int i = 0; i < count; ++i) {
-        sumX += data[i][0]; sumY += data[i][1];
-        sumXY += data[i][0] * data[i][1]; sumX2 += data[i][0] * data[i][0];
+        x[i] = data[i][0];
+        y[i] = data[i][1];
     }
-    float n = (float)count, denom = n * sumX2 - sumX * sumX;
-    if (std::fabs(denom) < 1e-6f) return false;
-    slope = (n * sumXY - sumX * sumY) / denom;
-    intercept = (sumY - slope * sumX) / n;
-    return true;
+    AdvancedPolynomialFitter fitter;
+    std::vector<float> coeffs = fitter.fitPolynomialLebesgue(x, y, 1);
+    if (coeffs.size() >= 2) {
+        intercept = coeffs[0];
+        slope = coeffs[1];
+        return true;
+    }
+    return false;
 #else
     slope = 0; intercept = 0.2f; return true;
 #endif
