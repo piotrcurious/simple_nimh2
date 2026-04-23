@@ -84,7 +84,7 @@ const float MIN_VALID_RESISTANCE = 0.0f;
 const int MAX_RESISTANCE_POINTS = 100;
 
 // Plotting parameters (now used for memory buffers only)
-#define PLOT_WIDTH          320
+#define PLOT_WIDTH          120
 
 // --- Enums and Structs ---
 
@@ -105,12 +105,14 @@ enum AppState {
 enum IRState {
     IR_STATE_IDLE,
     IR_STATE_START,
-    IR_STATE_MEASURE_UNLOADED,
-    IR_STATE_WAIT_UNLOADED,
+    IR_STATE_STOP_LOAD_WAIT,
+    IR_STATE_GET_UNLOADED_VOLTAGE,
+    IR_STATE_FIND_MIN_DC,
     IR_STATE_GENERATE_PAIRS,
-    IR_STATE_MEASURE_LOADED_UNLOADED,
+    IR_STATE_MEASURE_L_UL,
     IR_STATE_MEASURE_PAIRS,
-    IR_STATE_FINISH
+    IR_STATE_GET_MEASUREMENT,
+    IR_STATE_COMPLETE
 };
 
 struct MeasurementData {
@@ -120,8 +122,8 @@ struct MeasurementData {
     double temp2;
     double tempDiff;
     float t1_millivolts;
-    int dutyCycle;
-    unsigned long timestamp;
+    uint32_t timestamp;
+    uint8_t dutyCycle;
 };
 
 struct CurrentModel {
@@ -130,12 +132,12 @@ struct CurrentModel {
 };
 
 struct ChargeLogData {
-    unsigned long timestamp;
+    uint32_t timestamp;
     float current;
     float voltage;
     float ambientTemperature;
     float batteryTemperature;
-    int dutyCycle;
+    uint8_t dutyCycle;
     float internalResistanceLoadedUnloaded;
     float internalResistancePairs;
 };
@@ -146,8 +148,8 @@ struct MHElectrodeData {
     float targetVoltage;
     float voltageDifference;
     float current;
-    uint32_t dutyCycle;
     uint32_t timestamp;
+    uint8_t dutyCycle;
 };
 
 enum ChargingState {

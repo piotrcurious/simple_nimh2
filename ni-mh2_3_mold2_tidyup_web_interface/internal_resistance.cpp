@@ -101,11 +101,21 @@ void getSingleMeasurement(int dc, IRState nextState) {
 void resetMeasurementState() {
     resistanceDataCount = 0;
     resistanceDataCountPairs = 0;
+
     voltagesLoaded.clear();
+    voltagesLoaded.reserve(MAX_RESISTANCE_POINTS);
+
     currentsLoaded.clear();
+    currentsLoaded.reserve(MAX_RESISTANCE_POINTS);
+
     ir_dutyCycles.clear();
+    ir_dutyCycles.reserve(MAX_RESISTANCE_POINTS);
+
     consecutiveInternalResistances.clear();
+    consecutiveInternalResistances.reserve(MAX_RESISTANCE_POINTS);
+
     dutyCyclePairs.clear();
+    dutyCyclePairs.reserve(MAX_RESISTANCE_POINTS / 2);
 
     pairIndex = 0;
     measureStep = 0;
@@ -495,10 +505,12 @@ float computeMedian(std::vector<float>& v) {
 
 void distribute_error(float data[][2], int count, float spacing_threshold, float error_threshold_multiplier) {
     if (count < 4) return;
+    static std::vector<float> res;
+    res.reserve(MAX_RESISTANCE_POINTS);
     for (int i = 0; i <= count - 4; ++i) {
         for (int j = i + 3; j < count; ++j) {
             if (data[j][0] - data[i][0] <= spacing_threshold) {
-                std::vector<float> res; res.reserve(j - i + 1);
+                res.clear();
                 for (int k = i; k <= j; ++k) res.push_back(data[k][1]);
                 if (res.size() >= 4) {
                     float median = computeMedian(res), sumSq = 0.0f;

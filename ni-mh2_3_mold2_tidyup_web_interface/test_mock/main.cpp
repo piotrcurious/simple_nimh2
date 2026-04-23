@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iomanip>
 #include <stdarg.h>
+#include <assert.h>
 
 #include "dummy_esp32.h"
 
@@ -42,7 +43,7 @@ namespace ArduinoEigen { using namespace Eigen; }
 #include "../ni-mh2_3_mold2_tidyup_web_interface/definitions.h"
 
 // Define externs
-float maximumCurrent = 0.150f;
+float maximumCurrent = 0.500f; // Set to something reasonable for testing
 volatile float voltage_mv = 1000.0f;
 volatile float current_ma = 0.0f;
 volatile double mAh_charged = 0.0;
@@ -118,15 +119,19 @@ struct BatterySim {
     float ambient = 22.0f;
     float capacity_ah = 2.0f;
     float soc = 0.1f;
+    float internal_resistance = 0.2f;
 
     void update(float dt_s, int duty) {
-        float current = (duty / 255.0f) * 0.5f;
+        float current = (duty / 255.0f) * 1.0f; // Max 1A
         soc += (current * dt_s) / 3600.0f;
-        voltage = 1.1f + 0.3f * soc + current * 0.2f;
+        voltage = 1.1f + 0.3f * soc + current * internal_resistance;
 
-        float P_heat = current * current * 0.2f + current * 0.05f;
+        // Thermal: P = I^2 * R + charging chemistry heat (exothermic)
+        float P_heat = current * current * internal_resistance + current * 0.1f;
         float dT = (P_heat * dt_s) / (DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT);
-        float cooling = (temp - ambient) * DEFAULT_CONVECTIVE_H * dt_s;
+
+        // Newton's law of cooling
+        float cooling = (temp - ambient) * 0.1f * dt_s; // Arbitrary cooling factor
         temp += dT - cooling;
     }
 };
@@ -139,13 +144,13 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
     tempDiff = temp2 - temp1;
     t1_millivolts = 0;
     voltage = sim.voltage;
-    current = (dutyCycle / 255.0f) * 0.5f;
+    current = (dutyCycle / 255.0f) * 1.0f;
     voltage_mv = voltage * 1000.0f;
     current_ma = current * 1000.0f;
 }
 
-float estimateCurrent(int duty) { return (duty / 255.0f) * 0.5f; }
-int estimateDutyCycleForCurrent(float target) { return (int)((target / 0.5f) * 255.0f); }
+float estimateCurrent(int duty) { return (duty / 255.0f) * 1.0f; }
+int estimateDutyCycleForCurrent(float target) { return (int)((target / 1.0f) * 255.0f); }
 
 float eval_mAh_snapshot = 0.0f;
 unsigned long eval_time_snapshot = 0;
@@ -165,33 +170,113 @@ void measureInternalResistanceStep() {}
 void storeOrAverageResistanceData(float c, float r, float data[][2], int& count) {}
 void bubbleSort(float data[][2], int n) {}
 void distribute_error(float data[][2], int count, float s, float e) {}
-bool performLinearRegression(float data[][2], int count, float& s, float& i) { return false; }
+bool performLinearRegression(float data[][2], int count, float& s, float& i) {
+    if (count < 2) return false;
+    s = 0; i = 0.2f; return true;
+}
 
-int main() {
-    printf("Starting Ni-MH Web Interface Mock Test...\n");
+void reset_globals() {
+    mock_millis = 0;
+    voltage_mv = 1000.0f;
+    current_ma = 0.0f;
+    mAh_charged = 0.0;
+    dutyCycle = 0;
+    chargingState = CHARGE_IDLE;
+    chargeLog.clear();
+    sim = BatterySim();
+    overtemp_trip_counter = 0;
+    currentAppState = APP_STATE_IDLE;
+    currentRampTarget = 0.0f;
+    eval_mAh_snapshot = 0.0f;
+    eval_time_snapshot = 0;
+}
 
+void test_overtemp_shutdown() {
+    printf("Running test_overtemp_shutdown...\n");
+    reset_globals();
     currentAppState = APP_STATE_CHARGING;
     chargingState = CHARGE_IDLE;
 
-    for (int i = 0; i < 3600; i++) {
+    // Artificially increase battery temp to trigger overtemp
+    sim.temp = 60.0f;
+    sim.ambient = 20.0f;
+    chargingState = CHARGE_MONITOR; // skip find_opt for fast test
+
+    bool shutDown = false;
+    for (int i = 0; i < 7200; i++) {
         mock_millis += 1000;
         sim.update(1.0f, dutyCycle);
 
-        float current_a = (dutyCycle / 255.0f) * 0.5f;
+        // Force the temperature to stay high
+        sim.temp = 60.0f;
+
+        // Trigger evaluation faster
+        if (i % 240 == 0) eval_time_snapshot = mock_millis - CHARGE_EVALUATION_INTERVAL_MS - 1;
+
+        if (!chargeBattery()) {
+            shutDown = true;
+            printf("Confirmed: Shutdown triggered at t=%ds\n", i);
+            break;
+        }
+    }
+    assert(shutDown);
+    assert(chargingState == CHARGE_STOPPED);
+    printf("test_overtemp_shutdown PASSED\n\n");
+}
+
+void test_thermal_model_unit() {
+    printf("Running test_thermal_model_unit...\n");
+    // Test the estimateTempDiff function directly
+    float unapplied = 0.0f;
+    float diff = estimateTempDiff(1.2, 1.2, 0.5, 0.2, 25.0, 1000, 0, 25.0, &unapplied);
+    printf("Estimated temp diff after 1s at 0.5A: %.4f\n", diff);
+    assert(diff > 0);
+
+    // No current, no temp change
+    diff = estimateTempDiff(1.2, 1.2, 0.0, 0.2, 25.0, 2000, 1000, 25.0, &unapplied);
+    printf("Estimated temp diff after 1s at 0.0A: %.4f\n", diff);
+    assert(std::abs(diff) < 0.001);
+
+    printf("test_thermal_model_unit PASSED\n\n");
+}
+
+void test_charging_ramp() {
+    printf("Running test_charging_ramp...\n");
+    reset_globals();
+    currentAppState = APP_STATE_CHARGING;
+    chargingState = CHARGE_IDLE;
+    maximumCurrent = 0.5f;
+
+    float lastCurrent = 0;
+    int rampUpCount = 0;
+
+    for (int i = 0; i < 7200; i++) { // 2 hours
+        mock_millis += 1000;
+        sim.update(1.0f, dutyCycle);
+
+        float current_a = (dutyCycle / 255.0f) * 1.0f;
         mAh_charged += (current_a * 1000.0) / 3600.0;
 
         chargeBattery();
 
-        if (i % 600 == 0) {
-            printf("Time: %4ds | V: %.3fV | I: %.3fA | T: %.2fC | State: %d\n", i, sim.voltage, current_a, sim.temp, chargingState);
-        }
-
-        if (chargingState == CHARGE_STOPPED) {
-            printf("Charging STOPPED at %ds due to safety threshold.\n", i);
-            break;
+        if (i > 0 && i % 240 == 0) { // Every evaluation interval
+            if (currentRampTarget > lastCurrent) {
+                rampUpCount++;
+            }
+            lastCurrent = currentRampTarget;
         }
     }
+    printf("Final Ramp Target: %.3fA, Ramp Ups: %d\n", currentRampTarget, rampUpCount);
+    assert(currentRampTarget > 0);
+    assert(rampUpCount > 0);
+    printf("test_charging_ramp PASSED\n\n");
+}
 
-    printf("Mock test finished. Log entries: %lu\n", (unsigned long)chargeLog.size());
+int main() {
+    test_thermal_model_unit();
+    test_overtemp_shutdown();
+    test_charging_ramp();
+
+    printf("ALL TESTS PASSED!\n");
     return 0;
 }

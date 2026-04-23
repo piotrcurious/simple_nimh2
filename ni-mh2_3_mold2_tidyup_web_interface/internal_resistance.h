@@ -3,17 +3,12 @@
 
 #include "definitions.h"
 
-enum IRState {
-    IR_STATE_IDLE,
-    IR_STATE_START,
-    IR_STATE_MEASURE_UNLOADED,
-    IR_STATE_WAIT_UNLOADED,
-    IR_STATE_GENERATE_PAIRS,
-    IR_STATE_MEASURE_LOADED_UNLOADED,
-    IR_STATE_MEASURE_PAIRS,
-    IR_STATE_FINISH
-};
-
 void measureInternalResistanceStep();
+void handleGeneratePairs();
+void handlePairGeneration();
+void handleMeasureLoadedUnloaded();
+void handleMeasurePairs();
+void completeResistanceMeasurement();
+void storeResistanceData(float current, float resistance, float dataArray[MAX_RESISTANCE_POINTS][2], int& count);
 
 #endif
