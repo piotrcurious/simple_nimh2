@@ -4,8 +4,12 @@
 #ifndef SYSTEM_DATA_MANAGER_H_IMPL
 #define SYSTEM_DATA_MANAGER_H_IMPL
 
+#ifndef MOCK_TEST
 #include <Arduino.h>
 #include "adc_dma.h"
+#else
+#include "test_mock/Arduino.h"
+#endif
 #include "SHT4xSensor.h"
 
 struct SystemData {

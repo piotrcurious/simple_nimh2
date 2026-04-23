@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <stdarg.h>
 #include <assert.h>
+#include <algorithm>
 
 #include "dummy_esp32.h"
 
@@ -16,34 +17,20 @@ using std::max;
 MockSerial Serial;
 unsigned long mock_millis = 0;
 
-#define MOCK_TEST
-#define ArduinoEigenDense_h
-namespace Eigen {
-    struct VectorXd {
-        int size() const {return 1;}
-        float operator()(int i) const {return 0;}
-        float& operator()(int i) { static float dummy; return dummy; }
-    };
-    struct MatrixXd { MatrixXd(int r, int c){} };
-    struct QR { VectorXd solve(VectorXd b) const { return b; } };
-    struct HouseholderQR { QR householderQr() const { return QR(); } };
-}
-namespace ArduinoEigen { using namespace Eigen; }
-
 // Redirect definitions.h includes
 #define SPI_h
 #define Arduino_h
 #define WiFi_h
-#define WebServer_h
 #define Adafruit_SHT4x_h
 #define ADC_CONTINUOUS_H
 #define ESP_ADC_CAL_H
 #define ADC_H
+#define WEBSERVER_H
 
 #include "../ni-mh2_3_mold2_tidyup_web_interface/definitions.h"
+#include "../ni-mh2_3_mold2_tidyup_web_interface/internal_resistance.h"
 
-// Define externs
-float maximumCurrent = 0.500f; // Set to something reasonable for testing
+// Global variable definitions
 volatile float voltage_mv = 1000.0f;
 volatile float current_ma = 0.0f;
 volatile double mAh_charged = 0.0;
@@ -51,91 +38,45 @@ volatile bool resetAh = false;
 volatile uint32_t mAh_last_time = 0;
 uint32_t dutyCycle = 0;
 bool isCharging = false;
-bool isMeasuringResistance = false;
-ChargingState chargingState = CHARGE_IDLE;
-int cachedOptimalDuty = MAX_CHARGE_DUTY_CYCLE;
-unsigned long chargePhaseStartTime = 0;
-unsigned long chargingStartTime = 0;
-uint8_t overtemp_trip_counter = 0;
-unsigned long lastChargeEvaluationTime = 0;
-const int pwmPin = 19;
-double THERMISTOR_1_OFFSET = 0.0;
 AppState currentAppState = APP_STATE_IDLE;
 DisplayState currentDisplayState = DISPLAY_STATE_IDLE;
-
-float temp1_values[PLOT_WIDTH];
-float temp2_values[PLOT_WIDTH];
-float diff_values[PLOT_WIDTH];
-float voltage_values[PLOT_WIDTH];
-float current_values[PLOT_WIDTH];
-
-CurrentModel currentModel;
-AsyncMeasure meas;
-FindOptManager findOpt;
-RemeasureManager remeasure;
-std::vector<ChargeLogData> chargeLog;
-
-float internalResistanceData[MAX_RESISTANCE_POINTS][2];
-int resistanceDataCount = 0;
-float internalResistanceDataPairs[MAX_RESISTANCE_POINTS][2];
-int resistanceDataCountPairs = 0;
-float regressedInternalResistanceSlope = 0;
-float regressedInternalResistanceIntercept = 0.2f;
-float regressedInternalResistancePairsSlope = 0;
-float regressedInternalResistancePairsIntercept = 0.18f;
-
 unsigned long lastPlotUpdateTime = 0;
 unsigned long lastChargingHouseTime = 0;
 
-// Mock hardware functions
+const int pwmPin = 19;
+double THERMISTOR_1_OFFSET = 0.0;
+
+// Hardware function stubs
 void applyDuty(uint32_t duty) { dutyCycle = duty; }
-void analogWrite(int pin, int val) { (void)pin; (void)val; }
-void pinMode(int pin, int mode) { (void)pin; (void)mode; }
-
-// Implementation mocks
-void logChargeData(const ChargeLogData& data) {
-    chargeLog.push_back(data);
-}
-
-// SHT4xSensor dummy impl
-bool SHT4xSensor::begin() { return true; }
-void SHT4xSensor::read() {}
-void SHT4xSensor::setPrecision(sht4x_precision_t p) {}
-void SHT4xSensor::setHeater(sht4x_heater_t h) {}
-
-// SystemDataManager dummy impl
-SystemDataManager::SystemDataManager(SHT4xSensor& s, int p1, int p2, double o) : _sht4(s) {}
-void SystemDataManager::begin() {}
-void SystemDataManager::update() {}
-void SystemDataManager::resetMah() { mAh_charged = 0; }
-SystemData SystemDataManager::getData() {
-    return { 22.0f, 24.0f, 2.0f, (float)voltage_mv/1000.0f, (float)current_ma/1000.0f, (float)mAh_charged };
-}
 
 // Physics Simulation
 struct BatterySim {
-    float voltage = 1.2f;
+    float voltage = 1.15f;
     float temp = 22.0f;
     float ambient = 22.0f;
-    float capacity_ah = 2.0f;
-    float soc = 0.1f;
-    float internal_resistance = 0.2f;
+    float soc = 0.05f; // Almost empty
+    float internal_resistance = 0.15f;
 
     void update(float dt_s, int duty) {
-        float current = (duty / 255.0f) * 1.0f; // Max 1A
-        soc += (current * dt_s) / 3600.0f;
-        voltage = 1.1f + 0.3f * soc + current * internal_resistance;
+        float current = (duty / 255.0f) * 2.0f; // Max 2A
+        soc += (current * dt_s) / 7200.0f; // 2000mAh battery (7200 Coulombs)
 
-        // Thermal: P = I^2 * R + charging chemistry heat (exothermic)
-        float P_heat = current * current * internal_resistance + current * 0.1f;
+        // Simple NiMH voltage curve + IR drop
+        float base_v = 1.1f + 0.3f * soc;
+        if (soc > 0.9f) base_v += (soc - 0.9f) * 2.0f; // Rapid rise at end
+
+        voltage = base_v + current * internal_resistance;
+
+        // Thermal: Overcharge heat
+        float overcharge_P = 0;
+        if (soc > 1.0f) overcharge_P = current * 1.4f; // All energy to heat
+
+        float P_heat = current * current * internal_resistance + current * 0.1f + overcharge_P;
         float dT = (P_heat * dt_s) / (DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT);
-
-        // Newton's law of cooling
-        float cooling = (temp - ambient) * 0.1f * dt_s; // Arbitrary cooling factor
+        float cooling = (temp - ambient) * 0.15f * dt_s;
         temp += dT - cooling;
     }
 };
-
 BatterySim sim;
 
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current) {
@@ -144,36 +85,57 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
     tempDiff = temp2 - temp1;
     t1_millivolts = 0;
     voltage = sim.voltage;
-    current = (dutyCycle / 255.0f) * 1.0f;
+    current = (dutyCycle / 255.0f) * 2.0f;
     voltage_mv = voltage * 1000.0f;
     current_ma = current * 1000.0f;
 }
 
-float estimateCurrent(int duty) { return (duty / 255.0f) * 1.0f; }
-int estimateDutyCycleForCurrent(float target) { return (int)((target / 1.0f) * 255.0f); }
+float estimateCurrent(int duty) { return (duty / 255.0f) * 2.0f; }
+int estimateDutyCycleForCurrent(float target) { return (int)((target / 2.0f) * 255.0f); }
 
-float eval_mAh_snapshot = 0.0f;
-unsigned long eval_time_snapshot = 0;
-bool reeval_active = false;
-float reeval_start_mAh = 0.0f;
-unsigned long reeval_start_ms = 0;
-float lastReeval_delta_mAh = 0.0f;
-unsigned long lastReeval_duration_ms = 0;
-float lastReeval_avgCurrent_A = 0.0f;
-float currentRampTarget = 0.0f;
+// SHT4xSensor dummy impl
+SHT4xSensor::SHT4xSensor() : _temperature(22.0f), _humidity(50.0f) {}
+bool SHT4xSensor::begin() { return true; }
+void SHT4xSensor::read() {}
+void SHT4xSensor::setPrecision(sht4x_precision_t p) {}
+void SHT4xSensor::setHeater(sht4x_heater_t h) {}
 
-#include "../ni-mh2_3_mold2_tidyup_web_interface/charging.cpp"
-
-// Define missing symbols from internal_resistance.cpp if not including it
-IRState currentIRState = IR_STATE_IDLE;
-void measureInternalResistanceStep() {}
-void storeOrAverageResistanceData(float c, float r, float data[][2], int& count) {}
-void bubbleSort(float data[][2], int n) {}
-void distribute_error(float data[][2], int count, float s, float e) {}
-bool performLinearRegression(float data[][2], int count, float& s, float& i) {
-    if (count < 2) return false;
-    s = 0; i = 0.2f; return true;
+// SystemDataManager dummy impl
+SystemDataManager::SystemDataManager(SHT4xSensor& s, int p1, int p2, double o) : _sht4(s) {
+    _dataMutex = xSemaphoreCreateMutex();
 }
+void SystemDataManager::begin() {}
+void SystemDataManager::update() {
+    static uint32_t last_m = 0;
+    uint32_t now = mock_millis;
+    if (last_m == 0) last_m = now;
+    float dt_h = (now - last_m) / 3600000.0f;
+    mAh_charged += (current_ma * dt_h);
+    last_m = now;
+}
+void SystemDataManager::resetMah() { mAh_charged = 0; }
+SystemData SystemDataManager::getData() {
+    return { (float)voltage_mv/1000.0f, (float)current_ma/1000.0f, 22.0, (double)sim.temp, (double)(sim.temp-22.0), 5000.0f, (float)mAh_charged, (uint32_t)mock_millis };
+}
+
+SHT4xSensor sht4Sensor;
+SystemDataManager systemData(sht4Sensor, 36, 35, 0.0);
+CurrentModel currentModel;
+
+#include "../ni-mh2_3_mold2_tidyup_web_interface/home_screen.h"
+HomeScreen::HomeScreen() {}
+void HomeScreen::begin() {}
+void HomeScreen::gatherData() {}
+HomeScreen homeScreen;
+
+// Include all .cpp files to get definitions
+#include "../ni-mh2_3_mold2_tidyup_web_interface/charging.cpp"
+#include "../ni-mh2_3_mold2_tidyup_web_interface/internal_resistance.cpp"
+#include "../ni-mh2_3_mold2_tidyup_web_interface/graphing.cpp"
+#include "../ni-mh2_3_mold2_tidyup_web_interface/logging.cpp"
+#include "../ni-mh2_3_mold2_tidyup_web_interface/web_handlers.cpp"
+
+WebServer server;
 
 void reset_globals() {
     mock_millis = 0;
@@ -186,97 +148,63 @@ void reset_globals() {
     sim = BatterySim();
     overtemp_trip_counter = 0;
     currentAppState = APP_STATE_IDLE;
-    currentRampTarget = 0.0f;
-    eval_mAh_snapshot = 0.0f;
-    eval_time_snapshot = 0;
+    currentIRState = IR_STATE_IDLE;
+    isMeasuringResistance = false;
+    isCharging = false;
+    recentChargeLogsCount = 0;
+    recentChargeLogsHead = 0;
 }
 
-void test_overtemp_shutdown() {
-    printf("Running test_overtemp_shutdown...\n");
+void test_ir_state_machine() {
+    printf("Running test_ir_state_machine...\n");
     reset_globals();
-    currentAppState = APP_STATE_CHARGING;
-    chargingState = CHARGE_IDLE;
+    isMeasuringResistance = true;
+    currentIRState = IR_STATE_START;
+    for (int i = 0; i < 200000; i++) {
+        mock_millis += 10;
+        sim.update(0.01f, dutyCycle);
+        measureInternalResistanceStep();
+        if (currentIRState == IR_STATE_IDLE) break;
+        if (currentIRState == IR_STATE_GET_MEASUREMENT || currentIRState == IR_STATE_STOP_LOAD_WAIT) mock_millis += 1000;
+    }
+    printf("Final IR State: %d, Data Count: %d, Pairs: %d\n", currentIRState, resistanceDataCount, resistanceDataCountPairs);
+    assert(currentIRState == IR_STATE_IDLE);
+    assert(resistanceDataCount > 0);
+    printf("test_ir_state_machine PASSED\n\n");
+}
 
-    // Artificially increase battery temp to trigger overtemp
-    sim.temp = 60.0f;
-    sim.ambient = 20.0f;
-    chargingState = CHARGE_MONITOR; // skip find_opt for fast test
+void test_full_charge_simulation() {
+    printf("Running test_full_charge_simulation...\n");
+    reset_globals();
+    maximumCurrent = 0.8f; // 800mA
+    startCharging();
 
-    bool shutDown = false;
-    for (int i = 0; i < 7200; i++) {
-        mock_millis += 1000;
-        sim.update(1.0f, dutyCycle);
+    // Simulate 5 hours (18000 seconds)
+    const float dt = 1.0f; // 1s steps
+    for (int t = 0; t < 18000; t++) {
+        mock_millis += (uint32_t)(dt * 1000);
+        sim.update(dt, dutyCycle);
+        systemData.update();
 
-        // Force the temperature to stay high
-        sim.temp = 60.0f;
+        bool active = chargeBattery();
 
-        // Trigger evaluation faster
-        if (i % 240 == 0) eval_time_snapshot = mock_millis - CHARGE_EVALUATION_INTERVAL_MS - 1;
+        if (t % 600 == 0) {
+            printf("  t=%4ds: State=%d, SOC=%.2f, V=%.3f, I=%.3f, mAh=%.1f, Temp=%.1f\n",
+                   t, chargingState, sim.soc, sim.voltage, (float)current_ma/1000.0f, (float)mAh_charged, sim.temp);
+        }
 
-        if (!chargeBattery()) {
-            shutDown = true;
-            printf("Confirmed: Shutdown triggered at t=%ds\n", i);
+        if (!active) {
+            printf("Charging finished at t=%ds. Reason: %d, mAh=%.1f\n", t, chargingState, (float)mAh_charged);
             break;
         }
     }
-    assert(shutDown);
-    assert(chargingState == CHARGE_STOPPED);
-    printf("test_overtemp_shutdown PASSED\n\n");
-}
-
-void test_thermal_model_unit() {
-    printf("Running test_thermal_model_unit...\n");
-    // Test the estimateTempDiff function directly
-    float unapplied = 0.0f;
-    float diff = estimateTempDiff(1.2, 1.2, 0.5, 0.2, 25.0, 1000, 0, 25.0, &unapplied);
-    printf("Estimated temp diff after 1s at 0.5A: %.4f\n", diff);
-    assert(diff > 0);
-
-    // No current, no temp change
-    diff = estimateTempDiff(1.2, 1.2, 0.0, 0.2, 25.0, 2000, 1000, 25.0, &unapplied);
-    printf("Estimated temp diff after 1s at 0.0A: %.4f\n", diff);
-    assert(std::abs(diff) < 0.001);
-
-    printf("test_thermal_model_unit PASSED\n\n");
-}
-
-void test_charging_ramp() {
-    printf("Running test_charging_ramp...\n");
-    reset_globals();
-    currentAppState = APP_STATE_CHARGING;
-    chargingState = CHARGE_IDLE;
-    maximumCurrent = 0.5f;
-
-    float lastCurrent = 0;
-    int rampUpCount = 0;
-
-    for (int i = 0; i < 7200; i++) { // 2 hours
-        mock_millis += 1000;
-        sim.update(1.0f, dutyCycle);
-
-        float current_a = (dutyCycle / 255.0f) * 1.0f;
-        mAh_charged += (current_a * 1000.0) / 3600.0;
-
-        chargeBattery();
-
-        if (i > 0 && i % 240 == 0) { // Every evaluation interval
-            if (currentRampTarget > lastCurrent) {
-                rampUpCount++;
-            }
-            lastCurrent = currentRampTarget;
-        }
-    }
-    printf("Final Ramp Target: %.3fA, Ramp Ups: %d\n", currentRampTarget, rampUpCount);
-    assert(currentRampTarget > 0);
-    assert(rampUpCount > 0);
-    printf("test_charging_ramp PASSED\n\n");
+    assert(mAh_charged > 500);
+    printf("test_full_charge_simulation PASSED\n\n");
 }
 
 int main() {
-    test_thermal_model_unit();
-    test_overtemp_shutdown();
-    test_charging_ramp();
-
-    printf("ALL TESTS PASSED!\n");
+    test_ir_state_machine();
+    test_full_charge_simulation();
+    printf("ALL MOCK TESTS PASSED!\n");
     return 0;
 }

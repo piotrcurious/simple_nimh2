@@ -1,7 +1,11 @@
 #include "definitions.h"
 #include "home_screen.h"
 #include "dashboard_html.h"
+#ifndef MOCK_TEST
 #include <WebServer.h>
+#else
+#include "test_mock/WebServer.h"
+#endif
 
 extern WebServer server;
 
@@ -76,8 +80,8 @@ String getJsonChargeLog() {
         float thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
 
         snprintf(buf, sizeof(buf),
-            "{\"t\":%lu,\"i\":%.3f,\"v\":%.3f,\"at\":%.2f,\"bt\":%.2f,\"d\":%d,\"irlu\":%.3f,\"irp\":%.3f,\"td\":%.2f,\"th\":%.2f}",
-            chargeLog[i].timestamp, chargeLog[i].current, chargeLog[i].voltage,
+            "{\"t\":%u,\"i\":%.3f,\"v\":%.3f,\"at\":%.2f,\"bt\":%.2f,\"d\":%d,\"irlu\":%.3f,\"irp\":%.3f,\"td\":%.2f,\"th\":%.2f}",
+            (unsigned int)chargeLog[i].timestamp, chargeLog[i].current, chargeLog[i].voltage,
             chargeLog[i].ambientTemperature, chargeLog[i].batteryTemperature,
             chargeLog[i].dutyCycle, chargeLog[i].internalResistanceLoadedUnloaded,
             chargeLog[i].internalResistancePairs, td, thresholdValue);

@@ -1,59 +1,29 @@
-// SHT4xSensor.cpp
 #include "SHT4xSensor.h"
-#include <Arduino.h>
 
-SHT4xSensor::SHT4xSensor() : last_time(0), update_interval(500), lock(false), temperature(25.0), humidity(50.0) {}
+SHT4xSensor::SHT4xSensor() : _temperature(0), _humidity(0) {}
 
+#ifndef MOCK_TEST
 bool SHT4xSensor::begin() {
-    if (!sht4.begin()) {
-        Serial.println("Couldn't find SHT4x");
+    if (!_sht4.begin(&Wire)) {
         return false;
     }
+    _sht4.setPrecision(SHT4X_HIGH_PRECISION);
+    _sht4.setHeater(SHT4X_NO_HEATER);
     return true;
 }
 
 void SHT4xSensor::read() {
-    uint32_t current_time = millis();
-    if ((current_time - last_time) > update_interval) {
-        sensors_event_t humidity_event, temp_event;
-        lock = true; // set lock to prevent reads
-        if (sht4.getEvent(&humidity_event, &temp_event)) {
-            temperature = (11.0 * temperature + temp_event.temperature) / 12.0; // average
-            //humidity = humidity_event.relative_humidity;
-            humidity = (11.0* humidity + humidity_event.relative_humidity) / 12.0;
-
-        } else {
-            Serial.println("Failed to read SHT4x sensor");
-        }
-        lock = false; // release lock
-        last_time = current_time;
-    }
-}
-
-double SHT4xSensor::getTemperature() {
-    return temperature;
-}
-
-double SHT4xSensor::getHumidity() {
-    return humidity;
+    sensors_event_t humidity, temp;
+    _sht4.getEvent(&humidity, &temp);
+    _temperature = temp.temperature;
+    _humidity = humidity.relative_humidity;
 }
 
 void SHT4xSensor::setPrecision(sht4x_precision_t precision) {
-    sht4.setPrecision(precision);
-}
-
-sht4x_precision_t SHT4xSensor::getPrecision() {
-    return sht4.getPrecision();
+    _sht4.setPrecision(precision);
 }
 
 void SHT4xSensor::setHeater(sht4x_heater_t heater) {
-    sht4.setHeater(heater);
+    _sht4.setHeater(heater);
 }
-
-sht4x_heater_t SHT4xSensor::getHeater() {
-    return sht4.getHeater();
-}
-
-bool SHT4xSensor::isLocked() {
-    return lock;
-}
+#endif
