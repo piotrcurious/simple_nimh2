@@ -267,6 +267,23 @@ float estimateCurrent(int duty) {
     return static_cast<float>(std::max(0.0, sum));
 }
 
+int estimateDutyCycleForCurrent(float targetCurrent) {
+    if (!currentModel.isModelBuilt) {
+        return 0;
+    }
+    int bestDC = 0;
+    float closestCurrentDiff = std::numeric_limits<float>::max();
+    for (int dc = MIN_CHARGE_DUTY_CYCLE; dc <= MAX_CHARGE_DUTY_CYCLE; ++dc) {
+        float estimated = estimateCurrent(dc);
+        float diff = std::abs(estimated - targetCurrent);
+        if (diff < closestCurrentDiff) {
+            closestCurrentDiff = diff;
+            bestDC = dc;
+        }
+    }
+    return bestDC;
+}
+
 // --- Tasks ---
 void task_readSHT4x(void* parameter) {
     while (true) {

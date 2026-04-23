@@ -212,8 +212,21 @@ enum FindPhase {
     FIND_INIT_HIGHDC,
     FIND_BINARY_PREPARE,
     FIND_BINARY_WAIT,
+    RE_EVAL_START,
+    RE_EVAL_DETECT_OUTLIERS,
+    RE_EVAL_CORRECTIVE_MEASUREMENT_PREPARE,
+    RE_EVAL_CORRECTIVE_MEASUREMENT_WAIT,
+    RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE,
+    RE_EVAL_EXPLORATORY_MEASUREMENT_WAIT,
+    RE_EVAL_FINISH,
     FIND_FINAL_WAIT,
     FIND_COMPLETE
+};
+
+struct OutlierInfo {
+    int original_index;
+    float current;
+    float resistance;
 };
 
 struct FindOptManager {
@@ -228,6 +241,24 @@ struct FindOptManager {
     std::vector<MHElectrodeData> cache;
     FindPhase phase = FIND_IDLE;
     bool isReevaluation = false;
+    std::vector<OutlierInfo> outliers;
+    int outlier_measurement_index = 0;
+    int exploratory_measurement_phase = 0; // 0 for low, 1 for high
+};
+
+enum RemeasurePhase {
+    REMEASURE_IDLE,
+    REMEASURE_BINARY_SEARCH_PREPARE,
+    REMEASURE_BINARY_SEARCH_WAIT,
+    REMEASURE_COMPLETE
+};
+
+struct RemeasureManager {
+    bool active = false;
+    float targetCurrent = 0.0f;
+    int lowDC = MIN_CHARGE_DUTY_CYCLE;
+    int highDC = MAX_CHARGE_DUTY_CYCLE;
+    RemeasurePhase phase = REMEASURE_IDLE;
 };
 
 enum MeasState {
@@ -283,6 +314,7 @@ extern ThermistorSensor thermistorSensor;
 extern CurrentModel currentModel;
 extern AsyncMeasure meas;
 extern FindOptManager findOpt;
+extern RemeasureManager remeasure;
 
 extern float temp1_values[PLOT_WIDTH];
 extern float temp2_values[PLOT_WIDTH];
@@ -334,6 +366,7 @@ extern double THERMISTOR_1_OFFSET;
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
 void buildCurrentModel(bool warmStart);
 float estimateCurrent(int dutyCycle);
+int estimateDutyCycleForCurrent(float targetCurrent);
 MeasurementData takeMeasurement(int dc, uint32_t stabilization_delay);
 void processThermistorData(const MeasurementData& data, const String& measurementType);
 inline unsigned long unmanagedCastUL(unsigned long v){ return v; }
@@ -368,6 +401,8 @@ void abortMeasurement();
 void startFindOptimalManagerAsync(int maxChargeDutyCycle, int suggestedStartDutyCycle, bool isReeval);
 bool findOptimalChargingDutyCycleStepAsync();
 float estimateTempDiff(float voltageUnderLoad, float voltageNoLoad, float current, float internalResistanceParam, float ambientTempC, uint32_t currentTime, uint32_t lastChargeEvaluationTime, float BatteryTempC, float cellMassKg, float specificHeat, float area, float convectiveH, float emissivity);
+void startRemeasure(float targetCurrent);
+bool remeasureStep();
 
 
 #endif // DEFINITIONS_H
