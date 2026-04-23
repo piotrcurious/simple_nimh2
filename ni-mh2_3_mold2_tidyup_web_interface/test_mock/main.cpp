@@ -29,6 +29,7 @@ unsigned long mock_millis = 0;
 
 #include "../ni-mh2_3_mold2_tidyup_web_interface/definitions.h"
 #include "../ni-mh2_3_mold2_tidyup_web_interface/internal_resistance.h"
+#include "../ni-mh2_3_mold2_tidyup_web_interface/AdvancedPolynomialFitter.hpp"
 
 // Hardware stubs that would normally be in .ino
 void applyDuty(uint32_t duty);
@@ -178,15 +179,15 @@ void buildCurrentModelStep() {
             break;
         case BuildModelPhase::Finish:
             if (mock_dutyCycles.size() >= 2) {
-                int n = (int)mock_dutyCycles.size();
                 int degree = 3;
-                Eigen::MatrixXd A(n, degree + 1);
-                Eigen::VectorXd b(n);
-                for (int i = 0; i < n; i++) {
-                    for (int j = 0; j <= degree; j++) A(i, j) = std::pow(mock_dutyCycles[i], j);
-                    b(i) = mock_currents[i];
+                AdvancedPolynomialFitter fitter;
+                std::vector<float> coeffs = fitter.fitPolynomialLebesgue(mock_dutyCycles, mock_currents, degree);
+
+                currentModel.coefficients.resize(coeffs.size());
+                for (size_t i = 0; i < coeffs.size(); ++i) {
+                    currentModel.coefficients(i) = coeffs[i];
                 }
-                currentModel.coefficients = A.householderQr().solve(b);
+
                 if (degree >= 0) currentModel.coefficients(0) = 0.0;
                 currentModel.isModelBuilt = true;
                 applyDuty(0);

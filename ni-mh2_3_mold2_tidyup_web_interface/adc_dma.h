@@ -2,8 +2,10 @@
 #define ADC_DMA_H
 
 #include <Arduino.h>
+#ifndef MOCK_TEST
 #include "esp_adc/adc_continuous.h"
 #include "esp_adc_cal.h"
+#endif
 
 // Define the ADC channels we are interested in
 enum AdcChannelIndex {

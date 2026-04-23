@@ -6,6 +6,7 @@
 #include "home_screen.h"
 #include "adc_dma.h"
 #include "SystemDataManager.h"
+#include "AdvancedPolynomialFitter.hpp"
 #include <WiFi.h>
 #include <WebServer.h>
 
@@ -137,16 +138,14 @@ void buildCurrentModelStep() {
         case BuildModelPhase::Finish:
             if (dutyCycles.size() >= 2) {
                 const int degree = 3;
-                const int numPoints = static_cast<int>(dutyCycles.size());
-                Eigen::MatrixXd A(numPoints, degree + 1);
-                Eigen::VectorXd b(numPoints);
-                for (int i = 0; i < numPoints; ++i) {
-                    for (int j = 0; j <= degree; ++j) {
-                        A(i, j) = std::pow(dutyCycles[i], j);
-                    }
-                    b(i) = currents[i];
+                AdvancedPolynomialFitter fitter;
+                std::vector<float> coeffs = fitter.fitPolynomialLebesgue(dutyCycles, currents, degree);
+
+                currentModel.coefficients.resize(coeffs.size());
+                for (size_t i = 0; i < coeffs.size(); ++i) {
+                    currentModel.coefficients(i) = coeffs[i];
                 }
-                currentModel.coefficients = A.householderQr().solve(b);
+
                 if (degree >= 0) currentModel.coefficients(0) = 0.0;
                 currentModel.isModelBuilt = true;
                 applyDuty(0);
