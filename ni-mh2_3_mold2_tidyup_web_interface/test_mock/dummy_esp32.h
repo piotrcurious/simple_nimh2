@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <cmath>
 #include <algorithm>
+#include <map>
 
 // FreeRTOS dummies
 typedef void* TaskHandle_t;
@@ -97,8 +98,20 @@ struct MockSerial {
 extern MockSerial Serial;
 
 struct WebServer {
-    void send(int code, const char* type, String content) {}
-    String arg(const char* name) { return ""; }
+    int lastResponseCode;
+    String lastResponseType;
+    String lastResponseContent;
+    std::map<String, String> args;
+
+    void send(int code, const char* type, String content) {
+        lastResponseCode = code;
+        lastResponseType = type;
+        lastResponseContent = content;
+    }
+    String arg(const String& name) {
+        if (args.count(name)) return args[name];
+        return "";
+    }
     void on(const char* path, void (*handler)()) {}
     void begin() {}
     void handleClient() {}
