@@ -21,13 +21,15 @@ inline void vTaskDelay(uint32_t t) {}
 inline SemaphoreHandle_t xSemaphoreCreateMutex() { return (SemaphoreHandle_t)1; }
 #define xSemaphoreTake(s,t) (true)
 #define xSemaphoreGive(s)
+#define pdTRUE true
+#define portMAX_DELAY 0xFFFFFFFF
 
 // ADC dummies
 typedef enum { ADC_ATTEN_DB_11 } adc_atten_t;
 typedef struct { int dummy; } esp_adc_cal_characteristics_t;
 struct AdcSnapshot {
-    uint32_t avg_raw;
-    uint32_t avg_mv;
+    uint64_t sum;
+    uint32_t count;
 };
 #define ADC_CH_COUNT 4
 
@@ -122,5 +124,8 @@ struct WebServer {
 inline void pinMode(int pin, int mode) {}
 inline void digitalWrite(int pin, int val) {}
 inline void analogWrite(int pin, int val) {}
+inline void analogWriteResolution(int pin, int res) {}
+inline void analogWriteFrequency(int pin, int freq) {}
+inline void analogWriteFrequency(int freq) {}
 
 #endif

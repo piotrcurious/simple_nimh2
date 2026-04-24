@@ -12,8 +12,10 @@ public:
     SHT4xSensor();
     bool begin();
     void read();
+#ifndef MOCK_TEST
     void setPrecision(sht4x_precision_t precision);
     void setHeater(sht4x_heater_t heater);
+#endif
 
     float getTemperature() const { return _temperature; }
     float getHumidity() const { return _humidity; }
