@@ -64,13 +64,14 @@ SystemDataManager systemData(sht4Sensor, THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, T
 WebServer server(80);
 
 // --- Build model state ---
-enum class BuildModelPhase { Idle = 0, Calibrate, DetectDeadRegion, SetDuty, WaitMeasurement, Finish };
+enum class BuildModelPhase { Idle = 0, Settle, Calibrate, DetectDeadRegion, SetDuty, WaitMeasurement, Finish };
 BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
 int buildModelDutyCycle = 0;
 unsigned long buildModelLastStepTime = 0;
 float calibrationSum = 0;
 float calibrationMax = 0;
 int calibrationCount = 0;
+uint32_t lastKnownSampleCount = 0;
 float noiseFloorMv = 0;
 std::vector<float> dutyCycles;
 std::vector<float> currents;
@@ -115,33 +116,45 @@ void buildCurrentModelStep() {
             dutyCycles.clear();
             currents.clear();
             applyDuty(0);
-            calibrationSum = 0;
-            calibrationMax = 0;
-            calibrationCount = 0;
             buildModelLastStepTime = now;
-            buildModelPhase = BuildModelPhase::Calibrate;
+            buildModelPhase = BuildModelPhase::Settle;
+            Serial.println("Building Current Model: Settling (2s)...");
+            break;
+        case BuildModelPhase::Settle:
+            if (now - buildModelLastStepTime >= 2000) {
+                calibrationSum = 0;
+                calibrationMax = 0;
+                calibrationCount = 0;
+                SystemData d = systemData.getData();
+                lastKnownSampleCount = d.current_sample_count;
+                buildModelPhase = BuildModelPhase::Calibrate;
+                Serial.println("Building Current Model: Calibrating Zero Offset...");
+            }
             break;
         case BuildModelPhase::Calibrate:
-            if (now - buildModelLastStepTime < 1000) {
+            {
                 SystemData d = systemData.getData();
-                calibrationSum += d.current_mv;
-                if (d.current_mv > calibrationMax) calibrationMax = d.current_mv;
-                calibrationCount++;
-            } else {
-                if (calibrationCount > 0) {
+                if (d.current_sample_count != lastKnownSampleCount) {
+                    lastKnownSampleCount = d.current_sample_count;
+                    calibrationSum += d.current_mv;
+                    if (d.current_mv > calibrationMax) calibrationMax = d.current_mv;
+                    calibrationCount++;
+                }
+                if (calibrationCount >= 20) {
                     float avgOffset = calibrationSum / calibrationCount;
                     systemData.setCurrentZeroOffsetMv(avgOffset);
-                    noiseFloorMv = (calibrationMax - avgOffset) * 1.5f;
-                    if (noiseFloorMv < 2.0f) noiseFloorMv = 2.0f; // Minimal 2mV over noise floor
-                    Serial.printf("Auto-calibration: Offset=%.2f mV, NoiseFloor=%.2f mV\n", avgOffset, noiseFloorMv);
+                    noiseFloorMv = (calibrationMax - avgOffset) * 2.0f;
+                    if (noiseFloorMv < 2.5f) noiseFloorMv = 2.5f;
+                    Serial.printf("Auto-calibration complete. Offset: %.2f mV, NoiseFloor: %.2f mV\n", avgOffset, noiseFloorMv);
+                    buildModelDutyCycle = 1;
+                    buildModelLastStepTime = now;
+                    buildModelPhase = BuildModelPhase::DetectDeadRegion;
                 }
-                buildModelDutyCycle = 1;
-                buildModelPhase = BuildModelPhase::DetectDeadRegion;
             }
             break;
         case BuildModelPhase::DetectDeadRegion:
             applyDuty(buildModelDutyCycle);
-            if (now - buildModelLastStepTime >= 100) { // Small delay for current to rise
+            if (now - buildModelLastStepTime >= 500) { // Allow shunt LPF to settle
                 SystemData d = systemData.getData();
                 float currentMv = d.current_mv - systemData.getCurrentZeroOffsetMv();
                 if (currentMv > noiseFloorMv) {

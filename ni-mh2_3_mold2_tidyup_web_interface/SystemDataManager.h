@@ -16,6 +16,7 @@ struct SystemData {
     float battery_voltage_v;
     float charge_current_a;
     float current_mv;
+    uint32_t current_sample_count;
     double ambient_temp_c;
     double battery_temp_c;
     double temp_diff_c;
