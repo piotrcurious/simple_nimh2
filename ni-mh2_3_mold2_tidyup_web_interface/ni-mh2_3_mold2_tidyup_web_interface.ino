@@ -37,6 +37,7 @@ AppState currentAppState = APP_STATE_IDLE;
 DisplayState currentDisplayState = DISPLAY_STATE_IDLE;
 
 // Shared measurement / UI globals
+float MEASURABLE_CURRENT_THRESHOLD = 0.005f;
 volatile float voltage_mv = 1000.0f;
 volatile float current_ma = 0.0f;
 volatile double mAh_charged = 0.0;
@@ -63,12 +64,14 @@ SystemDataManager systemData(sht4Sensor, THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, T
 WebServer server(80);
 
 // --- Build model state ---
-enum class BuildModelPhase { Idle = 0, Calibrate, SetDuty, WaitMeasurement, Finish };
+enum class BuildModelPhase { Idle = 0, Calibrate, DetectDeadRegion, SetDuty, WaitMeasurement, Finish };
 BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
 int buildModelDutyCycle = 0;
 unsigned long buildModelLastStepTime = 0;
 float calibrationSum = 0;
+float calibrationMax = 0;
 int calibrationCount = 0;
+float noiseFloorMv = 0;
 std::vector<float> dutyCycles;
 std::vector<float> currents;
 
@@ -113,6 +116,7 @@ void buildCurrentModelStep() {
             currents.clear();
             applyDuty(0);
             calibrationSum = 0;
+            calibrationMax = 0;
             calibrationCount = 0;
             buildModelLastStepTime = now;
             buildModelPhase = BuildModelPhase::Calibrate;
@@ -121,17 +125,45 @@ void buildCurrentModelStep() {
             if (now - buildModelLastStepTime < 1000) {
                 SystemData d = systemData.getData();
                 calibrationSum += d.current_mv;
+                if (d.current_mv > calibrationMax) calibrationMax = d.current_mv;
                 calibrationCount++;
             } else {
                 if (calibrationCount > 0) {
                     float avgOffset = calibrationSum / calibrationCount;
                     systemData.setCurrentZeroOffsetMv(avgOffset);
-                    Serial.printf("Auto-calibration complete. New Offset: %.2f mV\n", avgOffset);
+                    noiseFloorMv = (calibrationMax - avgOffset) * 1.5f;
+                    if (noiseFloorMv < 2.0f) noiseFloorMv = 2.0f; // Minimal 2mV over noise floor
+                    Serial.printf("Auto-calibration: Offset=%.2f mV, NoiseFloor=%.2f mV\n", avgOffset, noiseFloorMv);
                 }
-                dutyCycles.push_back(0.0f);
-                currents.push_back(0.0f);
                 buildModelDutyCycle = 1;
-                buildModelPhase = BuildModelPhase::SetDuty;
+                buildModelPhase = BuildModelPhase::DetectDeadRegion;
+            }
+            break;
+        case BuildModelPhase::DetectDeadRegion:
+            applyDuty(buildModelDutyCycle);
+            if (now - buildModelLastStepTime >= 100) { // Small delay for current to rise
+                SystemData d = systemData.getData();
+                float currentMv = d.current_mv - systemData.getCurrentZeroOffsetMv();
+                if (currentMv > noiseFloorMv) {
+                    MEASURABLE_CURRENT_THRESHOLD = d.charge_current_a;
+                    dutyCycles.push_back(0.0f);
+                    currents.push_back(0.0f);
+                    dutyCycles.push_back(static_cast<float>(buildModelDutyCycle));
+                    currents.push_back(d.charge_current_a);
+
+                    Serial.printf("Dead region ends at Duty: %d, Threshold: %.3f A\n", buildModelDutyCycle, MEASURABLE_CURRENT_THRESHOLD);
+                    buildModelDutyCycle += 5;
+                    buildModelPhase = BuildModelPhase::SetDuty;
+                } else {
+                    buildModelDutyCycle++;
+                    if (buildModelDutyCycle > MAX_DUTY_CYCLE) {
+                        Serial.println("Error: Could not detect current above noise floor.");
+                        applyDuty(0);
+                        setAppState(APP_STATE_IDLE);
+                        buildModelPhase = BuildModelPhase::Idle;
+                    }
+                }
+                buildModelLastStepTime = now;
             }
             break;
         case BuildModelPhase::SetDuty:
