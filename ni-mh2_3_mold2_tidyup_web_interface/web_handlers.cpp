@@ -20,7 +20,11 @@ String getJsonState() {
     snprintf(buf, sizeof(buf), "\"v\":%.3f,", voltage_mv / 1000.0); json += buf;
     snprintf(buf, sizeof(buf), "\"i\":%.3f,", current_ma / 1000.0); json += buf;
     snprintf(buf, sizeof(buf), "\"mah\":%.3f,", (float)mAh_charged); json += buf;
-    snprintf(buf, sizeof(buf), "\"max_dt\":%.2f", MAX_DIFF_TEMP); json += buf;
+    snprintf(buf, sizeof(buf), "\"max_dt\":%.2f,", MAX_DIFF_TEMP); json += buf;
+    json += "\"phase\":" + String((int)buildModelPhase) + ",";
+    snprintf(buf, sizeof(buf), "\"offset\":%.2f,", systemData.getCurrentZeroOffsetMv()); json += buf;
+    extern float noiseFloorMv;
+    snprintf(buf, sizeof(buf), "\"noise\":%.2f", noiseFloorMv); json += buf;
     json += "}";
     return json;
 }
@@ -136,13 +140,15 @@ void handleRoot() {
 
 void handleCommand() {
     String cmd = server.arg("cmd");
+    Serial.printf("DEBUG: Web command received: %s\n", cmd.c_str());
     if (cmd == "charge") {
         resetAh = true;
+        buildModelPhase = BuildModelPhase::Idle;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
         currentAppState = APP_STATE_BUILDING_MODEL;
     } else if (cmd == "ir") {
-        currentAppState = APP_STATE_MEASURING_IR;
-        extern IRState currentIRState;
         currentIRState = IR_STATE_START;
+        currentAppState = APP_STATE_MEASURING_IR;
     } else if (cmd == "reset") {
         resetAh = true;
     } else if (cmd == "stop") {

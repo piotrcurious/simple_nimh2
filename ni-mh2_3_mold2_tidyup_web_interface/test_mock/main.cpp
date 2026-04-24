@@ -87,7 +87,7 @@ volatile bool resetAh = false;
 volatile uint32_t mAh_last_time = 0;
 uint32_t dutyCycle = 0;
 bool isCharging = false;
-AppState currentAppState = APP_STATE_IDLE;
+volatile AppState currentAppState = APP_STATE_IDLE;
 DisplayState currentDisplayState = DISPLAY_STATE_IDLE;
 unsigned long lastPlotUpdateTime = 0;
 unsigned long lastChargingHouseTime = 0;
@@ -165,8 +165,7 @@ HomeScreen homeScreen;
 #include "../ni-mh2_3_mold2_tidyup_web_interface/web_handlers.cpp"
 
 // Manually bring in parts of .ino for testing model build
-enum class BuildModelPhase { Idle = 0, Settle, Calibrate, DetectDeadRegion, SetDuty, WaitMeasurement, Finish };
-BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
+volatile BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
 int buildModelDutyCycle = 0;
 unsigned long buildModelLastStepTime = 0;
 float mock_calibrationSum = 0;
@@ -174,6 +173,7 @@ float mock_calibrationMax = 0;
 int mock_calibrationCount = 0;
 uint32_t mock_lastKnownSampleCount = 0;
 float mock_noiseFloorMv = 0;
+float noiseFloorMv = 0;
 std::vector<float> mock_dutyCycles;
 std::vector<float> mock_currents;
 

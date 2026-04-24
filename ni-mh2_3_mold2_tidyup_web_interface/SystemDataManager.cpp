@@ -26,6 +26,7 @@ SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPi
       _lastVoltageUpdateMs(0), _lastMahUpdateMs(0), _currentZeroOffsetMv(CURRENT_SHUNT_PIN_ZERO_OFFSET) {
     _dataMutex = nullptr;
     memset(&_currentData, 0, sizeof(_currentData));
+    _currentData.current_sample_count = 1; // Non-zero start
     memset(_lastSnapshots, 0, sizeof(_lastSnapshots));
 
     // Initial reasonable values
@@ -38,8 +39,12 @@ SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPi
 void SystemDataManager::begin() {
     if (_dataMutex == nullptr) {
         _dataMutex = xSemaphoreCreateMutex();
+        if (_dataMutex == nullptr) {
+            Serial.println("SystemDataManager: FAILED to create mutex!");
+        }
     }
     _lastMahUpdateMs = millis();
+    Serial.println("SystemDataManager: Initialized.");
 }
 
 void SystemDataManager::update() {
@@ -161,9 +166,13 @@ double SystemDataManager::calculateBatteryTemp(double ambientTemp, float therm1M
 
 SystemData SystemDataManager::getData() {
     SystemData d;
-    if (xSemaphoreTake(_dataMutex, portMAX_DELAY) == pdTRUE) {
+    if (_dataMutex && xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         d = _currentData;
         xSemaphoreGive(_dataMutex);
+    } else {
+        // Fallback or debug logging
+        memset(&d, 0, sizeof(d));
+        if (_dataMutex) Serial.println("SystemDataManager::getData: Mutex timeout!");
     }
     return d;
 }

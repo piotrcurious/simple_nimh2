@@ -114,6 +114,8 @@ enum AppState {
     APP_STATE_CHARGING
 };
 
+enum class BuildModelPhase { Idle = 0, Settle, Calibrate, DetectDeadRegion, SetDuty, WaitMeasurement, Finish };
+
 enum IRState {
     IR_STATE_IDLE,
     IR_STATE_START,
@@ -295,7 +297,10 @@ extern std::vector<ChargeLogData> chargeLog;
 
 extern unsigned long lastPlotUpdateTime;
 extern unsigned long lastChargingHouseTime;
-extern AppState currentAppState;
+extern volatile AppState currentAppState;
+extern volatile BuildModelPhase buildModelPhase;
+extern volatile IRState currentIRState;
+extern float noiseFloorMv;
 extern DisplayState currentDisplayState;
 extern uint8_t overtemp_trip_counter;
 extern unsigned long chargePhaseStartTime;

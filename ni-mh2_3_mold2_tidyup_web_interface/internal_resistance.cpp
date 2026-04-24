@@ -9,7 +9,7 @@ extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff
                                    float& t1_millivolts, float& voltage, float& current);
 
 // State machine variables
-IRState currentIRState = IR_STATE_IDLE;
+volatile IRState currentIRState = IR_STATE_IDLE;
 IRState nextIRState = IR_STATE_IDLE;
 unsigned long irStateChangeTime = 0;
 MeasurementData currentMeasurement;
