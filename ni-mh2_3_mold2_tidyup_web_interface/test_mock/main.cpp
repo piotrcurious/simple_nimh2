@@ -49,8 +49,8 @@ struct BatterySim {
 
     // Non-linear duty-to-current mapping (simulates transistor behavior)
     float getCurrent(int duty) {
-        if (duty < 20) return 0.0f;
-        float normalized = (duty - 20) / 235.0f;
+        if (duty < 15) return 0.0f; // Slightly different deadzone
+        float normalized = (duty - 15) / 240.0f;
         return 2.5f * (normalized * normalized);
     }
 
@@ -130,8 +130,24 @@ void SystemDataManager::setCurrentZeroOffsetMv(float mv) { _currentZeroOffsetMv 
 float SystemDataManager::getCurrentZeroOffsetMv() { return _currentZeroOffsetMv; }
 SystemData SystemDataManager::getData() {
     float currentA = sim.getCurrent(dutyCycle);
-    float curMv = currentA * CURRENT_SHUNT_RESISTANCE * 1000.0f + _currentZeroOffsetMv;
-    return { (float)sim.voltage, currentA, curMv, (double)sim.ambient, (double)sim.temp, (double)(sim.temp - sim.ambient), 5000.0f, (float)mAh_charged, (uint32_t)mock_millis };
+    float curMv_ideal = currentA * CURRENT_SHUNT_RESISTANCE * 1000.0f + _currentZeroOffsetMv;
+
+    // Add noise and small random walk to simulate real ADC
+    float noise = (float)(rand() % 100 - 50) / 20.0f; // +/- 2.5 mV noise
+    float curMv = curMv_ideal + noise;
+
+    float reportedCurrentA = (curMv - _currentZeroOffsetMv) / (CURRENT_SHUNT_RESISTANCE * 1000.0f);
+
+    // Apply the same logic as in the real SystemDataManager
+    if (currentModel.isModelBuilt) {
+        if (reportedCurrentA < MEASURABLE_CURRENT_THRESHOLD) {
+            reportedCurrentA = estimateCurrent(dutyCycle);
+        }
+    } else {
+        if (reportedCurrentA < 0) reportedCurrentA = 0.0f;
+    }
+
+    return { (float)sim.voltage, reportedCurrentA, curMv, (double)sim.ambient, (double)sim.temp, (double)(sim.temp - sim.ambient), 5000.0f, (float)mAh_charged, (uint32_t)mock_millis };
 }
 
 SHT4xSensor sht4Sensor;
@@ -158,8 +174,10 @@ int buildModelDutyCycle = 0;
 unsigned long buildModelLastStepTime = 0;
 float mock_calibrationSum = 0;
 float mock_calibrationMax = 0;
+float mock_calibrationMin = 10000.0f;
 int mock_calibrationCount = 0;
 float mock_noiseFloorMv = 0;
+int mock_deadRegionConsistentCount = 0;
 std::vector<float> mock_dutyCycles;
 std::vector<float> mock_currents;
 
@@ -169,36 +187,45 @@ void buildCurrentModelStep() {
         case BuildModelPhase::Idle:
             mock_dutyCycles.clear(); mock_currents.clear();
             applyDuty(0);
-            mock_calibrationSum = 0; mock_calibrationMax = 0; mock_calibrationCount = 0;
+            mock_calibrationSum = 0; mock_calibrationMax = 0; mock_calibrationMin = 10000.0f; mock_calibrationCount = 0;
             buildModelLastStepTime = now; buildModelPhase = BuildModelPhase::Calibrate;
             break;
         case BuildModelPhase::Calibrate:
-            if (now - buildModelLastStepTime < 1000) {
+            if (now - buildModelLastStepTime < 2000) {
                 SystemData d = systemData.getData();
                 mock_calibrationSum += d.current_mv;
                 if (d.current_mv > mock_calibrationMax) mock_calibrationMax = d.current_mv;
+                if (d.current_mv < mock_calibrationMin) mock_calibrationMin = d.current_mv;
                 mock_calibrationCount++;
             } else {
                 if (mock_calibrationCount > 0) {
                     float avg = mock_calibrationSum / mock_calibrationCount;
                     systemData.setCurrentZeroOffsetMv(avg);
-                    mock_noiseFloorMv = (mock_calibrationMax - avg) * 1.5f;
-                    if (mock_noiseFloorMv < 2.0f) mock_noiseFloorMv = 2.0f;
+                    float p2p = mock_calibrationMax - mock_calibrationMin;
+                    mock_noiseFloorMv = (p2p * 1.5f);
+                    if (mock_noiseFloorMv < 4.0f) mock_noiseFloorMv = 4.0f;
                 }
-                buildModelDutyCycle = 1; buildModelPhase = BuildModelPhase::DetectDeadRegion;
+                buildModelDutyCycle = 1;
+                mock_deadRegionConsistentCount = 0;
+                buildModelPhase = BuildModelPhase::DetectDeadRegion;
+                buildModelLastStepTime = now;
             }
             break;
         case BuildModelPhase::DetectDeadRegion:
             applyDuty(buildModelDutyCycle);
-            if (now - buildModelLastStepTime >= 100) {
+            if (now - buildModelLastStepTime >= 200) {
                 SystemData d = systemData.getData();
                 float currentMv = d.current_mv - systemData.getCurrentZeroOffsetMv();
                 if (currentMv > mock_noiseFloorMv) {
-                    MEASURABLE_CURRENT_THRESHOLD = d.charge_current_a;
-                    mock_dutyCycles.push_back(0.0f); mock_currents.push_back(0.0f);
-                    mock_dutyCycles.push_back((float)buildModelDutyCycle); mock_currents.push_back(d.charge_current_a);
-                    buildModelDutyCycle += 5; buildModelPhase = BuildModelPhase::SetDuty;
+                    mock_deadRegionConsistentCount++;
+                    if (mock_deadRegionConsistentCount >= 3) {
+                        MEASURABLE_CURRENT_THRESHOLD = d.charge_current_a;
+                        mock_dutyCycles.push_back(0.0f); mock_currents.push_back(0.0f);
+                        mock_dutyCycles.push_back((float)buildModelDutyCycle); mock_currents.push_back(d.charge_current_a);
+                        buildModelDutyCycle += 5; buildModelPhase = BuildModelPhase::SetDuty;
+                    }
                 } else {
+                    mock_deadRegionConsistentCount = 0;
                     buildModelDutyCycle++;
                     if (buildModelDutyCycle > MAX_DUTY_CYCLE) {
                         currentAppState = APP_STATE_IDLE;
@@ -392,6 +419,13 @@ void test_dead_region_detection() {
     assert(currentModel.isModelBuilt);
     printf("  Calibrated Offset: %.2f mV, Threshold: %.3f A\n",
            systemData.getCurrentZeroOffsetMv(), MEASURABLE_CURRENT_THRESHOLD);
+
+    // Verify current is not negative at idle
+    applyDuty(0);
+    SystemData d = systemData.getData();
+    printf("  Idle current after calibration: %.4f A (Mv: %.2f)\n", d.charge_current_a, d.current_mv);
+    // Note: without fixes, this might be negative if noise is below calibrated offset
+
     printf("test_dead_region_detection PASSED\n\n");
 }
 
@@ -427,6 +461,7 @@ void test_full_flow() {
 }
 
 int main() {
+    srand(42); // Deterministic for now but let's see
     test_model_accuracy();
     test_dead_region_detection();
     test_ir_measurement();

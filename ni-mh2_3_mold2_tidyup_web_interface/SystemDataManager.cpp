@@ -59,11 +59,6 @@ void SystemDataManager::update() {
             double delta_h = (double)delta_ms / 3600000.0;
             float current_ma = _currentData.charge_current_a * 1000.0f;
 
-            // Handle low current estimation if model is available
-            if (currentModel.isModelBuilt && _currentData.charge_current_a < MEASURABLE_CURRENT_THRESHOLD) {
-                current_ma = estimateCurrent(dutyCycle) * 1000.0f;
-            }
-
             _currentData.mah_charged += current_ma * delta_h;
             _lastMahUpdateMs = now;
         }
@@ -89,6 +84,18 @@ void SystemDataManager::processAdcSnapshots() {
         float mv = snapshotToMillivolts(ADC_IDX_CURRENT, avgRawCurrent);
         float shuntMv = mv - _currentZeroOffsetMv;
         float currentA = (shuntMv / (float)CURRENT_SHUNT_RESISTANCE) / 1000.0f;
+
+        // Apply clamping and model estimation
+        if (currentModel.isModelBuilt) {
+            if (currentA < MEASURABLE_CURRENT_THRESHOLD) {
+                currentA = estimateCurrent(dutyCycle);
+            }
+        } else {
+            // No model yet, clamp negative to zero if small (noise)
+            if (currentA < 0) {
+                currentA = 0.0f;
+            }
+        }
 
         if (xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
             _currentData.charge_current_a = currentA;
