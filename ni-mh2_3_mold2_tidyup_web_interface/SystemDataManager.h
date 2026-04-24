@@ -15,6 +15,7 @@
 struct SystemData {
     float battery_voltage_v;
     float charge_current_a;
+    float current_mv;
     double ambient_temp_c;
     double battery_temp_c;
     double temp_diff_c;
@@ -33,6 +34,9 @@ public:
     SystemData getData();
     void resetMah();
 
+    void setCurrentZeroOffsetMv(float mv);
+    float getCurrentZeroOffsetMv();
+
 private:
     SHT4xSensor& _sht4;
     int _therm1Pin;
@@ -40,6 +44,7 @@ private:
     double _therm1Offset;
 
     SystemData _currentData;
+    float _currentZeroOffsetMv;
     SemaphoreHandle_t _dataMutex;
 
     AdcSnapshot _lastSnapshots[ADC_CH_COUNT];

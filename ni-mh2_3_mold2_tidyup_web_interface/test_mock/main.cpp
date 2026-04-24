@@ -110,7 +110,7 @@ void SHT4xSensor::read() {}
 void SHT4xSensor::setPrecision(sht4x_precision_t p) {}
 void SHT4xSensor::setHeater(sht4x_heater_t h) {}
 
-SystemDataManager::SystemDataManager(SHT4xSensor& s, int p1, int p2, double o) : _sht4(s) {
+SystemDataManager::SystemDataManager(SHT4xSensor& s, int p1, int p2, double o) : _sht4(s), _currentZeroOffsetMv(75.0f) {
     _dataMutex = xSemaphoreCreateMutex();
 }
 void SystemDataManager::begin() {}
@@ -123,8 +123,11 @@ void SystemDataManager::update() {
     last_m = now;
 }
 void SystemDataManager::resetMah() { mAh_charged = 0; }
+void SystemDataManager::setCurrentZeroOffsetMv(float mv) { _currentZeroOffsetMv = mv; }
+float SystemDataManager::getCurrentZeroOffsetMv() { return _currentZeroOffsetMv; }
 SystemData SystemDataManager::getData() {
-    return { (float)voltage_mv/1000.0f, (float)current_ma/1000.0f, (double)sim.ambient, (double)sim.temp, (double)(sim.temp-sim.ambient), 5000.0f, (float)mAh_charged, (uint32_t)mock_millis };
+    float curMv = (current_ma / 1000.0f) * CURRENT_SHUNT_RESISTANCE * 1000.0f + _currentZeroOffsetMv;
+    return { (float)voltage_mv/1000.0f, (float)current_ma/1000.0f, curMv, (double)sim.ambient, (double)sim.temp, (double)(sim.temp-sim.ambient), 5000.0f, (float)mAh_charged, (uint32_t)mock_millis };
 }
 
 SHT4xSensor sht4Sensor;
@@ -145,10 +148,12 @@ HomeScreen homeScreen;
 #include "../ni-mh2_3_mold2_tidyup_web_interface/web_handlers.cpp"
 
 // Manually bring in parts of .ino for testing model build
-enum class BuildModelPhase { Idle = 0, Start, SetDuty, WaitMeasurement, Finish };
+enum class BuildModelPhase { Idle = 0, Calibrate, SetDuty, WaitMeasurement, Finish };
 BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
 int buildModelDutyCycle = 0;
 unsigned long buildModelLastStepTime = 0;
+float mock_calibrationSum = 0;
+int mock_calibrationCount = 0;
 std::vector<float> mock_dutyCycles;
 std::vector<float> mock_currents;
 
@@ -157,8 +162,22 @@ void buildCurrentModelStep() {
     switch (buildModelPhase) {
         case BuildModelPhase::Idle:
             mock_dutyCycles.clear(); mock_currents.clear();
-            mock_dutyCycles.push_back(0.0f); mock_currents.push_back(0.0f);
-            buildModelDutyCycle = 1; buildModelPhase = BuildModelPhase::SetDuty;
+            applyDuty(0);
+            mock_calibrationSum = 0; mock_calibrationCount = 0;
+            buildModelLastStepTime = now; buildModelPhase = BuildModelPhase::Calibrate;
+            break;
+        case BuildModelPhase::Calibrate:
+            if (now - buildModelLastStepTime < 1000) {
+                SystemData d = systemData.getData();
+                mock_calibrationSum += d.current_mv;
+                mock_calibrationCount++;
+            } else {
+                if (mock_calibrationCount > 0) {
+                    systemData.setCurrentZeroOffsetMv(mock_calibrationSum / mock_calibrationCount);
+                }
+                mock_dutyCycles.push_back(0.0f); mock_currents.push_back(0.0f);
+                buildModelDutyCycle = 1; buildModelPhase = BuildModelPhase::SetDuty;
+            }
             break;
         case BuildModelPhase::SetDuty:
             if (buildModelDutyCycle <= MAX_DUTY_CYCLE) {

@@ -63,10 +63,12 @@ SystemDataManager systemData(sht4Sensor, THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, T
 WebServer server(80);
 
 // --- Build model state ---
-enum class BuildModelPhase { Idle = 0, Start, SetDuty, WaitMeasurement, Finish };
+enum class BuildModelPhase { Idle = 0, Calibrate, SetDuty, WaitMeasurement, Finish };
 BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
 int buildModelDutyCycle = 0;
 unsigned long buildModelLastStepTime = 0;
+float calibrationSum = 0;
+int calibrationCount = 0;
 std::vector<float> dutyCycles;
 std::vector<float> currents;
 
@@ -109,10 +111,28 @@ void buildCurrentModelStep() {
         case BuildModelPhase::Idle:
             dutyCycles.clear();
             currents.clear();
-            dutyCycles.push_back(0.0f);
-            currents.push_back(0.0f);
-            buildModelDutyCycle = 1;
-            buildModelPhase = BuildModelPhase::SetDuty;
+            applyDuty(0);
+            calibrationSum = 0;
+            calibrationCount = 0;
+            buildModelLastStepTime = now;
+            buildModelPhase = BuildModelPhase::Calibrate;
+            break;
+        case BuildModelPhase::Calibrate:
+            if (now - buildModelLastStepTime < 1000) {
+                SystemData d = systemData.getData();
+                calibrationSum += d.current_mv;
+                calibrationCount++;
+            } else {
+                if (calibrationCount > 0) {
+                    float avgOffset = calibrationSum / calibrationCount;
+                    systemData.setCurrentZeroOffsetMv(avgOffset);
+                    Serial.printf("Auto-calibration complete. New Offset: %.2f mV\n", avgOffset);
+                }
+                dutyCycles.push_back(0.0f);
+                currents.push_back(0.0f);
+                buildModelDutyCycle = 1;
+                buildModelPhase = BuildModelPhase::SetDuty;
+            }
             break;
         case BuildModelPhase::SetDuty:
             if (buildModelDutyCycle <= MAX_DUTY_CYCLE) {

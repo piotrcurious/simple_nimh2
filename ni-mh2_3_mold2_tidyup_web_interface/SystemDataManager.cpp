@@ -23,7 +23,7 @@ extern CurrentModel currentModel;
 
 SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPin, double therm1Offset)
     : _sht4(sht4), _therm1Pin(therm1Pin), _vccPin(vccPin), _therm1Offset(therm1Offset),
-      _lastVoltageUpdateMs(0), _lastMahUpdateMs(0) {
+      _lastVoltageUpdateMs(0), _lastMahUpdateMs(0), _currentZeroOffsetMv(CURRENT_SHUNT_PIN_ZERO_OFFSET) {
     _dataMutex = xSemaphoreCreateMutex();
     memset(&_currentData, 0, sizeof(_currentData));
     memset(_lastSnapshots, 0, sizeof(_lastSnapshots));
@@ -87,11 +87,12 @@ void SystemDataManager::processAdcSnapshots() {
     uint32_t avgRawCurrent = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_CURRENT], currentSnap);
     if (avgRawCurrent > 0) {
         float mv = snapshotToMillivolts(ADC_IDX_CURRENT, avgRawCurrent);
-        float shuntMv = mv - (float)CURRENT_SHUNT_PIN_ZERO_OFFSET;
+        float shuntMv = mv - _currentZeroOffsetMv;
         float currentA = (shuntMv / (float)CURRENT_SHUNT_RESISTANCE) / 1000.0f;
 
         if (xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
             _currentData.charge_current_a = currentA;
+            _currentData.current_mv = mv;
             xSemaphoreGive(_dataMutex);
         }
         _lastSnapshots[ADC_IDX_CURRENT] = currentSnap;
@@ -168,4 +169,20 @@ void SystemDataManager::resetMah() {
         _currentData.mah_charged = 0;
         xSemaphoreGive(_dataMutex);
     }
+}
+
+void SystemDataManager::setCurrentZeroOffsetMv(float mv) {
+    if (xSemaphoreTake(_dataMutex, portMAX_DELAY) == pdTRUE) {
+        _currentZeroOffsetMv = mv;
+        xSemaphoreGive(_dataMutex);
+    }
+}
+
+float SystemDataManager::getCurrentZeroOffsetMv() {
+    float mv = 0;
+    if (xSemaphoreTake(_dataMutex, portMAX_DELAY) == pdTRUE) {
+        mv = _currentZeroOffsetMv;
+        xSemaphoreGive(_dataMutex);
+    }
+    return mv;
 }
