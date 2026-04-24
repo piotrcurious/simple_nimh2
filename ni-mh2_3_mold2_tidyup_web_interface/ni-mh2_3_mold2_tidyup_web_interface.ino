@@ -26,7 +26,7 @@ constexpr TickType_t TASK_DELAY_THERMISTOR_MS = 50;
 
 // --- External symbols ---
 extern void measureInternalResistanceStep();
-extern IRState currentIRState;
+extern volatile IRState currentIRState;
 extern void handleRoot();
 extern void handleData();
 extern void handleCommand();
@@ -88,7 +88,7 @@ static inline void setAppState(AppState s) {
 // --- PWM setup ---
 void setupPWM() {
     pinMode(pwmPin, OUTPUT);
-    analogWriteResolution(PWM_RESOLUTION_BITS);
+    analogWriteResolution(pwmPin, PWM_RESOLUTION_BITS);
     // Use the overloaded version for ESP32
 #ifndef MOCK_TEST
     analogWriteFrequency(pwmPin, PWM_FREQUENCY);

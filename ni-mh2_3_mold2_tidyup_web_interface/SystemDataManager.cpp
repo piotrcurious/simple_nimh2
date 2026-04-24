@@ -1,6 +1,7 @@
 #include "SystemDataManager.h"
 #include "adc_dma.h"
 #include <cmath>
+#include <cstring>
 #include "definitions.h"
 
 /**

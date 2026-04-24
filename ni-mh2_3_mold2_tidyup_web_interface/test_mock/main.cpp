@@ -28,6 +28,13 @@ unsigned long mock_millis = 0;
 #define ADC_H
 #define WEBSERVER_H
 
+#include "../ni-mh2_3_mold2_tidyup_web_interface/adc_dma.h"
+
+// We need to include SystemDataManager.h with private members accessible
+#define private public
+#include "../ni-mh2_3_mold2_tidyup_web_interface/SystemDataManager.h"
+#undef private
+
 #include "../ni-mh2_3_mold2_tidyup_web_interface/definitions.h"
 #include "../ni-mh2_3_mold2_tidyup_web_interface/internal_resistance.h"
 #include "../ni-mh2_3_mold2_tidyup_web_interface/AdvancedPolynomialFitter.hpp"
@@ -48,10 +55,10 @@ struct BatterySim {
     float internal_resistance = 0.15f;
     float capacity_ah = 2.0f;
 
-    // Non-linear duty-to-current mapping (simulates transistor behavior)
+    // Non-linear duty-to-current mapping
     float getCurrent(int duty) {
         if (duty < 20) return 0.0f;
-        float normalized = (duty - 20) / 235.0f;
+        float normalized = (float)(duty - 20) / 235.0f;
         return 2.5f * (normalized * normalized);
     }
 
@@ -97,55 +104,86 @@ double THERMISTOR_1_OFFSET = 0.0;
 void applyDuty(uint32_t duty) { dutyCycle = duty; }
 
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current) {
-    temp1 = sim.ambient;
-    temp2 = sim.temp;
-    tempDiff = temp2 - temp1;
+    SystemData d = systemData.getData();
+    temp1 = d.ambient_temp_c;
+    temp2 = d.battery_temp_c;
+    tempDiff = d.temp_diff_c;
     t1_millivolts = 0;
-    voltage = (dutyCycle == 0) ? sim.unloaded_voltage : sim.voltage;
-    current = sim.getCurrent(dutyCycle);
+    voltage = d.battery_voltage_v;
+    current = d.charge_current_a;
     voltage_mv = voltage * 1000.0f;
     current_ma = current * 1000.0f;
 }
 
-#include "../ni-mh2_3_mold2_tidyup_web_interface/SHT4xSensor.h"
-SHT4xSensor::SHT4xSensor() : _temperature(22.0f), _humidity(50.0f) {}
-bool SHT4xSensor::begin() { return true; }
-void SHT4xSensor::read() {}
-void SHT4xSensor::setPrecision(sht4x_precision_t p) {}
-void SHT4xSensor::setHeater(sht4x_heater_t h) {}
+// ADC DMA Stubs for SystemDataManager.cpp
+static uint32_t mock_sample_count = 0;
+void getAdcSnapshot(AdcChannelIndex idx, AdcSnapshot &snapshot) {
+    snapshot.count = mock_sample_count;
+    float val_mv = 0;
+    if (idx == ADC_IDX_CURRENT) {
+        val_mv = sim.getCurrent((int)dutyCycle) * CURRENT_SHUNT_RESISTANCE * 1000.0f + systemData.getCurrentZeroOffsetMv();
+    } else if (idx == ADC_IDX_VOLTAGE) {
+        val_mv = (dutyCycle == 0 ? sim.unloaded_voltage : sim.voltage) * 1000.0f;
+    } else if (idx == ADC_IDX_THERM1) {
+        val_mv = 1500.0f;
+    } else if (idx == ADC_IDX_THERM_VCC) {
+        val_mv = 3300.0f;
+    }
+    snapshot.sum = (uint64_t)val_mv * snapshot.count;
+}
+uint32_t calculateSnapshotAverage(const AdcSnapshot &old_s, const AdcSnapshot &new_s) {
+    uint32_t d_count = new_s.count - old_s.count;
+    if (d_count == 0) return (uint32_t)(new_s.sum / (new_s.count ? new_s.count : 1));
+    return (uint32_t)((new_s.sum - old_s.sum) / d_count);
+}
+float snapshotToMillivolts(AdcChannelIndex idx, uint32_t avg_raw) {
+    return (float)avg_raw;
+}
+void setupAdcDma() {}
+void processAdcDma() {}
 
-SystemDataManager::SystemDataManager(SHT4xSensor& s, int p1, int p2, double o) : _sht4(s), _currentZeroOffsetMv(75.0f) {
-    _dataMutex = xSemaphoreCreateMutex();
-    memset(&_currentData, 0, sizeof(_currentData));
+SHT4xSensor::SHT4xSensor() : _temperature(0), _humidity(0) {}
+bool SHT4xSensor::begin() { return true; }
+void SHT4xSensor::read() { _temperature = sim.temp; _humidity = 50.0f; }
+
+SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPin, double therm1Offset)
+    : _sht4(sht4), _therm1Pin(therm1Pin), _vccPin(vccPin), _therm1Offset(therm1Offset), _currentZeroOffsetMv(75.0f) {
+    _dataMutex = (SemaphoreHandle_t)1;
 }
 void SystemDataManager::begin() {}
 void SystemDataManager::update() {
     static uint32_t last_m = 0;
     uint32_t now = mock_millis;
     if (last_m == 0) last_m = now;
-
-    float currentA = sim.getCurrent(dutyCycle);
     float dt_h = (float)(now - last_m) / 3600000.0f;
-    mAh_charged += (currentA * 1000.0f * dt_h);
+    mAh_charged += (sim.getCurrent((int)dutyCycle) * 1000.0f * dt_h);
     last_m = now;
-
-    _currentData.charge_current_a = std::max(0.0f, currentA);
-    _currentData.current_mv = currentA * CURRENT_SHUNT_RESISTANCE * 1000.0f + _currentZeroOffsetMv;
-    _currentData.current_sample_count++;
+    processAdcSnapshots();
 }
+void SystemDataManager::processAdcSnapshots() {
+    AdcSnapshot currentSnap;
+    getAdcSnapshot(ADC_IDX_CURRENT, currentSnap);
+    uint32_t avgRawCurrent = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_CURRENT], currentSnap);
+    _lastSnapshots[ADC_IDX_CURRENT] = currentSnap;
+    _currentData.current_mv = snapshotToMillivolts(ADC_IDX_CURRENT, avgRawCurrent);
+    _currentData.charge_current_a = std::max(0.0f, (_currentData.current_mv - _currentZeroOffsetMv) / (CURRENT_SHUNT_RESISTANCE * 1000.0f));
+    _currentData.current_sample_count = currentSnap.count;
+
+    getAdcSnapshot(ADC_IDX_VOLTAGE, currentSnap);
+    uint32_t avgRawVoltage = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_VOLTAGE], currentSnap);
+    _lastSnapshots[ADC_IDX_VOLTAGE] = currentSnap;
+    _currentData.battery_voltage_v = snapshotToMillivolts(ADC_IDX_VOLTAGE, avgRawVoltage) / 1000.0f;
+
+    _currentData.ambient_temp_c = sim.ambient;
+    _currentData.battery_temp_c = sim.temp;
+    _currentData.temp_diff_c = _currentData.battery_temp_c - _currentData.ambient_temp_c;
+    _currentData.mah_charged = (float)mAh_charged;
+    _currentData.last_update_ms = mock_millis;
+}
+SystemData SystemDataManager::getData() { return _currentData; }
 void SystemDataManager::resetMah() { mAh_charged = 0; }
 void SystemDataManager::setCurrentZeroOffsetMv(float mv) { _currentZeroOffsetMv = mv; }
 float SystemDataManager::getCurrentZeroOffsetMv() { return _currentZeroOffsetMv; }
-SystemData SystemDataManager::getData() {
-    SystemData d = _currentData;
-    d.battery_voltage_v = (float)sim.voltage;
-    d.ambient_temp_c = (double)sim.ambient;
-    d.battery_temp_c = (double)sim.temp;
-    d.temp_diff_c = d.battery_temp_c - d.ambient_temp_c;
-    d.mah_charged = (float)mAh_charged;
-    d.last_update_ms = (uint32_t)mock_millis;
-    return d;
-}
 
 SHT4xSensor sht4Sensor;
 SystemDataManager systemData(sht4Sensor, 36, 35, 0.0);
@@ -153,16 +191,14 @@ CurrentModel currentModel;
 
 #define private public
 #include "../ni-mh2_3_mold2_tidyup_web_interface/home_screen.h"
-#include "../ni-mh2_3_mold2_tidyup_web_interface/home_screen.cpp"
 #undef private
 HomeScreen homeScreen;
 
-// Include logic
-#include "../ni-mh2_3_mold2_tidyup_web_interface/charging.cpp"
-#include "../ni-mh2_3_mold2_tidyup_web_interface/internal_resistance.cpp"
-#include "../ni-mh2_3_mold2_tidyup_web_interface/graphing.cpp"
-#include "../ni-mh2_3_mold2_tidyup_web_interface/logging.cpp"
-#include "../ni-mh2_3_mold2_tidyup_web_interface/web_handlers.cpp"
+WebServer server;
+
+#include "../ni-mh2_3_mold2_tidyup_web_interface/charging.h"
+#include "../ni-mh2_3_mold2_tidyup_web_interface/logging.h"
+#include "../ni-mh2_3_mold2_tidyup_web_interface/graphing.h"
 
 // Manually bring in parts of .ino for testing model build
 volatile BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
@@ -185,12 +221,15 @@ void buildCurrentModelStep() {
             applyDuty(0);
             buildModelLastStepTime = now;
             buildModelPhase = BuildModelPhase::Settle;
+            std::cout << "  Phase Idle -> Settle at " << now << std::endl;
             break;
         case BuildModelPhase::Settle:
             if (now - buildModelLastStepTime >= 2000) {
                 mock_calibrationSum = 0; mock_calibrationMax = 0; mock_calibrationCount = 0;
                 mock_lastKnownSampleCount = systemData.getData().current_sample_count;
+                buildModelLastStepTime = now;
                 buildModelPhase = BuildModelPhase::Calibrate;
+                std::cout << "  Phase Settle -> Calibrate at " << now << std::endl;
             }
             break;
         case BuildModelPhase::Calibrate:
@@ -203,13 +242,15 @@ void buildCurrentModelStep() {
                     mock_calibrationCount++;
                 }
                 if (mock_calibrationCount >= 20) {
-                    float avg = mock_calibrationSum / mock_calibrationCount;
+                    float avg = mock_calibrationSum / (float)mock_calibrationCount;
                     systemData.setCurrentZeroOffsetMv(avg);
                     mock_noiseFloorMv = (mock_calibrationMax - avg) * 2.0f;
                     if (mock_noiseFloorMv < 2.5f) mock_noiseFloorMv = 2.5f;
                     buildModelDutyCycle = 1;
+                    applyDuty(buildModelDutyCycle);
                     buildModelLastStepTime = now;
                     buildModelPhase = BuildModelPhase::DetectDeadRegion;
+                    std::cout << "  Phase Calibrate -> DetectDeadRegion at " << now << " (Offset " << avg << ", Noise " << mock_noiseFloorMv << ")" << std::endl;
                 }
             }
             break;
@@ -221,10 +262,15 @@ void buildCurrentModelStep() {
                     MEASURABLE_CURRENT_THRESHOLD = d.charge_current_a;
                     mock_dutyCycles.push_back(0.0f); mock_currents.push_back(0.0f);
                     mock_dutyCycles.push_back((float)buildModelDutyCycle); mock_currents.push_back(d.charge_current_a);
-                    buildModelDutyCycle += 5; buildModelPhase = BuildModelPhase::SetDuty;
+                    buildModelDutyCycle += 5;
+                    applyDuty(buildModelDutyCycle);
+                    buildModelLastStepTime = now;
+                    buildModelPhase = BuildModelPhase::WaitMeasurement;
+                    std::cout << "  Phase DetectDeadRegion -> WaitMeasurement at " << now << " (Duty " << buildModelDutyCycle << ", Current " << d.charge_current_a << ")" << std::endl;
                 } else {
                     buildModelDutyCycle += 2;
                     if (buildModelDutyCycle > MAX_DUTY_CYCLE) {
+                        std::cout << "  Phase DetectDeadRegion -> ABORTED (Max Duty reached)" << std::endl;
                         currentAppState = APP_STATE_IDLE;
                         buildModelPhase = BuildModelPhase::Idle;
                     } else {
@@ -243,12 +289,18 @@ void buildCurrentModelStep() {
             break;
         case BuildModelPhase::WaitMeasurement:
             if (now - buildModelLastStepTime >= BUILD_CURRENT_MODEL_DELAY) {
-                double t1, t2, td; float tmv, v, c; getThermistorReadings(t1, t2, td, tmv, v, c);
-                if (c >= MEASURABLE_CURRENT_THRESHOLD) {
+                SystemData d = systemData.getData();
+                if (d.charge_current_a >= MEASURABLE_CURRENT_THRESHOLD) {
                     mock_dutyCycles.push_back((float)buildModelDutyCycle);
-                    mock_currents.push_back(c);
+                    mock_currents.push_back(d.charge_current_a);
                 }
-                buildModelDutyCycle += 5; buildModelPhase = BuildModelPhase::SetDuty;
+                buildModelDutyCycle += 5;
+                if (buildModelDutyCycle <= MAX_DUTY_CYCLE) {
+                    applyDuty(buildModelDutyCycle);
+                    buildModelLastStepTime = now;
+                } else {
+                    buildModelPhase = BuildModelPhase::Finish;
+                }
             }
             break;
         case BuildModelPhase::Finish:
@@ -258,7 +310,7 @@ void buildCurrentModelStep() {
                 std::vector<float> coeffs = fitter.fitPolynomialLebesgue(mock_dutyCycles, mock_currents, degree);
 
                 currentModel.coefficients.resize(coeffs.size());
-                for (size_t i = 0; i < coeffs.size(); ++i) {
+                for (size_t i = 0; i < (size_t)coeffs.size(); ++i) {
                     currentModel.coefficients(i) = coeffs[i];
                 }
 
@@ -268,9 +320,11 @@ void buildCurrentModelStep() {
                 currentAppState = APP_STATE_IDLE; // Reset to idle
                 startCharging(); // Auto start charging as in .ino
             } else {
+                std::cout << "  Phase Finish -> ABORTED (Not enough points: " << mock_dutyCycles.size() << ")" << std::endl;
                 currentAppState = APP_STATE_IDLE;
             }
             buildModelPhase = BuildModelPhase::Idle;
+            std::cout << "  Phase Finish at " << now << " (Built: " << currentModel.isModelBuilt << ", Points: " << mock_dutyCycles.size() << ")" << std::endl;
             break;
     }
 }
@@ -293,19 +347,17 @@ int estimateDutyCycleForCurrent(float targetCurrent) {
     return bestDC;
 }
 
-WebServer server;
-
 void reset_globals() {
     mock_millis = 0; voltage_mv = 1000.0f; current_ma = 0.0f; mAh_charged = 0.0;
     dutyCycle = 0; chargingState = CHARGE_IDLE; chargeLog.clear();
     sim = BatterySim(); overtemp_trip_counter = 0; currentAppState = APP_STATE_IDLE;
     currentIRState = IR_STATE_IDLE; isMeasuringResistance = false; isCharging = false;
-    recentChargeLogsCount = 0; recentChargeLogsHead = 0;
     currentModel.isModelBuilt = false;
     server.args.clear();
     homeScreen.begin();
     resistanceDataCount = 0;
     resistanceDataCountPairs = 0;
+    mock_sample_count = 0;
     for (int i = 0; i < PLOT_WIDTH; i++) {
         temp1_values[i] = NAN;
         temp2_values[i] = NAN;
@@ -313,24 +365,32 @@ void reset_globals() {
         voltage_values[i] = NAN;
         current_values[i] = NAN;
     }
+    for (int i=0; i<ADC_CH_COUNT; i++) {
+        systemData._lastSnapshots[i].sum = 0;
+        systemData._lastSnapshots[i].count = 0;
+    }
 }
 
 void test_model_accuracy() {
-    printf("Running test_model_accuracy...\n");
+    std::cout << "Running test_model_accuracy..." << std::endl;
     reset_globals();
     currentAppState = APP_STATE_BUILDING_MODEL;
     buildModelPhase = BuildModelPhase::Idle;
     int safety_counter = 0;
-    while (currentAppState == APP_STATE_BUILDING_MODEL && safety_counter++ < 1000000) {
+    while (safety_counter++ < 1000000) {
         mock_millis += 10;
+        mock_sample_count++;
         systemData.update();
-        buildCurrentModelStep();
-        if (buildModelPhase == BuildModelPhase::Settle) mock_millis += 100;
-        if (buildModelPhase == BuildModelPhase::Calibrate) mock_millis += 100;
-        if (buildModelPhase == BuildModelPhase::DetectDeadRegion) mock_millis += 100;
-        if (buildModelPhase == BuildModelPhase::WaitMeasurement) mock_millis += BUILD_CURRENT_MODEL_DELAY;
+        if (currentAppState == APP_STATE_BUILDING_MODEL) {
+            buildCurrentModelStep();
+        } else {
+            break;
+        }
     }
-    assert(currentModel.isModelBuilt);
+    if (!currentModel.isModelBuilt) {
+        std::cout << "FAILED: Model not built. Phase: " << (int)buildModelPhase << ", Points: " << mock_dutyCycles.size() << std::endl;
+        assert(false);
+    }
     float sum_sq_error = 0;
     int count = 0;
     for (int dc = 0; dc <= 255; dc += 10) {
@@ -341,25 +401,24 @@ void test_model_accuracy() {
         count++;
     }
     float rmse = std::sqrt(sum_sq_error / count);
-    printf("  RMSE: %.4f\n", rmse);
+    std::cout << "  RMSE: " << rmse << std::endl;
     assert(rmse < 0.05);
 
     // Test inverse mapping
     float target = 1.0f;
     int dc = estimateDutyCycleForCurrent(target);
     float est = estimateCurrent(dc);
-    printf("  Target 1.0A -> Duty %d -> Estimated %.3fA\n", dc, est);
+    std::cout << "  Target 1.0A -> Duty " << dc << " -> Estimated " << est << "A" << std::endl;
     assert(std::abs(est - target) < 0.05);
 
-    printf("test_model_accuracy PASSED\n\n");
+    std::cout << "test_model_accuracy PASSED" << std::endl << std::endl;
 }
 
 void test_overtemp_shutdown() {
-    printf("Running test_overtemp_shutdown...\n");
+    std::cout << "Running test_overtemp_shutdown..." << std::endl;
     reset_globals();
     currentAppState = APP_STATE_CHARGING;
     chargingState = CHARGE_MONITOR;
-    currentRampTarget = maximumCurrent; // Force ramp to be finished
 
     // Simulate battery heating up rapidly
     sim.temp = 50.0f;
@@ -367,18 +426,19 @@ void test_overtemp_shutdown() {
     int loop_count = 0;
     while (loop_count++ < 1000) {
         mock_millis += CHARGE_EVALUATION_INTERVAL_MS;
+        mock_sample_count++;
         systemData.update();
         chargeBattery();
         if (chargingState == CHARGE_STOPPED) break;
     }
 
     assert(chargingState == CHARGE_STOPPED);
-    printf("  Shutdown triggered at millis: %lu\n", mock_millis);
-    printf("test_overtemp_shutdown PASSED\n\n");
+    std::cout << "  Shutdown triggered at millis: " << mock_millis << std::endl;
+    std::cout << "test_overtemp_shutdown PASSED" << std::endl << std::endl;
 }
 
 void test_ir_measurement() {
-    printf("Running test_ir_measurement...\n");
+    std::cout << "Running test_ir_measurement..." << std::endl;
     reset_globals();
     currentAppState = APP_STATE_MEASURING_IR;
     currentIRState = IR_STATE_START;
@@ -386,7 +446,8 @@ void test_ir_measurement() {
     int loop_count = 0;
     while (currentAppState == APP_STATE_MEASURING_IR && loop_count++ < 1000000) {
         mock_millis += 50;
-        sim.update(0.05f, dutyCycle);
+        mock_sample_count++;
+        sim.update(0.05f, (int)dutyCycle);
         systemData.update();
         measureInternalResistanceStep();
         if (currentIRState == IR_STATE_IDLE) currentAppState = APP_STATE_IDLE;
@@ -394,13 +455,12 @@ void test_ir_measurement() {
 
     assert(currentAppState == APP_STATE_IDLE);
     assert(resistanceDataCountPairs > 0);
-    printf("  Pairs measured: %d, Slope: %.4f, Intercept: %.4f\n",
-           resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
-    printf("test_ir_measurement PASSED\n\n");
+    std::cout << "  Pairs measured: " << resistanceDataCountPairs << ", Slope: " << regressedInternalResistancePairsSlope << ", Intercept: " << regressedInternalResistancePairsIntercept << std::endl;
+    std::cout << "test_ir_measurement PASSED" << std::endl << std::endl;
 }
 
 void test_dead_region_detection() {
-    printf("Running test_dead_region_detection (Offset = 150mV)...\n");
+    std::cout << "Running test_dead_region_detection (Offset = 150mV)..." << std::endl;
     reset_globals();
     // Simulate a high offset in the simulator
     systemData.setCurrentZeroOffsetMv(150.0f);
@@ -409,24 +469,24 @@ void test_dead_region_detection() {
     buildModelPhase = BuildModelPhase::Idle;
 
     int safety_counter = 0;
-    while (currentAppState == APP_STATE_BUILDING_MODEL && safety_counter++ < 1000000) {
+    while (safety_counter++ < 1000000) {
         mock_millis += 10;
+        mock_sample_count++;
         systemData.update();
-        buildCurrentModelStep();
-        if (buildModelPhase == BuildModelPhase::Settle) mock_millis += 100;
-        if (buildModelPhase == BuildModelPhase::Calibrate) mock_millis += 100;
-        if (buildModelPhase == BuildModelPhase::DetectDeadRegion) mock_millis += 500;
-        if (buildModelPhase == BuildModelPhase::WaitMeasurement) mock_millis += BUILD_CURRENT_MODEL_DELAY;
+        if (currentAppState == APP_STATE_BUILDING_MODEL) {
+            buildCurrentModelStep();
+        } else {
+            break;
+        }
     }
 
     assert(currentModel.isModelBuilt);
-    printf("  Calibrated Offset: %.2f mV, Threshold: %.3f A\n",
-           systemData.getCurrentZeroOffsetMv(), MEASURABLE_CURRENT_THRESHOLD);
-    printf("test_dead_region_detection PASSED\n\n");
+    std::cout << "  Calibrated Offset: " << systemData.getCurrentZeroOffsetMv() << " mV, Threshold: " << MEASURABLE_CURRENT_THRESHOLD << " A" << std::endl;
+    std::cout << "test_dead_region_detection PASSED" << std::endl << std::endl;
 }
 
 void test_full_flow() {
-    printf("Running test_full_flow (Build Model -> Charge)...\n");
+    std::cout << "Running test_full_flow (Build Model -> Charge)..." << std::endl;
     reset_globals();
     currentAppState = APP_STATE_BUILDING_MODEL;
     buildModelPhase = BuildModelPhase::Idle;
@@ -434,7 +494,8 @@ void test_full_flow() {
     int loop_count = 0;
     while (loop_count++ < 200000) {
         mock_millis += 100;
-        sim.update(0.1f, dutyCycle);
+        mock_sample_count++;
+        sim.update(0.1f, (int)dutyCycle);
         systemData.update();
 
         if (currentAppState == APP_STATE_BUILDING_MODEL) {
@@ -452,8 +513,8 @@ void test_full_flow() {
     assert(currentAppState == APP_STATE_CHARGING);
     assert(chargingState == CHARGE_MONITOR);
     assert(mAh_charged > 100);
-    printf("Successfully transitioned from model building to active charging.\n");
-    printf("test_full_flow PASSED\n\n");
+    std::cout << "Successfully transitioned from model building to active charging." << std::endl;
+    std::cout << "test_full_flow PASSED" << std::endl << std::endl;
 }
 
 int main() {
@@ -462,6 +523,6 @@ int main() {
     test_ir_measurement();
     test_overtemp_shutdown();
     test_full_flow();
-    printf("ALL TESTS PASSED!\n");
+    std::cout << "ALL TESTS PASSED!" << std::endl;
     return 0;
 }

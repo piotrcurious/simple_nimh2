@@ -5,7 +5,6 @@
 #ifndef MOCK_TEST
 #include "esp_adc/adc_continuous.h"
 #include "esp_adc_cal.h"
-#endif
 
 // Define the ADC channels we are interested in
 enum AdcChannelIndex {
@@ -21,6 +20,14 @@ struct AdcSnapshot {
     uint64_t sum;
     uint32_t count;
 };
+#else
+enum AdcChannelIndex {
+    ADC_IDX_THERM1 = 0,
+    ADC_IDX_THERM_VCC = 1,
+    ADC_IDX_VOLTAGE = 2,
+    ADC_IDX_CURRENT = 3
+};
+#endif
 
 // Function prototypes
 void setupAdcDma();
