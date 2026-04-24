@@ -67,8 +67,17 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
                 maxDT = data.state.max_dt || 1.5;
                 const appStates = ['IDLE', 'BUILDING_MODEL', 'MEASURING_IR', 'CHARGING'];
-                document.getElementById('appState').innerText = appStates[data.state.app] || 'UNKNOWN';
-                document.getElementById('metrics').innerText = `V: ${data.state.v.toFixed(3)}V | I: ${data.state.i.toFixed(3)}A | ${data.state.mah.toFixed(3)} mAh | Duty: ${data.state.duty}`;
+                const modelPhases = ['Idle', 'Settle', 'Calibrate', 'DetectDeadRegion', 'SetDuty', 'WaitMeasurement', 'Finish'];
+                let stateText = appStates[data.state.app] || 'UNKNOWN';
+                if (data.state.app === 1) { // BUILDING_MODEL
+                    stateText += ` (${modelPhases[data.state.phase] || '...'})`;
+                }
+                document.getElementById('appState').innerText = stateText;
+                let metricsText = `V: ${data.state.v.toFixed(3)}V | I: ${data.state.i.toFixed(3)}A | ${data.state.mah.toFixed(3)} mAh | Duty: ${data.state.duty}`;
+                if (data.state.app === 1) { // BUILDING_MODEL
+                    metricsText += ` | Offset: ${data.state.offset.toFixed(2)}mV | Noise: ${data.state.noise.toFixed(2)}mV`;
+                }
+                document.getElementById('metrics').innerText = metricsText;
 
                 renderAmbient(data.ambient);
 

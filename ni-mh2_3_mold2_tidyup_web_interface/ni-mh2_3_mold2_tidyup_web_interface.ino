@@ -33,7 +33,7 @@ extern void handleCommand();
 
 
 // --- Application state ---
-AppState currentAppState = APP_STATE_IDLE;
+volatile AppState currentAppState = APP_STATE_IDLE;
 DisplayState currentDisplayState = DISPLAY_STATE_IDLE;
 
 // Shared measurement / UI globals
@@ -64,8 +64,7 @@ SystemDataManager systemData(sht4Sensor, THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, T
 WebServer server(80);
 
 // --- Build model state ---
-enum class BuildModelPhase { Idle = 0, Settle, Calibrate, DetectDeadRegion, SetDuty, WaitMeasurement, Finish };
-BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
+volatile BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
 int buildModelDutyCycle = 0;
 unsigned long buildModelLastStepTime = 0;
 float calibrationSum = 0;
@@ -88,9 +87,14 @@ static inline void setAppState(AppState s) {
 
 // --- PWM setup ---
 void setupPWM() {
-    analogWriteResolution(pwmPin,PWM_RESOLUTION_BITS);
-    analogWriteFrequency(pwmPin, PWM_FREQUENCY);
     pinMode(pwmPin, OUTPUT);
+    analogWriteResolution(PWM_RESOLUTION_BITS);
+    // Use the overloaded version for ESP32
+#ifndef MOCK_TEST
+    analogWriteFrequency(pwmPin, PWM_FREQUENCY);
+#else
+    analogWriteFrequency(PWM_FREQUENCY);
+#endif
     applyDuty(0);
 }
 
@@ -111,14 +115,23 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
 // --- Non-blocking build current model ---
 void buildCurrentModelStep() {
     const unsigned long now = millis();
+    static BuildModelPhase lastPhase = BuildModelPhase::Finish;
+
+    if (buildModelPhase != lastPhase) {
+        Serial.printf("DEBUG: buildCurrentModelStep phase transition: %d -> %d\n", (int)lastPhase, (int)buildModelPhase);
+        lastPhase = buildModelPhase;
+    }
+
     switch (buildModelPhase) {
         case BuildModelPhase::Idle:
             dutyCycles.clear();
             currents.clear();
             applyDuty(0);
+            buildModelDutyCycle = 0;
             buildModelLastStepTime = now;
             buildModelPhase = BuildModelPhase::Settle;
             Serial.println("Building Current Model: Settling (2s)...");
+            Serial.flush();
             break;
         case BuildModelPhase::Settle:
             if (now - buildModelLastStepTime >= 2000) {
@@ -127,6 +140,7 @@ void buildCurrentModelStep() {
                 calibrationCount = 0;
                 SystemData d = systemData.getData();
                 lastKnownSampleCount = d.current_sample_count;
+                buildModelLastStepTime = now; // Reset timer for Calibrate phase
                 buildModelPhase = BuildModelPhase::Calibrate;
                 Serial.println("Building Current Model: Calibrating Zero Offset...");
             }
@@ -139,7 +153,9 @@ void buildCurrentModelStep() {
                     calibrationSum += d.current_mv;
                     if (d.current_mv > calibrationMax) calibrationMax = d.current_mv;
                     calibrationCount++;
+                    if (calibrationCount % 5 == 0) Serial.printf("  Calibrating... %d/20 samples (Current: %.2f mV)\n", calibrationCount, d.current_mv);
                 }
+
                 if (calibrationCount >= 20) {
                     float avgOffset = calibrationSum / calibrationCount;
                     systemData.setCurrentZeroOffsetMv(avgOffset);
@@ -147,6 +163,18 @@ void buildCurrentModelStep() {
                     if (noiseFloorMv < 2.5f) noiseFloorMv = 2.5f;
                     Serial.printf("Auto-calibration complete. Offset: %.2f mV, NoiseFloor: %.2f mV\n", avgOffset, noiseFloorMv);
                     buildModelDutyCycle = 1;
+                    applyDuty(buildModelDutyCycle); // Start applying duty immediately
+                    buildModelLastStepTime = now;
+                    buildModelPhase = BuildModelPhase::DetectDeadRegion;
+                    Serial.println("Building Current Model: Detecting Dead Region...");
+                }
+
+                if (now - buildModelLastStepTime > 10000) { // Increased timeout
+                    Serial.printf("Auto-calibration TIMEOUT (Samples: %d) - fallback to default.\n", calibrationCount);
+                    systemData.setCurrentZeroOffsetMv(CURRENT_SHUNT_PIN_ZERO_OFFSET);
+                    noiseFloorMv = 5.0f;
+                    buildModelDutyCycle = 1;
+                    applyDuty(buildModelDutyCycle);
                     buildModelLastStepTime = now;
                     buildModelPhase = BuildModelPhase::DetectDeadRegion;
                 }
@@ -157,7 +185,10 @@ void buildCurrentModelStep() {
                 SystemData d = systemData.getData();
                 float currentMv = d.current_mv - systemData.getCurrentZeroOffsetMv();
 
-                if (currentMv > noiseFloorMv) {
+                Serial.printf("  Detect: Duty %d, currentMv-Offset: %.2f mV (NoiseFloor: %.2f mV), I: %.4f A\n",
+                              buildModelDutyCycle, currentMv, noiseFloorMv, d.charge_current_a);
+
+                if (currentMv > noiseFloorMv && d.charge_current_a > 0.001f) {
                     MEASURABLE_CURRENT_THRESHOLD = d.charge_current_a;
                     dutyCycles.push_back(0.0f);
                     currents.push_back(0.0f);
@@ -166,9 +197,10 @@ void buildCurrentModelStep() {
 
                     Serial.printf("Dead region ends at Duty: %d, Threshold: %.3f A\n", buildModelDutyCycle, MEASURABLE_CURRENT_THRESHOLD);
                     buildModelDutyCycle += 5;
+                    buildModelLastStepTime = now; // Reset timer for SetDuty
                     buildModelPhase = BuildModelPhase::SetDuty;
                 } else {
-                    buildModelDutyCycle += 2;
+                    buildModelDutyCycle += 4; // Slightly faster increment
                     if (buildModelDutyCycle > MAX_DUTY_CYCLE) {
                         Serial.println("Error: Could not detect current above noise floor.");
                         applyDuty(0);
@@ -187,6 +219,7 @@ void buildCurrentModelStep() {
                 buildModelLastStepTime = now;
                 buildModelPhase = BuildModelPhase::WaitMeasurement;
             } else {
+                buildModelLastStepTime = now; // Reset timer for Finish
                 buildModelPhase = BuildModelPhase::Finish;
             }
             break;
@@ -196,7 +229,8 @@ void buildCurrentModelStep() {
                 if (d.charge_current_a >= MEASURABLE_CURRENT_THRESHOLD) {
                     dutyCycles.push_back(static_cast<float>(buildModelDutyCycle));
                     currents.push_back(d.charge_current_a);
-                    Serial.printf("  Model point: Duty %d, Current %.3f A\n", buildModelDutyCycle, d.charge_current_a);
+                    Serial.printf("  Model point: Duty %d, Current %.3f A, Samples: %u\n",
+                                  buildModelDutyCycle, d.charge_current_a, d.current_sample_count);
                 }
                 buildModelDutyCycle += 5;
                 buildModelPhase = BuildModelPhase::SetDuty;
@@ -269,7 +303,6 @@ void task_processAdcDma(void* parameter) {
 }
 
 void task_updateSystemData(void* parameter) {
-    systemData.begin();
     while (true) {
         if (resetAh) {
             systemData.resetMah();
@@ -307,11 +340,12 @@ void setup() {
 
     sht4Sensor.begin();
     homeScreen.begin();
+    systemData.begin();
     setupAdcDma();
 
-    xTaskCreate(task_readSHT4x, "SHT4", 4096, NULL, 1, NULL);
-    xTaskCreate(task_processAdcDma, "ADC_DMA", 4096, NULL, 2, NULL);
-    xTaskCreate(task_updateSystemData, "SYS_DATA", 4096, NULL, 1, NULL);
+    xTaskCreatePinnedToCore(task_readSHT4x, "SHT4", 4096, NULL, 1, NULL, 0);
+    xTaskCreatePinnedToCore(task_processAdcDma, "ADC_DMA", 4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(task_updateSystemData, "SYS_DATA", 4096, NULL, 1, NULL, 0);
 
     setupPWM();
     Serial.println("System Ready.");
@@ -348,4 +382,7 @@ void loop() {
         gatherData();
     }
     homeScreen.gatherData();
+
+    // Give other tasks time to run
+    vTaskDelay(1);
 }

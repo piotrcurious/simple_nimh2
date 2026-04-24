@@ -16,6 +16,8 @@ typedef void* SemaphoreHandle_t;
 typedef uint32_t TickType_t;
 #define pdMS_TO_TICKS(ms) (ms)
 #define xTaskCreate(a,b,c,d,e,f)
+#define xTaskCreatePinnedToCore(a,b,c,d,e,f,g)
+inline void vTaskDelay(uint32_t t) {}
 inline SemaphoreHandle_t xSemaphoreCreateMutex() { return (SemaphoreHandle_t)1; }
 #define xSemaphoreTake(s,t) (true)
 #define xSemaphoreGive(s)
