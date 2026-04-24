@@ -40,6 +40,7 @@ int estimateDutyCycleForCurrent(float target);
 // Physics Simulation
 struct BatterySim {
     float voltage = 1.15f;
+    float unloaded_voltage = 1.25f;
     float temp = 22.0f;
     float ambient = 22.0f;
     float soc = 0.05f;
@@ -61,6 +62,7 @@ struct BatterySim {
         if (soc > 0.9f) base_v += (soc - 0.9f) * 4.0f;
 
         float current_ir = internal_resistance * (1.0f + std::max(0.0f, (float)std::abs(0.5f - soc) * 0.5f));
+        unloaded_voltage = base_v;
         voltage = base_v + current * current_ir;
 
         float efficiency = 1.0f;
@@ -98,7 +100,7 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
     temp2 = sim.temp;
     tempDiff = temp2 - temp1;
     t1_millivolts = 0;
-    voltage = sim.voltage;
+    voltage = (dutyCycle == 0) ? sim.unloaded_voltage : sim.voltage;
     current = sim.getCurrent(dutyCycle);
     voltage_mv = voltage * 1000.0f;
     current_ma = current * 1000.0f;
@@ -324,6 +326,75 @@ void test_model_accuracy() {
     printf("test_model_accuracy PASSED\n\n");
 }
 
+void test_overtemp_shutdown() {
+    printf("Running test_overtemp_shutdown...\n");
+    reset_globals();
+    currentAppState = APP_STATE_CHARGING;
+    chargingState = CHARGE_MONITOR;
+    currentRampTarget = maximumCurrent; // Force ramp to be finished
+
+    // Simulate battery heating up rapidly
+    sim.temp = 50.0f;
+
+    int loop_count = 0;
+    while (loop_count++ < 1000) {
+        mock_millis += CHARGE_EVALUATION_INTERVAL_MS;
+        systemData.update();
+        chargeBattery();
+        if (chargingState == CHARGE_STOPPED) break;
+    }
+
+    assert(chargingState == CHARGE_STOPPED);
+    printf("  Shutdown triggered at millis: %lu\n", mock_millis);
+    printf("test_overtemp_shutdown PASSED\n\n");
+}
+
+void test_ir_measurement() {
+    printf("Running test_ir_measurement...\n");
+    reset_globals();
+    currentAppState = APP_STATE_MEASURING_IR;
+    currentIRState = IR_STATE_START;
+
+    int loop_count = 0;
+    while (currentAppState == APP_STATE_MEASURING_IR && loop_count++ < 1000000) {
+        mock_millis += 50;
+        sim.update(0.05f, dutyCycle);
+        systemData.update();
+        measureInternalResistanceStep();
+        if (currentIRState == IR_STATE_IDLE) currentAppState = APP_STATE_IDLE;
+    }
+
+    assert(currentAppState == APP_STATE_IDLE);
+    assert(resistanceDataCountPairs > 0);
+    printf("  Pairs measured: %d, Slope: %.4f, Intercept: %.4f\n",
+           resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
+    printf("test_ir_measurement PASSED\n\n");
+}
+
+void test_dead_region_detection() {
+    printf("Running test_dead_region_detection (Offset = 150mV)...\n");
+    reset_globals();
+    // Simulate a high offset
+    systemData.setCurrentZeroOffsetMv(150.0f);
+
+    currentAppState = APP_STATE_BUILDING_MODEL;
+    buildModelPhase = BuildModelPhase::Idle;
+
+    int safety_counter = 0;
+    while (currentAppState == APP_STATE_BUILDING_MODEL && safety_counter++ < 10000) {
+        mock_millis += 10;
+        buildCurrentModelStep();
+        if (buildModelPhase == BuildModelPhase::Calibrate) mock_millis += 50;
+        if (buildModelPhase == BuildModelPhase::DetectDeadRegion) mock_millis += 100;
+        if (buildModelPhase == BuildModelPhase::WaitMeasurement) mock_millis += BUILD_CURRENT_MODEL_DELAY;
+    }
+
+    assert(currentModel.isModelBuilt);
+    printf("  Calibrated Offset: %.2f mV, Threshold: %.3f A\n",
+           systemData.getCurrentZeroOffsetMv(), MEASURABLE_CURRENT_THRESHOLD);
+    printf("test_dead_region_detection PASSED\n\n");
+}
+
 void test_full_flow() {
     printf("Running test_full_flow (Build Model -> Charge)...\n");
     reset_globals();
@@ -357,6 +428,9 @@ void test_full_flow() {
 
 int main() {
     test_model_accuracy();
+    test_dead_region_detection();
+    test_ir_measurement();
+    test_overtemp_shutdown();
     test_full_flow();
     printf("ALL TESTS PASSED!\n");
     return 0;
