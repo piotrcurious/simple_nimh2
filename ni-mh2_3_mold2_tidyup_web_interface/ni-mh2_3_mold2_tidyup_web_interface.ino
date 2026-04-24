@@ -153,10 +153,10 @@ void buildCurrentModelStep() {
             }
             break;
         case BuildModelPhase::DetectDeadRegion:
-            applyDuty(buildModelDutyCycle);
-            if (now - buildModelLastStepTime >= 500) { // Allow shunt LPF to settle
+            if (now - buildModelLastStepTime >= 250) {
                 SystemData d = systemData.getData();
                 float currentMv = d.current_mv - systemData.getCurrentZeroOffsetMv();
+
                 if (currentMv > noiseFloorMv) {
                     MEASURABLE_CURRENT_THRESHOLD = d.charge_current_a;
                     dutyCycles.push_back(0.0f);
@@ -168,12 +168,14 @@ void buildCurrentModelStep() {
                     buildModelDutyCycle += 5;
                     buildModelPhase = BuildModelPhase::SetDuty;
                 } else {
-                    buildModelDutyCycle++;
+                    buildModelDutyCycle += 2;
                     if (buildModelDutyCycle > MAX_DUTY_CYCLE) {
                         Serial.println("Error: Could not detect current above noise floor.");
                         applyDuty(0);
                         setAppState(APP_STATE_IDLE);
                         buildModelPhase = BuildModelPhase::Idle;
+                    } else {
+                        applyDuty(buildModelDutyCycle);
                     }
                 }
                 buildModelLastStepTime = now;
@@ -190,11 +192,11 @@ void buildCurrentModelStep() {
             break;
         case BuildModelPhase::WaitMeasurement:
             if (now - buildModelLastStepTime >= BUILD_CURRENT_MODEL_DELAY) {
-                MeasurementData data;
-                getThermistorReadings(data.temp1, data.temp2, data.tempDiff, data.t1_millivolts, data.voltage, data.current);
-                if (data.current >= MEASURABLE_CURRENT_THRESHOLD) {
+                SystemData d = systemData.getData();
+                if (d.charge_current_a >= MEASURABLE_CURRENT_THRESHOLD) {
                     dutyCycles.push_back(static_cast<float>(buildModelDutyCycle));
-                    currents.push_back(data.current);
+                    currents.push_back(d.charge_current_a);
+                    Serial.printf("  Model point: Duty %d, Current %.3f A\n", buildModelDutyCycle, d.charge_current_a);
                 }
                 buildModelDutyCycle += 5;
                 buildModelPhase = BuildModelPhase::SetDuty;
