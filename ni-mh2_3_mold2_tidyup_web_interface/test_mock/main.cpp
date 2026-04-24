@@ -78,6 +78,7 @@ BatterySim sim;
 // Global variables from .ino
 volatile float voltage_mv = 1000.0f;
 volatile float current_ma = 0.0f;
+float MEASURABLE_CURRENT_THRESHOLD = 0.005f;
 volatile double mAh_charged = 0.0;
 volatile bool resetAh = false;
 volatile uint32_t mAh_last_time = 0;
@@ -126,8 +127,9 @@ void SystemDataManager::resetMah() { mAh_charged = 0; }
 void SystemDataManager::setCurrentZeroOffsetMv(float mv) { _currentZeroOffsetMv = mv; }
 float SystemDataManager::getCurrentZeroOffsetMv() { return _currentZeroOffsetMv; }
 SystemData SystemDataManager::getData() {
-    float curMv = (current_ma / 1000.0f) * CURRENT_SHUNT_RESISTANCE * 1000.0f + _currentZeroOffsetMv;
-    return { (float)voltage_mv/1000.0f, (float)current_ma/1000.0f, curMv, (double)sim.ambient, (double)sim.temp, (double)(sim.temp-sim.ambient), 5000.0f, (float)mAh_charged, (uint32_t)mock_millis };
+    float currentA = sim.getCurrent(dutyCycle);
+    float curMv = currentA * CURRENT_SHUNT_RESISTANCE * 1000.0f + _currentZeroOffsetMv;
+    return { (float)sim.voltage, currentA, curMv, (double)sim.ambient, (double)sim.temp, (double)(sim.temp - sim.ambient), 5000.0f, (float)mAh_charged, (uint32_t)mock_millis };
 }
 
 SHT4xSensor sht4Sensor;
@@ -148,12 +150,14 @@ HomeScreen homeScreen;
 #include "../ni-mh2_3_mold2_tidyup_web_interface/web_handlers.cpp"
 
 // Manually bring in parts of .ino for testing model build
-enum class BuildModelPhase { Idle = 0, Calibrate, SetDuty, WaitMeasurement, Finish };
+enum class BuildModelPhase { Idle = 0, Calibrate, DetectDeadRegion, SetDuty, WaitMeasurement, Finish };
 BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
 int buildModelDutyCycle = 0;
 unsigned long buildModelLastStepTime = 0;
 float mock_calibrationSum = 0;
+float mock_calibrationMax = 0;
 int mock_calibrationCount = 0;
+float mock_noiseFloorMv = 0;
 std::vector<float> mock_dutyCycles;
 std::vector<float> mock_currents;
 
@@ -163,20 +167,43 @@ void buildCurrentModelStep() {
         case BuildModelPhase::Idle:
             mock_dutyCycles.clear(); mock_currents.clear();
             applyDuty(0);
-            mock_calibrationSum = 0; mock_calibrationCount = 0;
+            mock_calibrationSum = 0; mock_calibrationMax = 0; mock_calibrationCount = 0;
             buildModelLastStepTime = now; buildModelPhase = BuildModelPhase::Calibrate;
             break;
         case BuildModelPhase::Calibrate:
             if (now - buildModelLastStepTime < 1000) {
                 SystemData d = systemData.getData();
                 mock_calibrationSum += d.current_mv;
+                if (d.current_mv > mock_calibrationMax) mock_calibrationMax = d.current_mv;
                 mock_calibrationCount++;
             } else {
                 if (mock_calibrationCount > 0) {
-                    systemData.setCurrentZeroOffsetMv(mock_calibrationSum / mock_calibrationCount);
+                    float avg = mock_calibrationSum / mock_calibrationCount;
+                    systemData.setCurrentZeroOffsetMv(avg);
+                    mock_noiseFloorMv = (mock_calibrationMax - avg) * 1.5f;
+                    if (mock_noiseFloorMv < 2.0f) mock_noiseFloorMv = 2.0f;
                 }
-                mock_dutyCycles.push_back(0.0f); mock_currents.push_back(0.0f);
-                buildModelDutyCycle = 1; buildModelPhase = BuildModelPhase::SetDuty;
+                buildModelDutyCycle = 1; buildModelPhase = BuildModelPhase::DetectDeadRegion;
+            }
+            break;
+        case BuildModelPhase::DetectDeadRegion:
+            applyDuty(buildModelDutyCycle);
+            if (now - buildModelLastStepTime >= 100) {
+                SystemData d = systemData.getData();
+                float currentMv = d.current_mv - systemData.getCurrentZeroOffsetMv();
+                if (currentMv > mock_noiseFloorMv) {
+                    MEASURABLE_CURRENT_THRESHOLD = d.charge_current_a;
+                    mock_dutyCycles.push_back(0.0f); mock_currents.push_back(0.0f);
+                    mock_dutyCycles.push_back((float)buildModelDutyCycle); mock_currents.push_back(d.charge_current_a);
+                    buildModelDutyCycle += 5; buildModelPhase = BuildModelPhase::SetDuty;
+                } else {
+                    buildModelDutyCycle++;
+                    if (buildModelDutyCycle > MAX_DUTY_CYCLE) {
+                        currentAppState = APP_STATE_IDLE;
+                        buildModelPhase = BuildModelPhase::Idle;
+                    }
+                }
+                buildModelLastStepTime = now;
             }
             break;
         case BuildModelPhase::SetDuty:
@@ -265,9 +292,12 @@ void test_model_accuracy() {
     reset_globals();
     currentAppState = APP_STATE_BUILDING_MODEL;
     buildModelPhase = BuildModelPhase::Idle;
-    while (currentAppState == APP_STATE_BUILDING_MODEL) {
+    int safety_counter = 0;
+    while (currentAppState == APP_STATE_BUILDING_MODEL && safety_counter++ < 10000) {
         mock_millis += 10;
         buildCurrentModelStep();
+        if (buildModelPhase == BuildModelPhase::Calibrate) mock_millis += 50;
+        if (buildModelPhase == BuildModelPhase::DetectDeadRegion) mock_millis += 100;
         if (buildModelPhase == BuildModelPhase::WaitMeasurement) mock_millis += BUILD_CURRENT_MODEL_DELAY;
     }
     assert(currentModel.isModelBuilt);

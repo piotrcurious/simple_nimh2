@@ -83,7 +83,7 @@ const int MIN_CHARGE_DUTY_CYCLE = 5;
 #define ISOLATION_THRESHOLD 0.04f
 
 // R_int measurement constants
-const float MEASURABLE_CURRENT_THRESHOLD = 0.005f;
+extern float MEASURABLE_CURRENT_THRESHOLD;
 const int MIN_DUTY_CYCLE_START = 8;
 const int MAX_DUTY_CYCLE = 255;
 const int DUTY_CYCLE_INCREMENT_FIND_MIN = 5;
