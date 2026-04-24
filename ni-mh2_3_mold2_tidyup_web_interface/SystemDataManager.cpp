@@ -93,8 +93,8 @@ void SystemDataManager::processAdcSnapshots() {
     getAdcSnapshot(ADC_IDX_THERM1, therm1Snap);
 
     // CURRENT (sampled at full rate, averaged since last update)
-    uint32_t avgRawCurrent = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_CURRENT], currentSnap);
-    if (avgRawCurrent > 0) {
+    if (currentSnap.count != _lastSnapshots[ADC_IDX_CURRENT].count) {
+        uint32_t avgRawCurrent = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_CURRENT], currentSnap);
         float mv = snapshotToMillivolts(ADC_IDX_CURRENT, avgRawCurrent);
         float shuntMv = mv - _currentZeroOffsetMv;
         float currentA = (shuntMv / (float)CURRENT_SHUNT_RESISTANCE) / 1000.0f;
@@ -109,8 +109,8 @@ void SystemDataManager::processAdcSnapshots() {
     }
 
     // VCC (needed for voltage and thermistor)
-    uint32_t avgRawVcc = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_THERM_VCC], vccSnap);
-    if (avgRawVcc > 0) {
+    if (vccSnap.count != _lastSnapshots[ADC_IDX_THERM_VCC].count) {
+        uint32_t avgRawVcc = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_THERM_VCC], vccSnap);
         float vccMv = snapshotToMillivolts(ADC_IDX_THERM_VCC, avgRawVcc);
         if (xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
             _currentData.vcc_mv = vccMv;
@@ -120,8 +120,8 @@ void SystemDataManager::processAdcSnapshots() {
     }
 
     // THERMISTOR 1 -> Battery Temp
-    uint32_t avgRawTherm1 = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_THERM1], therm1Snap);
-    if (avgRawTherm1 > 0) {
+    if (therm1Snap.count != _lastSnapshots[ADC_IDX_THERM1].count) {
+        uint32_t avgRawTherm1 = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_THERM1], therm1Snap);
         float therm1Mv = snapshotToMillivolts(ADC_IDX_THERM1, avgRawTherm1);
         double battTemp = calculateBatteryTemp(_currentData.ambient_temp_c, therm1Mv, _currentData.vcc_mv);
 
@@ -135,8 +135,8 @@ void SystemDataManager::processAdcSnapshots() {
 
     // VOLTAGE (Throttled update, e.g., 4Hz)
     if (now - _lastVoltageUpdateMs >= 250) {
-        uint32_t avgRawVoltage = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_VOLTAGE], voltageSnap);
-        if (avgRawVoltage > 0) {
+        if (voltageSnap.count != _lastSnapshots[ADC_IDX_VOLTAGE].count) {
+            uint32_t avgRawVoltage = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_VOLTAGE], voltageSnap);
             float sampledMv = snapshotToMillivolts(ADC_IDX_VOLTAGE, avgRawVoltage);
             float batteryV = ((_currentData.vcc_mv * (float)MAIN_VCC_RATIO) - sampledMv) / 1000.0f;
 

@@ -153,7 +153,7 @@ void buildCurrentModelStep() {
                     calibrationSum += d.current_mv;
                     if (d.current_mv > calibrationMax) calibrationMax = d.current_mv;
                     calibrationCount++;
-                    if (calibrationCount % 5 == 0) Serial.printf("  Calibrating... %d/20 samples (Current: %.2f mV)\n", calibrationCount, d.current_mv);
+                    Serial.printf("  Calibrating... %d/20 samples (Current: %.2f mV, count=%u)\n", calibrationCount, d.current_mv, d.current_sample_count);
                 }
 
                 if (calibrationCount >= 20) {

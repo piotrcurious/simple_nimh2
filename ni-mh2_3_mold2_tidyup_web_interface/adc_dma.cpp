@@ -7,23 +7,14 @@
 #include <cstring>
 
 // ADC configuration constants
-// Match reference code exactly
-static constexpr uint32_t ADC_SAMPLE_RATE_HZ = 24000;
-static constexpr uint32_t CONV_FRAME_SIZE    = 256;
-static constexpr uint32_t DMA_POOL_BYTES     = 32768; // 32KB
-
-static constexpr uint32_t FRAME_BUFFER_SIZE   = 128; // Increased
-static constexpr uint32_t FRAME_BUFFER_MASK   = FRAME_BUFFER_SIZE - 1;
+static constexpr uint32_t ADC_SAMPLE_RATE_HZ = 48000;
+static constexpr uint32_t CONV_FRAME_SIZE    = 512;
+static constexpr uint32_t DMA_POOL_BYTES     = 65536;
 
 static constexpr uint32_t SAMPLE_RING_SIZE    = 8192;
 static constexpr uint32_t SAMPLE_RING_MASK    = SAMPLE_RING_SIZE - 1;
 
 // Structures
-struct TimestampedFrame {
-    uint16_t data_size;
-    uint8_t  raw_data[CONV_FRAME_SIZE];
-};
-
 struct SampleEntry {
     uint16_t raw;
     uint8_t  idx; // Index in AdcChannelIndex
@@ -42,9 +33,6 @@ struct ChannelAccum {
 
 // Global/static variables
 static adc_continuous_handle_t adc_handle = nullptr;
-static volatile TimestampedFrame frame_buffer[FRAME_BUFFER_SIZE];
-static volatile uint32_t frame_write_idx = 0;
-static volatile uint32_t frame_read_idx  = 0;
 
 static SampleEntry sample_ring[SAMPLE_RING_SIZE];
 static uint32_t sample_write_idx = 0;
@@ -70,28 +58,6 @@ static esp_adc_cal_characteristics_t adc_chars[ADC_CH_COUNT];
 static bool cal_initialized[ADC_CH_COUNT] = {false};
 
 static SemaphoreHandle_t data_mutex = nullptr;
-
-// ISR Callback
-static bool IRAM_ATTR adc_conv_done_callback(adc_continuous_handle_t handle,
-                                             const adc_continuous_evt_data_t *edata,
-                                             void *user_data) {
-    uint32_t wr = __atomic_load_n(&frame_write_idx, __ATOMIC_RELAXED);
-    uint32_t rd = __atomic_load_n(&frame_read_idx,  __ATOMIC_ACQUIRE);
-    uint32_t next_wr = (wr + 1) & FRAME_BUFFER_MASK;
-
-    if (next_wr == rd) {
-        return false;
-    }
-
-    uint32_t sz = edata->size;
-    if (sz > CONV_FRAME_SIZE) sz = CONV_FRAME_SIZE;
-
-    memcpy((void*)frame_buffer[wr].raw_data, edata->conv_frame_buffer, sz);
-    frame_buffer[wr].data_size = (uint16_t)sz;
-
-    __atomic_store_n(&frame_write_idx, next_wr, __ATOMIC_RELEASE);
-    return false;
-}
 
 void setupAdcDma() {
     if (data_mutex == nullptr) {
@@ -143,9 +109,6 @@ void setupAdcDma() {
 
     ESP_ERROR_CHECK(adc_continuous_config(adc_handle, &dig));
 
-    adc_continuous_evt_cbs_t cbs = {};
-    cbs.on_conv_done = adc_conv_done_callback;
-    ESP_ERROR_CHECK(adc_continuous_register_event_callbacks(adc_handle, &cbs, nullptr));
     ESP_ERROR_CHECK(adc_continuous_start(adc_handle));
 }
 
@@ -159,13 +122,14 @@ static inline void pushSample(uint8_t idx, uint16_t raw) {
 }
 
 void processAdcDma() {
-    uint32_t rd = __atomic_load_n(&frame_read_idx,  __ATOMIC_ACQUIRE);
-    uint32_t wr = __atomic_load_n(&frame_write_idx, __ATOMIC_ACQUIRE);
+    static uint8_t result[CONV_FRAME_SIZE];
+    uint32_t ret_num = 0;
+    static uint32_t total_processed = 0;
 
-    while (rd != wr) {
-        uint16_t data_size = frame_buffer[rd].data_size;
-        int n = data_size / sizeof(adc_digi_output_data_t);
-        const adc_digi_output_data_t *p = (const adc_digi_output_data_t*)frame_buffer[rd].raw_data;
+    while (adc_continuous_read(adc_handle, result, CONV_FRAME_SIZE, &ret_num, 0) == ESP_OK && ret_num > 0) {
+        int n = ret_num / sizeof(adc_digi_output_data_t);
+        total_processed += n;
+        const adc_digi_output_data_t *p = (const adc_digi_output_data_t*)result;
 
         for (int i = 0; i < n; i++) {
             uint8_t ch = p[i].type1.channel;
@@ -176,8 +140,6 @@ void processAdcDma() {
                 }
             }
         }
-        rd = (rd + 1) & FRAME_BUFFER_MASK;
-        __atomic_store_n(&frame_read_idx, rd, __ATOMIC_RELEASE);
     }
 
     if (xSemaphoreTake(data_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
@@ -191,6 +153,12 @@ void processAdcDma() {
             channel_data[e.idx].count_total++;
 
             sample_read_idx = (sample_read_idx + 1) & SAMPLE_RING_MASK;
+        }
+
+        static uint32_t last_log = 0;
+        if (millis() - last_log > 5000) {
+            last_log = millis();
+            Serial.printf("ADC DMA: Processed %u total samples.\n", total_processed);
         }
 
         for (int i = 0; i < ADC_CH_COUNT; i++) {
