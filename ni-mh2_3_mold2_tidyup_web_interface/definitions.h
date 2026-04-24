@@ -277,6 +277,7 @@ extern volatile bool resetAh;
 extern volatile uint32_t mAh_last_time;
 
 extern uint32_t dutyCycle;
+extern float MAX_DIFF_TEMP;
 extern bool isCharging;
 extern bool isMeasuringResistance;
 extern ChargingState chargingState;

@@ -19,7 +19,8 @@ String getJsonState() {
     json += "\"duty\":" + String(dutyCycle) + ",";
     snprintf(buf, sizeof(buf), "\"v\":%.3f,", voltage_mv / 1000.0); json += buf;
     snprintf(buf, sizeof(buf), "\"i\":%.3f,", current_ma / 1000.0); json += buf;
-    snprintf(buf, sizeof(buf), "\"mah\":%.3f", (float)mAh_charged); json += buf;
+    snprintf(buf, sizeof(buf), "\"mah\":%.3f,", (float)mAh_charged); json += buf;
+    snprintf(buf, sizeof(buf), "\"max_dt\":%.2f", MAX_DIFF_TEMP); json += buf;
     json += "}";
     return json;
 }
