@@ -70,8 +70,10 @@ int buildModelDutyCycle = 0;
 unsigned long buildModelLastStepTime = 0;
 float calibrationSum = 0;
 float calibrationMax = 0;
+float calibrationMin = 10000.0f;
 int calibrationCount = 0;
 float noiseFloorMv = 0;
+int deadRegionConsistentCount = 0;
 std::vector<float> dutyCycles;
 std::vector<float> currents;
 
@@ -117,44 +119,54 @@ void buildCurrentModelStep() {
             applyDuty(0);
             calibrationSum = 0;
             calibrationMax = 0;
+            calibrationMin = 10000.0f;
             calibrationCount = 0;
             buildModelLastStepTime = now;
             buildModelPhase = BuildModelPhase::Calibrate;
             break;
         case BuildModelPhase::Calibrate:
-            if (now - buildModelLastStepTime < 1000) {
+            if (now - buildModelLastStepTime < 2000) { // Increased to 2s
                 SystemData d = systemData.getData();
                 calibrationSum += d.current_mv;
                 if (d.current_mv > calibrationMax) calibrationMax = d.current_mv;
+                if (d.current_mv < calibrationMin) calibrationMin = d.current_mv;
                 calibrationCount++;
             } else {
                 if (calibrationCount > 0) {
                     float avgOffset = calibrationSum / calibrationCount;
                     systemData.setCurrentZeroOffsetMv(avgOffset);
-                    noiseFloorMv = (calibrationMax - avgOffset) * 1.5f;
-                    if (noiseFloorMv < 2.0f) noiseFloorMv = 2.0f; // Minimal 2mV over noise floor
-                    Serial.printf("Auto-calibration: Offset=%.2f mV, NoiseFloor=%.2f mV\n", avgOffset, noiseFloorMv);
+                    // Use peak-to-peak noise to set a more robust floor
+                    float p2p = calibrationMax - calibrationMin;
+                    noiseFloorMv = (p2p * 1.5f);
+                    if (noiseFloorMv < 4.0f) noiseFloorMv = 4.0f; // Minimal 4mV over noise floor for safety
+                    Serial.printf("Auto-calibration: Offset=%.2f mV, P2P Noise=%.2f mV, NoiseFloor=%.2f mV\n", avgOffset, p2p, noiseFloorMv);
                 }
                 buildModelDutyCycle = 1;
+                deadRegionConsistentCount = 0;
                 buildModelPhase = BuildModelPhase::DetectDeadRegion;
+                buildModelLastStepTime = now;
             }
             break;
         case BuildModelPhase::DetectDeadRegion:
             applyDuty(buildModelDutyCycle);
-            if (now - buildModelLastStepTime >= 100) { // Small delay for current to rise
+            if (now - buildModelLastStepTime >= 200) { // Increased delay
                 SystemData d = systemData.getData();
                 float currentMv = d.current_mv - systemData.getCurrentZeroOffsetMv();
                 if (currentMv > noiseFloorMv) {
-                    MEASURABLE_CURRENT_THRESHOLD = d.charge_current_a;
-                    dutyCycles.push_back(0.0f);
-                    currents.push_back(0.0f);
-                    dutyCycles.push_back(static_cast<float>(buildModelDutyCycle));
-                    currents.push_back(d.charge_current_a);
+                    deadRegionConsistentCount++;
+                    if (deadRegionConsistentCount >= 3) { // Must be consistent
+                        MEASURABLE_CURRENT_THRESHOLD = d.charge_current_a;
+                        dutyCycles.push_back(0.0f);
+                        currents.push_back(0.0f);
+                        dutyCycles.push_back(static_cast<float>(buildModelDutyCycle));
+                        currents.push_back(d.charge_current_a);
 
-                    Serial.printf("Dead region ends at Duty: %d, Threshold: %.3f A\n", buildModelDutyCycle, MEASURABLE_CURRENT_THRESHOLD);
-                    buildModelDutyCycle += 5;
-                    buildModelPhase = BuildModelPhase::SetDuty;
+                        Serial.printf("Dead region ends at Duty: %d, Threshold: %.3f A\n", buildModelDutyCycle, MEASURABLE_CURRENT_THRESHOLD);
+                        buildModelDutyCycle += 5;
+                        buildModelPhase = BuildModelPhase::SetDuty;
+                    }
                 } else {
+                    deadRegionConsistentCount = 0;
                     buildModelDutyCycle++;
                     if (buildModelDutyCycle > MAX_DUTY_CYCLE) {
                         Serial.println("Error: Could not detect current above noise floor.");
