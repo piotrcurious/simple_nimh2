@@ -91,8 +91,9 @@ void SystemDataManager::processAdcSnapshots() {
         float currentA = (shuntMv / (float)CURRENT_SHUNT_RESISTANCE) / 1000.0f;
 
         if (xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-            _currentData.charge_current_a = currentA;
+            _currentData.charge_current_a = std::max(0.0f, currentA);
             _currentData.current_mv = mv;
+            _currentData.current_sample_count++;
             xSemaphoreGive(_dataMutex);
         }
         _lastSnapshots[ADC_IDX_CURRENT] = currentSnap;
