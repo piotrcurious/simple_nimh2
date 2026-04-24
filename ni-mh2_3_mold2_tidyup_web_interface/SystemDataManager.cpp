@@ -24,7 +24,7 @@ extern CurrentModel currentModel;
 SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPin, double therm1Offset)
     : _sht4(sht4), _therm1Pin(therm1Pin), _vccPin(vccPin), _therm1Offset(therm1Offset),
       _lastVoltageUpdateMs(0), _lastMahUpdateMs(0), _currentZeroOffsetMv(CURRENT_SHUNT_PIN_ZERO_OFFSET) {
-    _dataMutex = xSemaphoreCreateMutex();
+    _dataMutex = nullptr;
     memset(&_currentData, 0, sizeof(_currentData));
     memset(_lastSnapshots, 0, sizeof(_lastSnapshots));
 
@@ -36,6 +36,9 @@ SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPi
 }
 
 void SystemDataManager::begin() {
+    if (_dataMutex == nullptr) {
+        _dataMutex = xSemaphoreCreateMutex();
+    }
     _lastMahUpdateMs = millis();
 }
 

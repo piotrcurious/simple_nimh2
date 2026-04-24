@@ -214,8 +214,7 @@ void buildCurrentModelStep() {
             }
             break;
         case BuildModelPhase::DetectDeadRegion:
-            applyDuty(buildModelDutyCycle);
-            if (now - buildModelLastStepTime >= 500) {
+            if (now - buildModelLastStepTime >= 250) {
                 SystemData d = systemData.getData();
                 float currentMv = d.current_mv - systemData.getCurrentZeroOffsetMv();
                 if (currentMv > mock_noiseFloorMv) {
@@ -224,10 +223,12 @@ void buildCurrentModelStep() {
                     mock_dutyCycles.push_back((float)buildModelDutyCycle); mock_currents.push_back(d.charge_current_a);
                     buildModelDutyCycle += 5; buildModelPhase = BuildModelPhase::SetDuty;
                 } else {
-                    buildModelDutyCycle++;
+                    buildModelDutyCycle += 2;
                     if (buildModelDutyCycle > MAX_DUTY_CYCLE) {
                         currentAppState = APP_STATE_IDLE;
                         buildModelPhase = BuildModelPhase::Idle;
+                    } else {
+                        applyDuty(buildModelDutyCycle);
                     }
                 }
                 buildModelLastStepTime = now;
@@ -325,8 +326,8 @@ void test_model_accuracy() {
         systemData.update();
         buildCurrentModelStep();
         if (buildModelPhase == BuildModelPhase::Settle) mock_millis += 100;
-        if (buildModelPhase == BuildModelPhase::Calibrate) mock_millis += 100; // Faster updates during calib
-        if (buildModelPhase == BuildModelPhase::DetectDeadRegion) mock_millis += 500;
+        if (buildModelPhase == BuildModelPhase::Calibrate) mock_millis += 100;
+        if (buildModelPhase == BuildModelPhase::DetectDeadRegion) mock_millis += 100;
         if (buildModelPhase == BuildModelPhase::WaitMeasurement) mock_millis += BUILD_CURRENT_MODEL_DELAY;
     }
     assert(currentModel.isModelBuilt);
