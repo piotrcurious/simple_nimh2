@@ -54,6 +54,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     </div>
 
     <script>
+        let maxDT = 1.5;
+
         function sendCommand(cmd) {
             fetch('/command?cmd=' + cmd);
         }
@@ -63,6 +65,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
                 const res = await fetch('/data');
                 const data = await res.json();
 
+                maxDT = data.state.max_dt || 1.5;
                 const appStates = ['IDLE', 'BUILDING_MODEL', 'MEASURING_IR', 'CHARGING'];
                 document.getElementById('appState').innerText = appStates[data.state.app] || 'UNKNOWN';
                 document.getElementById('metrics').innerText = `V: ${data.state.v.toFixed(3)}V | I: ${data.state.i.toFixed(3)}A | ${data.state.mah.toFixed(3)} mAh | Duty: ${data.state.duty}`;
@@ -100,7 +103,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             drawSeries(ctx, data.i, 'magenta', 0.0, 0.4, margin, "I");
             drawSeries(ctx, data.t1, 'red', 15, 40, margin, "T1");
             drawSeries(ctx, data.t2, 'green', 15, 40, margin, "T2");
-            drawSeries(ctx, data.td, 'blue', -0.5, 1.5, margin, "dT");
+            drawSeries(ctx, data.td, 'blue', -0.5, maxDT, margin, "dT");
         }
 
         function renderAmbient(data) {

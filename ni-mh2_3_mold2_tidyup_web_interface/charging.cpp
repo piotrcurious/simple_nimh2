@@ -423,8 +423,9 @@ bool chargeBattery() {
                     float abs = computeAbsoluteTempRiseFromHistory(temprise_abs_depth);
                     if (std::isnan(abs)) abs = rel;
                     float final = temprise_balance * rel + (1.0f - temprise_balance) * std::max(0.0f, abs);
+                    MAX_DIFF_TEMP = MAX_TEMP_DIFF_THRESHOLD + final;
                     eval_mAh_snapshot = (float)mAh_charged; eval_time_snapshot = now; lastChargeEvaluationTime = now;
-                    if (currentRampTarget >= maximumCurrent && td > (MAX_TEMP_DIFF_THRESHOLD + final)) {
+                    if (currentRampTarget >= maximumCurrent && td > MAX_DIFF_TEMP) {
                         if (++overtemp_trip_counter >= OVERTEMP_TRIP_TRESHOLD) { overtemp_trip_counter = 0; chargingState = CHARGE_STOPPED; }
                     }
                     if (chargingState == CHARGE_MONITOR) {
