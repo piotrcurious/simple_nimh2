@@ -345,7 +345,7 @@ void setup() {
 
     xTaskCreatePinnedToCore(task_readSHT4x, "SHT4", 4096, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(task_processAdcDma, "ADC_DMA", 4096, NULL, 2, NULL, 0);
-    xTaskCreatePinnedToCore(task_updateSystemData, "SYS_DATA", 4096, NULL, 1, NULL, 0);
+    xTaskCreatePinnedToCore(task_updateSystemData, "SYS_DATA", 4096, NULL, 1, NULL, 1);
 
     setupPWM();
     Serial.println("System Ready.");
