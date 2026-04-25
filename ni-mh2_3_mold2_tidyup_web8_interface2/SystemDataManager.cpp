@@ -66,11 +66,15 @@ void SystemDataManager::update() {
         uint32_t delta_ms = now - _lastMahUpdateMs;
         if (delta_ms > 0) {
             double delta_h = (double)delta_ms / 3600000.0;
-            float current_ma = _currentData.charge_current_a * 1000.0f;
+            float current_ma = 0.0f;
 
-            // Handle low current estimation if model is available
-            if (currentModel.isModelBuilt && _currentData.charge_current_a < MEASURABLE_CURRENT_THRESHOLD) {
-                current_ma = estimateCurrent(dutyCycle) * 1000.0f;
+            if (dutyCycle > 0) {
+                current_ma = _currentData.charge_current_a * 1000.0f;
+
+                // Handle low current estimation if model is available
+                if (currentModel.isModelBuilt && _currentData.charge_current_a < MEASURABLE_CURRENT_THRESHOLD) {
+                    current_ma = estimateCurrent(dutyCycle) * 1000.0f;
+                }
             }
 
             _currentData.mah_charged += current_ma * delta_h;
