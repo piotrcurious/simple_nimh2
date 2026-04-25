@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <assert.h>
 #include <algorithm>
+#include <cstdlib>
 
 #include "dummy_esp32.h"
 
@@ -139,38 +140,39 @@ SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPi
     _dataMutex = (SemaphoreHandle_t)1;
 }
 void SystemDataManager::begin() {}
+
+// We will use the implementation from the actual file via include if possible,
+// but here we are mocking SystemDataManager so we have to replicate the logic we want to test.
 void SystemDataManager::update() {
     static uint32_t last_m = 0;
     uint32_t now = mock_millis;
     if (last_m == 0) last_m = now;
     processAdcSnapshots();
 
-    // 4. Integrated mAh calculation (Copied from SystemDataManager.cpp for testing)
     uint32_t delta_ms = now - last_m;
     if (delta_ms > 0) {
         double delta_h = (double)delta_ms / 3600000.0;
-        float current_ma = 0.0f;
+        float current_ma = _currentData.charge_current_a * 1000.0f;
 
-        if (dutyCycle > 0) {
-            current_ma = _currentData.charge_current_a * 1000.0f;
-
-            // Handle low current estimation if model is available
-            if (currentModel.isModelBuilt && _currentData.charge_current_a < MEASURABLE_CURRENT_THRESHOLD) {
-                current_ma = estimateCurrent(dutyCycle) * 1000.0f;
-            }
+        float estimated_current_a = estimateCurrent(dutyCycle);
+        if (currentModel.isModelBuilt && estimated_current_a < MEASURABLE_CURRENT_THRESHOLD) {
+            current_ma = estimated_current_a * 1000.0f;
         }
 
         _currentData.mah_charged += current_ma * delta_h;
         last_m = now;
     }
 }
+
 void SystemDataManager::processAdcSnapshots() {
     AdcSnapshot currentSnap;
     getAdcSnapshot(ADC_IDX_CURRENT, currentSnap);
     uint32_t avgRawCurrent = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_CURRENT], currentSnap);
     _lastSnapshots[ADC_IDX_CURRENT] = currentSnap;
     _currentData.current_mv = snapshotToMillivolts(ADC_IDX_CURRENT, avgRawCurrent);
-    _currentData.charge_current_a = std::max(0.0f, (_currentData.current_mv - _currentZeroOffsetMv) / (CURRENT_SHUNT_RESISTANCE * 1000.0f));
+
+    float currentA = (_currentData.current_mv - _currentZeroOffsetMv) / (CURRENT_SHUNT_RESISTANCE * 1000.0f);
+    _currentData.charge_current_a = currentA; // Removed clamp
     _currentData.current_sample_count = currentSnap.count;
 
     getAdcSnapshot(ADC_IDX_VOLTAGE, currentSnap);
@@ -198,7 +200,7 @@ float estimateCurrent(int duty) {
 }
 
 void test_repro() {
-    std::cout << "Running test_repro..." << std::endl;
+    std::cout << "Running test_repro with 140mV offset and noise..." << std::endl;
     mock_millis = 0;
     mock_sample_count = 1;
     systemData.resetMah();
@@ -211,29 +213,30 @@ void test_repro() {
     currentModel.coefficients(2) = 0.0001;
     currentModel.coefficients(3) = 0.000001;
 
-    MEASURABLE_CURRENT_THRESHOLD = 0.010f; // 10mA
+    // Proper calibration to 140mV
+    systemData.setCurrentZeroOffsetMv(140.0f);
 
-    // Case 1: Duty cycle 0, but noise makes charge_current_a > 0
-    // If noise is 30mV, shunt resistance 2.5 ohm -> 12mA current
-    // This is > MEASURABLE_CURRENT_THRESHOLD (10mA), so it uses the raw current!
-    sim.noise_mv = 30.0f;
+    MEASURABLE_CURRENT_THRESHOLD = 0.010f; // 10mA. Shunt 2.5 Ohm -> 25mV unmeasurable region
+
     applyDuty(0);
 
-    std::cout << "Starting simulation with duty 0 and 30mV noise (12mA)..." << std::endl;
-    for(int i=0; i<100; ++i) {
+    std::cout << "Starting simulation with duty 0, 140mV offset, and random noise..." << std::endl;
+    srand(42);
+    for(int i=0; i<1000; ++i) {
         mock_millis += 100;
         mock_sample_count++;
+        // Add random noise between -30 and +30 mV
+        sim.noise_mv = (float)(rand() % 61 - 30);
         systemData.update();
     }
 
     SystemData d = systemData.getData();
-    std::cout << "After 10 seconds: mAh_charged = " << d.mah_charged << " (Expected 0 if duty is 0)" << std::endl;
-    std::cout << "Current (A): " << d.charge_current_a << std::endl;
+    std::cout << "After 100 seconds: mAh_charged = " << d.mah_charged << std::endl;
 
     if (d.mah_charged > 0.0001) {
         std::cout << "REPRODUCED: mAh counter advanced when duty cycle was 0!" << std::endl;
     } else {
-        std::cout << "FAILED TO REPRODUCE with duty 0." << std::endl;
+        std::cout << "FAILED TO REPRODUCE." << std::endl;
     }
 
     std::cout << "test_repro complete." << std::endl << std::endl;
