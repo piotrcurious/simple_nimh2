@@ -2,6 +2,14 @@
 #include "definitions.h"
 #include "logging.h"
 
+#ifndef MOCK_TEST
+#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
+#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
+#else
+#define WEB_LOCK()
+#define WEB_UNLOCK()
+#endif
+
 unsigned long chargingStartTime = 0;
 ChargingState chargingState = CHARGE_IDLE;
 int cachedOptimalDuty = MAX_CHARGE_DUTY_CYCLE;
@@ -223,10 +231,12 @@ bool findOptimalChargingDutyCycleStepAsync() {
     }
     if (findOpt.phase == RE_EVAL_CORRECTIVE_MEASUREMENT_WAIT && !remeasureStep()) { findOpt.outlier_measurement_index++; findOpt.phase = RE_EVAL_CORRECTIVE_MEASUREMENT_PREPARE; return true; }
     if (findOpt.phase == RE_EVAL_FINISH) {
+        WEB_LOCK();
         distribute_error(internalResistanceData, resistanceDataCount, 0.05f, 1.05f);
         distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, 0.05f, 1.05f);
         if (resistanceDataCount >= 2) performLinearRegression(internalResistanceData, resistanceDataCount, regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
         if (resistanceDataCountPairs >= 2) performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
+        WEB_UNLOCK();
         findOpt.phase = FIND_COMPLETE; findOpt.active = false; return false;
     }
     if (findOpt.phase == RE_EVAL_START) { findOpt.outliers.clear(); findOpt.outlier_measurement_index = 0; findOpt.exploratory_measurement_phase = 0; findOpt.phase = RE_EVAL_DETECT_OUTLIERS; return true; }
@@ -249,10 +259,12 @@ bool findOptimalChargingDutyCycleStepAsync() {
     if (findOpt.phase == FIND_BINARY_PREPARE) {
         if (findOpt.highDC - findOpt.lowDC <= CHARGE_CURRENT_STEP * 2) {
             if (findOpt.isReevaluation) { findOpt.phase = RE_EVAL_START; return true; }
+            WEB_LOCK();
             distribute_error(internalResistanceData, resistanceDataCount, 0.05f, 1.05f);
             distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, 0.05f, 1.05f);
             if (resistanceDataCount >= 2) performLinearRegression(internalResistanceData, resistanceDataCount, regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
             if (resistanceDataCountPairs >= 2) performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
+            WEB_UNLOCK();
             startMHElectrodeMeasurement(findOpt.optimalDC, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
             findOpt.phase = FIND_FINAL_WAIT; return true;
         }
@@ -292,10 +304,12 @@ bool findOptimalChargingDutyCycleStepAsync() {
                     storeOrAverageResistanceData(std::max(finalData.current, cached.current), std::fabs(irP), internalResistanceDataPairs, resistanceDataCountPairs);
                 }
             }
+            WEB_LOCK();
             distribute_error(internalResistanceData, resistanceDataCount, 0.05f, 1.05f);
             distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, 0.05f, 1.05f);
             if (resistanceDataCount >= 2) performLinearRegression(internalResistanceData, resistanceDataCount, regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
             if (resistanceDataCountPairs >= 2) performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
+            WEB_UNLOCK();
             cachedOptimalDuty = findOpt.optimalDC; findOpt.active = false; findOpt.phase = FIND_COMPLETE; return false;
         }
     }
@@ -423,7 +437,9 @@ bool chargeBattery() {
                     float abs = computeAbsoluteTempRiseFromHistory(temprise_abs_depth);
                     if (std::isnan(abs)) abs = rel;
                     float final = temprise_balance * rel + (1.0f - temprise_balance) * std::max(0.0f, abs);
+                    WEB_LOCK();
                     MAX_DIFF_TEMP = MAX_TEMP_DIFF_THRESHOLD + final;
+                    WEB_UNLOCK();
                     eval_mAh_snapshot = (float)mAh_charged; eval_time_snapshot = now; lastChargeEvaluationTime = now;
                     if (currentRampTarget >= maximumCurrent && td > MAX_DIFF_TEMP) {
                         if (++overtemp_trip_counter >= OVERTEMP_TRIP_TRESHOLD) { overtemp_trip_counter = 0; chargingState = CHARGE_STOPPED; }
