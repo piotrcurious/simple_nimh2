@@ -88,7 +88,7 @@ BatterySim sim;
 // Global variables from .ino
 volatile float voltage_mv = 1000.0f;
 volatile float current_ma = 0.0f;
-float MEASURABLE_CURRENT_THRESHOLD = 0.005f;
+volatile float MEASURABLE_CURRENT_THRESHOLD = 0.005f;
 volatile double mAh_charged = 0.0;
 volatile bool resetAh = false;
 volatile uint32_t mAh_last_time = 0;
@@ -111,8 +111,6 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
     t1_millivolts = 0;
     voltage = d.battery_voltage_v;
     current = d.charge_current_a;
-    voltage_mv = voltage * 1000.0f;
-    current_ma = current * 1000.0f;
 }
 
 // ADC DMA Stubs for SystemDataManager.cpp
@@ -148,12 +146,14 @@ SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPi
     _dataMutex = (SemaphoreHandle_t)1;
 }
 void SystemDataManager::begin() {}
-void SystemDataManager::update() {
+void SystemDataManager::update(float estA) {
     static uint32_t last_m = 0;
     uint32_t now = mock_millis;
     if (last_m == 0) last_m = now;
     float dt_h = (float)(now - last_m) / 3600000.0f;
-    mAh_charged += (sim.getCurrent((int)dutyCycle) * 1000.0f * dt_h);
+    float currentA = sim.getCurrent((int)dutyCycle);
+    if (estA >= 0.0f && estA < MEASURABLE_CURRENT_THRESHOLD) currentA = estA;
+    mAh_charged += (currentA * 1000.0f * dt_h);
     last_m = now;
     processAdcSnapshots();
 }
@@ -206,7 +206,7 @@ float mock_calibrationMax = 0;
 int mock_calibrationCount = 0;
 uint32_t mock_lastKnownSampleCount = 0;
 float mock_noiseFloorMv = 0;
-float noiseFloorMv = 0;
+volatile float noiseFloorMv = 0;
 std::vector<float> mock_dutyCycles;
 std::vector<float> mock_currents;
 
@@ -377,7 +377,7 @@ void test_model_accuracy() {
     while (safety_counter++ < 1000000) {
         mock_millis += 10;
         mock_sample_count++;
-        systemData.update();
+        systemData.update(estimateCurrent(dutyCycle));
         if (currentAppState == APP_STATE_BUILDING_MODEL) {
             buildCurrentModelStep();
         } else {
@@ -424,7 +424,7 @@ void test_overtemp_shutdown() {
     while (loop_count++ < 1000) {
         mock_millis += CHARGE_EVALUATION_INTERVAL_MS;
         mock_sample_count++;
-        systemData.update();
+        systemData.update(estimateCurrent(dutyCycle));
         chargeBattery();
         if (chargingState == CHARGE_STOPPED) break;
     }
@@ -445,7 +445,7 @@ void test_ir_measurement() {
         mock_millis += 50;
         mock_sample_count++;
         sim.update(0.05f, (int)dutyCycle);
-        systemData.update();
+        systemData.update(estimateCurrent(dutyCycle));
         measureInternalResistanceStep();
         if (currentIRState == IR_STATE_IDLE) currentAppState = APP_STATE_IDLE;
     }
@@ -469,7 +469,7 @@ void test_dead_region_detection() {
     while (safety_counter++ < 1000000) {
         mock_millis += 10;
         mock_sample_count++;
-        systemData.update();
+        systemData.update(estimateCurrent(dutyCycle));
         if (currentAppState == APP_STATE_BUILDING_MODEL) {
             buildCurrentModelStep();
         } else {
@@ -493,7 +493,7 @@ void test_full_flow() {
         mock_millis += 100;
         mock_sample_count++;
         sim.update(0.1f, (int)dutyCycle);
-        systemData.update();
+        systemData.update(estimateCurrent(dutyCycle));
 
         if (currentAppState == APP_STATE_BUILDING_MODEL) {
             buildCurrentModelStep();

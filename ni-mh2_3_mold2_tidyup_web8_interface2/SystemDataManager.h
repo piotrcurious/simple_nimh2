@@ -30,7 +30,7 @@ public:
     SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPin, double therm1Offset);
 
     void begin();
-    void update(); // Should be called regularly (e.g., 20Hz)
+    void update(float estimatedCurrentA = -1.0f); // Should be called regularly (e.g., 20Hz)
 
     SystemData getData();
     void resetMah();

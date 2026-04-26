@@ -84,7 +84,7 @@ const int MIN_CHARGE_DUTY_CYCLE = 5;
 #define ISOLATION_THRESHOLD 0.04f
 
 // R_int measurement constants
-extern float MEASURABLE_CURRENT_THRESHOLD;
+extern volatile float MEASURABLE_CURRENT_THRESHOLD;
 const int MIN_DUTY_CYCLE_START = 8;
 const int MAX_DUTY_CYCLE = 255;
 const int DUTY_CYCLE_INCREMENT_FIND_MIN = 5;
@@ -306,7 +306,7 @@ extern SemaphoreHandle_t webDataMutex;
 extern volatile AppState currentAppState;
 extern volatile BuildModelPhase buildModelPhase;
 extern volatile IRState currentIRState;
-extern float noiseFloorMv;
+extern volatile float noiseFloorMv;
 extern DisplayState currentDisplayState;
 extern uint8_t overtemp_trip_counter;
 extern unsigned long chargePhaseStartTime;
