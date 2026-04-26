@@ -39,11 +39,21 @@ unsigned long mock_millis = 0;
 #include "../internal_resistance.h"
 #include "../AdvancedPolynomialFitter.hpp"
 
+const double BCOEFFICIENT = 3950.0;
+
 // Hardware stubs that would normally be in .ino
 void applyDuty(uint32_t duty);
+void setAppState(AppState s);
+void setBuildModelPhase(BuildModelPhase p);
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
 float estimateCurrent(int duty);
 int estimateDutyCycleForCurrent(float target);
+void getAdcSnapshot(AdcChannelIndex idx, AdcSnapshot &snapshot);
+uint32_t calculateSnapshotAverage(const AdcSnapshot &old_s, const AdcSnapshot &new_s);
+float snapshotToMillivolts(AdcChannelIndex idx, uint32_t avg_raw);
+void setupAdcDma() {}
+void processAdcDma() {}
+double calculateBatteryTemp(double ambientTemp, float therm1Mv, float vccMv);
 
 // Physics Simulation
 struct BatterySim {
@@ -103,6 +113,9 @@ double THERMISTOR_1_OFFSET = 0.0;
 
 void applyDuty(uint32_t duty) { dutyCycle = duty; }
 
+void setAppState(AppState s) { currentAppState = s; }
+void setBuildModelPhase(BuildModelPhase p) { buildModelPhase = p; }
+
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current) {
     SystemData d = systemData.getData();
     temp1 = d.ambient_temp_c;
@@ -121,9 +134,22 @@ void getAdcSnapshot(AdcChannelIndex idx, AdcSnapshot &snapshot) {
     if (idx == ADC_IDX_CURRENT) {
         val_mv = sim.getCurrent((int)dutyCycle) * CURRENT_SHUNT_RESISTANCE * 1000.0f + systemData.getCurrentZeroOffsetMv();
     } else if (idx == ADC_IDX_VOLTAGE) {
-        val_mv = (dutyCycle == 0 ? sim.unloaded_voltage : sim.voltage) * 1000.0f;
+        // Correct the voltage mapping to match SystemDataManager logic: batteryV = ((vcc_mv * MAIN_VCC_RATIO) - sampledMv) / 1000.0f
+        // So sampledMv = (vcc_mv * MAIN_VCC_RATIO) - (batteryV * 1000)
+        float batteryV = (dutyCycle == 0 ? sim.unloaded_voltage : sim.voltage);
+        val_mv = (3300.0f * MAIN_VCC_RATIO) - (batteryV * 1000.0f);
     } else if (idx == ADC_IDX_THERM1) {
-        val_mv = 1500.0f;
+        // Correct thermistor mapping to match calculateBatteryTemp logic
+        // vRatio = averageAnalogValue / ((vcc_millivolts * MAIN_VCC_RATIO) - averageAnalogValue)
+        // We want battTemp = sim.temp
+        double battK = sim.temp + 273.15;
+        double ambK = sim.ambient + 273.15;
+        double logVRatio = ( (1.0/battK) - (1.0/ambK) ) * BCOEFFICIENT;
+        double vRatio = exp(logVRatio);
+        // vRatio = val_mv / ( (3300 * MAIN_VCC_RATIO) - val_mv )
+        // vRatio * (3300*R - val_mv) = val_mv
+        // vRatio * 3300 * R = val_mv * (1 + vRatio)
+        val_mv = (vRatio * 3300.0f * MAIN_VCC_RATIO) / (1.0 + vRatio);
     } else if (idx == ADC_IDX_THERM_VCC) {
         val_mv = 3300.0f;
     }
@@ -137,50 +163,23 @@ uint32_t calculateSnapshotAverage(const AdcSnapshot &old_s, const AdcSnapshot &n
 float snapshotToMillivolts(AdcChannelIndex idx, uint32_t avg_raw) {
     return (float)avg_raw;
 }
-void setupAdcDma() {}
-void processAdcDma() {}
 
+double calculateBatteryTemp(double ambientTemp, float therm1Mv, float vccMv) {
+    double averageAnalogValue = (double)therm1Mv - 0; // therm1Offset is 0 in mock
+    double vcc_millivolts = (double)vccMv;
 
-SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPin, double therm1Offset)
-    : _sht4(sht4), _therm1Pin(therm1Pin), _vccPin(vccPin), _therm1Offset(therm1Offset), _currentZeroOffsetMv(75.0f) {
-    _dataMutex = (SemaphoreHandle_t)1;
+    double vRatio = averageAnalogValue / ((vcc_millivolts * MAIN_VCC_RATIO) - averageAnalogValue);
+    if (vRatio <= 0) return ambientTemp;
+
+    double logVRatio = log(vRatio);
+    double ambientKelvin = ambientTemp + 273.15;
+
+    double invBattKelvin = (1.0 / ambientKelvin) + (logVRatio / BCOEFFICIENT);
+    double battKelvin = 1.0 / invBattKelvin;
+    return battKelvin - 273.15;
 }
-void SystemDataManager::begin() {}
-void SystemDataManager::update(float estA) {
-    static uint32_t last_m = 0;
-    uint32_t now = mock_millis;
-    if (last_m == 0) last_m = now;
-    float dt_h = (float)(now - last_m) / 3600000.0f;
-    float currentA = sim.getCurrent((int)dutyCycle);
-    if (estA >= 0.0f && estA < MEASURABLE_CURRENT_THRESHOLD) currentA = estA;
-    mAh_charged += (currentA * 1000.0f * dt_h);
-    last_m = now;
-    processAdcSnapshots();
-}
-void SystemDataManager::processAdcSnapshots() {
-    AdcSnapshot currentSnap;
-    getAdcSnapshot(ADC_IDX_CURRENT, currentSnap);
-    uint32_t avgRawCurrent = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_CURRENT], currentSnap);
-    _lastSnapshots[ADC_IDX_CURRENT] = currentSnap;
-    _currentData.current_mv = snapshotToMillivolts(ADC_IDX_CURRENT, avgRawCurrent);
-    _currentData.charge_current_a = std::max(0.0f, (_currentData.current_mv - _currentZeroOffsetMv) / (CURRENT_SHUNT_RESISTANCE * 1000.0f));
-    _currentData.current_sample_count = currentSnap.count;
 
-    getAdcSnapshot(ADC_IDX_VOLTAGE, currentSnap);
-    uint32_t avgRawVoltage = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_VOLTAGE], currentSnap);
-    _lastSnapshots[ADC_IDX_VOLTAGE] = currentSnap;
-    _currentData.battery_voltage_v = snapshotToMillivolts(ADC_IDX_VOLTAGE, avgRawVoltage) / 1000.0f;
 
-    _currentData.ambient_temp_c = sim.ambient;
-    _currentData.battery_temp_c = sim.temp;
-    _currentData.temp_diff_c = _currentData.battery_temp_c - _currentData.ambient_temp_c;
-    _currentData.mah_charged = (float)mAh_charged;
-    _currentData.last_update_ms = mock_millis;
-}
-SystemData SystemDataManager::getData() { return _currentData; }
-void SystemDataManager::resetMah() { mAh_charged = 0; }
-void SystemDataManager::setCurrentZeroOffsetMv(float mv) { _currentZeroOffsetMv = mv; }
-float SystemDataManager::getCurrentZeroOffsetMv() { return _currentZeroOffsetMv; }
 
 SHT4xSensor sht4Sensor;
 SystemDataManager systemData(sht4Sensor, 36, 35, 0.0);
@@ -345,6 +344,7 @@ int estimateDutyCycleForCurrent(float targetCurrent) {
 }
 
 void reset_globals() {
+    systemData.begin();
     mock_millis = 0; voltage_mv = 1000.0f; current_ma = 0.0f; mAh_charged = 0.0;
     dutyCycle = 0; chargingState = CHARGE_IDLE; chargeLog.clear();
     sim = BatterySim(); overtemp_trip_counter = 0; currentAppState = APP_STATE_IDLE;
@@ -489,11 +489,14 @@ void test_full_flow() {
     buildModelPhase = BuildModelPhase::Idle;
 
     int loop_count = 0;
-    while (loop_count++ < 200000) {
+    while (loop_count++ < 400000) {
         mock_millis += 100;
         mock_sample_count++;
         sim.update(0.1f, (int)dutyCycle);
         systemData.update(estimateCurrent(dutyCycle));
+
+        // Sync global mAh_charged with systemData
+        mAh_charged = systemData.getData().mah_charged;
 
         if (currentAppState == APP_STATE_BUILDING_MODEL) {
             buildCurrentModelStep();
@@ -504,12 +507,20 @@ void test_full_flow() {
             }
         }
 
+        if (loop_count % 10000 == 0) {
+            std::cout << "  Progress: loop=" << loop_count << ", State=" << (int)currentAppState << ", ChargingState=" << (int)chargingState << ", mAh=" << mAh_charged << ", Duty=" << dutyCycle << std::endl;
+        }
+
         if (currentAppState == APP_STATE_CHARGING && chargingState == CHARGE_MONITOR && mAh_charged > 100) break;
+        if (chargingState == CHARGE_STOPPED) break;
     }
+
+    SystemData finalD = systemData.getData();
+    std::cout << "  Final State: App=" << (int)currentAppState << ", Charging=" << (int)chargingState << ", mAh=" << finalD.mah_charged << std::endl;
 
     assert(currentAppState == APP_STATE_CHARGING);
     assert(chargingState == CHARGE_MONITOR);
-    assert(mAh_charged > 100);
+    assert(finalD.mah_charged > 100);
     std::cout << "Successfully transitioned from model building to active charging." << std::endl;
     std::cout << "test_full_flow PASSED" << std::endl << std::endl;
 }

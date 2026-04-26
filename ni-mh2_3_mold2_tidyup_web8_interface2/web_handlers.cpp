@@ -13,28 +13,34 @@
 #include <vector>
 
 extern WebServer server;
+extern void setAppState(AppState s);
+extern void setBuildModelPhase(BuildModelPhase p);
 
 /**
  * HELPER: Streams a float array as JSON directly to the client.
- * This prevents creating a giant String in the heap.
+ * Uses a small buffer to group entries and reduce network overhead.
  */
-static void streamFloatArrayJSON(const char* name, float* arr, int len, bool isLast = false) {
-    server.sendContent("\"");
-    server.sendContent(name);
-    server.sendContent("\":[");
-
-    char buf[16];
+static void streamFloatArrayJSON(const char* name, const float* arr, int len, bool isLast = false) {
+    String s = "\"";
+    s += name;
+    s += "\":[";
+    server.sendContent(s);
+    s = "";
     for (int i = 0; i < len; i++) {
-        if (std::isnan(arr[i])) {
-            server.sendContent("null");
-        } else {
+        if (std::isnan(arr[i])) s += "null";
+        else {
+            char buf[16];
             snprintf(buf, sizeof(buf), "%.2f", arr[i]);
-            server.sendContent(buf);
+            s += buf;
         }
-        if (i < len - 1) server.sendContent(",");
+        if (i < len - 1) s += ",";
+        if (s.length() > 400) {
+            server.sendContent(s);
+            s = "";
+        }
     }
-
-    server.sendContent(isLast ? "]" : "],");
+    s += isLast ? "]" : "],";
+    server.sendContent(s);
 }
 
 String getJsonState() {
@@ -42,7 +48,7 @@ String getJsonState() {
     WEB_LOCK();
     snprintf(buf, sizeof(buf),
         "{\"app\":%d,\"display\":%d,\"duty\":%d,\"v\":%.3f,\"i\":%.3f,\"mah\":%.3f,\"max_dt\":%.2f,\"phase\":%d,\"offset\":%.2f,\"noise\":%.2f}",
-        currentAppState, currentDisplayState, (int)dutyCycle,
+        (int)currentAppState, (int)currentDisplayState, (int)dutyCycle,
         voltage_mv / 1000.0f, current_ma / 1000.0f, (float)mAh_charged,
         MAX_DIFF_TEMP, (int)buildModelPhase, systemData.getCurrentZeroOffsetMv(), (float)noiseFloorMv);
     WEB_UNLOCK();
@@ -89,22 +95,16 @@ static void streamJsonAmbient() {
 
 struct CborWriter {
     std::vector<uint8_t> data;
-
     void reserve(size_t n) { data.reserve(n); }
     void put(uint8_t b) { data.push_back(b); }
-
     void putBytes(const void* p, size_t n) {
         const uint8_t* b = static_cast<const uint8_t*>(p);
         data.insert(data.end(), b, b + n);
     }
-
     void addTypeVal(uint8_t major, uint64_t val) {
-        if (val < 24) {
-            put((major << 5) | (uint8_t)val);
-        } else if (val <= 0xFF) {
-            put((major << 5) | 24);
-            put((uint8_t)val);
-        } else if (val <= 0xFFFF) {
+        if (val < 24) put((major << 5) | (uint8_t)val);
+        else if (val <= 0xFF) { put((major << 5) | 24); put((uint8_t)val); }
+        else if (val <= 0xFFFF) {
             put((major << 5) | 25);
             uint16_t v = (uint16_t)val;
             uint8_t tmp[2] = { (uint8_t)(v >> 8), (uint8_t)(v & 0xFF) };
@@ -112,46 +112,31 @@ struct CborWriter {
         } else if (val <= 0xFFFFFFFFULL) {
             put((major << 5) | 26);
             uint32_t v = (uint32_t)val;
-            uint8_t tmp[4] = {
-                (uint8_t)(v >> 24), (uint8_t)(v >> 16),
-                (uint8_t)(v >> 8), (uint8_t)(v & 0xFF)
-            };
+            uint8_t tmp[4] = { (uint8_t)(v >> 24), (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)(v & 0xFF) };
             putBytes(tmp, 4);
         } else {
             put((major << 5) | 27);
-            uint8_t tmp[8] = {
-                (uint8_t)(val >> 56), (uint8_t)(val >> 48), (uint8_t)(val >> 40), (uint8_t)(val >> 32),
-                (uint8_t)(val >> 24), (uint8_t)(val >> 16), (uint8_t)(val >> 8), (uint8_t)(val & 0xFF)
-            };
-            putBytes(tmp, 8);
+            for (int i = 7; i >= 0; i--) put((uint8_t)(val >> (8 * i)));
         }
     }
-
     void addUInt(uint64_t v) { addTypeVal(0, v); }
-
     void addInt(int64_t v) {
         if (v >= 0) addUInt((uint64_t)v);
         else addTypeVal(1, (uint64_t)(-1 - v));
     }
-
     void addFloat(float f) {
         put(0xFA);
         uint32_t u;
         memcpy(&u, &f, sizeof(u));
-        uint8_t tmp[4] = {
-            (uint8_t)(u >> 24), (uint8_t)(u >> 16), (uint8_t)(u >> 8), (uint8_t)(u & 0xFF)
-        };
+        uint8_t tmp[4] = { (uint8_t)(u >> 24), (uint8_t)(u >> 16), (uint8_t)(u >> 8), (uint8_t)(u & 0xFF) };
         putBytes(tmp, 4);
     }
-
     void addNull() { put(0xF6); }
-
     void addText(const char* s) {
         size_t n = strlen(s);
         addTypeVal(3, n);
         putBytes(s, n);
     }
-
     void startArray(size_t n) { addTypeVal(4, n); }
     void startMap(size_t n) { addTypeVal(5, n); }
 };
@@ -208,7 +193,6 @@ static void appendCborIR(CborWriter& w) {
     w.addText("lu");    cborAddXYPairs(w, internalResistanceData, resistanceDataCount);
     w.addText("pairs"); cborAddXYPairs(w, internalResistanceDataPairs, resistanceDataCountPairs);
 }
-
 
 static void sendBinaryResponse(const char* contentType, const std::vector<uint8_t>& payload) {
 #ifndef MOCK_TEST
@@ -293,9 +277,7 @@ static void sendCborChargeLog() {
         CborWriter w;
         w.reserve(batch.size() * 100);
 
-        if (i == 0) {
-            w.put(0x9F); // Start indefinite length array
-        }
+        if (i == 0) w.put(0x9F); // Start indefinite array
 
         for (size_t j = 0; j < batch.size(); j++) {
             const auto& entry = batch[j];
@@ -323,13 +305,12 @@ static void sendCborChargeLog() {
             w.addText("td");   w.addFloat(td);
             w.addText("th");   w.addFloat(thresholdValue);
         }
-
         server.client().write(w.data.data(), w.data.size());
     }
 
-    uint8_t stopByte = 0xFF; // Break for indefinite length array
+    uint8_t stopByte = 0xFF; // Break for indefinite array
     server.client().write(&stopByte, 1);
-    server.sendContent(""); // Finish chunked encoding
+    server.sendContent("");
 #endif
 }
 
@@ -338,10 +319,8 @@ static void sendCborRoot() {
     CborWriter w;
     w.reserve(512);
     w.startMap(2);
-    w.addText("state");
-    appendCborState(w);
-    w.addText("ambient");
-    appendCborAmbient(w);
+    w.addText("state");   appendCborState(w);
+    w.addText("ambient"); appendCborAmbient(w);
     WEB_UNLOCK();
     sendBinaryResponse("application/cbor", w.data);
 }
@@ -406,14 +385,14 @@ static void streamJsonChargeLog() {
         }
         server.sendContent(chunk);
     }
-
     server.sendContent("]");
     server.sendContent("");
 }
 
 void handleData() {
+    Serial.printf("WEB: handleData type=%s\n", server.arg("type").c_str());
     String type = server.arg("type");
-    bool wantCbor = server.arg("fmt") == "cbor";
+    bool wantCbor = (server.arg("fmt") == "cbor");
 
     if (wantCbor) {
         if (type == "state") sendCborState();
@@ -435,9 +414,7 @@ void handleData() {
         json.reserve(256 + (resistanceDataCount + resistanceDataCountPairs) * 20);
         json = "{";
         auto addIRData = [&](const char* name, float data[][2], int count) {
-            json += "\"";
-            json += name;
-            json += "\":[";
+            json += "\""; json += name; json += "\":[";
             char buf[40];
             for (int i = 0; i < count; i++) {
                 snprintf(buf, sizeof(buf), "[%.3f,%.3f]", data[i][0], data[i][1]);
@@ -473,6 +450,7 @@ void handleData() {
 }
 
 void handleRoot() {
+    Serial.println("WEB: handleRoot");
 #ifndef MOCK_TEST
     server.sendHeader(F("Connection"), F("close"));
     server.send_P(200, "text/html", INDEX_HTML);
@@ -483,20 +461,27 @@ void handleRoot() {
 
 void handleCommand() {
     String cmd = server.arg("cmd");
-    WEB_LOCK();
+    Serial.printf("DEBUG: Web command received: %s\n", cmd.c_str());
+
     if (cmd == "charge") {
+        WEB_LOCK();
         resetAh = true;
-        buildModelPhase = BuildModelPhase::Idle;
-        currentAppState = APP_STATE_BUILDING_MODEL;
+        WEB_UNLOCK();
+        setBuildModelPhase(BuildModelPhase::Idle);
+        setAppState(APP_STATE_BUILDING_MODEL);
     } else if (cmd == "ir") {
+        WEB_LOCK();
         currentIRState = IR_STATE_START;
-        currentAppState = APP_STATE_MEASURING_IR;
+        WEB_UNLOCK();
+        setAppState(APP_STATE_MEASURING_IR);
     } else if (cmd == "reset") {
+        WEB_LOCK();
         resetAh = true;
+        WEB_UNLOCK();
     } else if (cmd == "stop") {
-        currentAppState = APP_STATE_IDLE;
+        setAppState(APP_STATE_IDLE);
         applyDuty(0);
     }
-    WEB_UNLOCK();
+
     server.send(200, "text/plain", "OK");
 }
