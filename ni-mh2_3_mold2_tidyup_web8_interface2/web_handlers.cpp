@@ -493,7 +493,6 @@ void handleCommand() {
     if (cmd == "charge") {
         resetAh = true;
         buildModelPhase = BuildModelPhase::Idle;
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
         currentAppState = APP_STATE_BUILDING_MODEL;
     } else if (cmd == "ir") {
         currentIRState = IR_STATE_START;

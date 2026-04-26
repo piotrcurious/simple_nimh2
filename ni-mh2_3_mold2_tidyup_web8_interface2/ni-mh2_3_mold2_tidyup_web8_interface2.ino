@@ -85,7 +85,7 @@ void applyDuty(uint32_t duty) {
     analogWrite(pwmPin, static_cast<int>(dutyCycle));
 }
 
-static inline void setAppState(AppState s) {
+void setAppState(AppState s) {
 #ifndef MOCK_TEST
     if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
         currentAppState = s;
@@ -93,6 +93,17 @@ static inline void setAppState(AppState s) {
     }
 #else
     currentAppState = s;
+#endif
+}
+
+void setBuildModelPhase(BuildModelPhase p) {
+#ifndef MOCK_TEST
+    if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
+        buildModelPhase = p;
+        xSemaphoreGive(webDataMutex);
+    }
+#else
+    buildModelPhase = p;
 #endif
 }
 
@@ -140,7 +151,7 @@ void buildCurrentModelStep() {
             applyDuty(0);
             buildModelDutyCycle = 0;
             buildModelLastStepTime = now;
-            buildModelPhase = BuildModelPhase::Settle;
+            setBuildModelPhase(BuildModelPhase::Settle);
             Serial.println("Building Current Model: Settling (2s)...");
             Serial.flush();
             break;
@@ -152,7 +163,7 @@ void buildCurrentModelStep() {
                 SystemData d = systemData.getData();
                 lastKnownSampleCount = d.current_sample_count;
                 buildModelLastStepTime = now; // Reset timer for Calibrate phase
-                buildModelPhase = BuildModelPhase::Calibrate;
+                setBuildModelPhase(BuildModelPhase::Calibrate);
                 Serial.println("Building Current Model: Calibrating Zero Offset...");
             }
             break;
@@ -184,7 +195,7 @@ void buildCurrentModelStep() {
                     buildModelDutyCycle = 1;
                     applyDuty(buildModelDutyCycle); // Start applying duty immediately
                     buildModelLastStepTime = now;
-                    buildModelPhase = BuildModelPhase::DetectDeadRegion;
+                    setBuildModelPhase(BuildModelPhase::DetectDeadRegion);
                     Serial.println("Building Current Model: Detecting Dead Region...");
                 }
 
@@ -195,7 +206,7 @@ void buildCurrentModelStep() {
                     buildModelDutyCycle = 1;
                     applyDuty(buildModelDutyCycle);
                     buildModelLastStepTime = now;
-                    buildModelPhase = BuildModelPhase::DetectDeadRegion;
+                    setBuildModelPhase(BuildModelPhase::DetectDeadRegion);
                 }
             }
             break;
@@ -217,14 +228,14 @@ void buildCurrentModelStep() {
                     Serial.printf("Dead region ends at Duty: %d, Threshold: %.3f A\n", buildModelDutyCycle, MEASURABLE_CURRENT_THRESHOLD);
                     buildModelDutyCycle += 5;
                     buildModelLastStepTime = now; // Reset timer for SetDuty
-                    buildModelPhase = BuildModelPhase::SetDuty;
+                    setBuildModelPhase(BuildModelPhase::SetDuty);
                 } else {
                     buildModelDutyCycle += 4; // Slightly faster increment
                     if (buildModelDutyCycle > MAX_DUTY_CYCLE) {
                         Serial.println("Error: Could not detect current above noise floor.");
                         applyDuty(0);
                         setAppState(APP_STATE_IDLE);
-                        buildModelPhase = BuildModelPhase::Idle;
+                        setBuildModelPhase(BuildModelPhase::Idle);
                     } else {
                         applyDuty(buildModelDutyCycle);
                     }
@@ -236,10 +247,10 @@ void buildCurrentModelStep() {
             if (buildModelDutyCycle <= MAX_DUTY_CYCLE) {
                 applyDuty(buildModelDutyCycle);
                 buildModelLastStepTime = now;
-                buildModelPhase = BuildModelPhase::WaitMeasurement;
+                setBuildModelPhase(BuildModelPhase::WaitMeasurement);
             } else {
                 buildModelLastStepTime = now; // Reset timer for Finish
-                buildModelPhase = BuildModelPhase::Finish;
+                setBuildModelPhase(BuildModelPhase::Finish);
             }
             break;
         case BuildModelPhase::WaitMeasurement:
@@ -252,7 +263,7 @@ void buildCurrentModelStep() {
                                   buildModelDutyCycle, d.charge_current_a, d.current_sample_count);
                 }
                 buildModelDutyCycle += 5;
-                buildModelPhase = BuildModelPhase::SetDuty;
+                setBuildModelPhase(BuildModelPhase::SetDuty);
             }
             break;
         case BuildModelPhase::Finish:
@@ -276,7 +287,7 @@ void buildCurrentModelStep() {
                 applyDuty(0);
                 setAppState(APP_STATE_IDLE);
             }
-            buildModelPhase = BuildModelPhase::Idle;
+            setBuildModelPhase(BuildModelPhase::Idle);
             break;
     }
 }

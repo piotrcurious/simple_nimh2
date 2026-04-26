@@ -312,8 +312,11 @@ void handleMeasureLoadedUnloaded() {
                 float loadedCurrent = currentsLoaded.back();
                 if (loadedCurrent > 0.01f) {
                     float internalResistance = (currentMeasurement.voltage - voltagesLoaded.back()) / loadedCurrent;
+                    WEB_LOCK();
                     storeResistanceData(loadedCurrent, std::fabs(internalResistance),
                                       internalResistanceData, resistanceDataCount);
+                    bubbleSort(internalResistanceData, resistanceDataCount);
+                    WEB_UNLOCK();
                 }
                 pairIndex++;
                 measureStep = 0;
@@ -345,8 +348,11 @@ void handleMeasurePairs() {
                     float voltageDiff = voltagesLoaded.back() - currentMeasurement.voltage;
                     float internalResistance = voltageDiff / currentDiff;
                     consecutiveInternalResistances.push_back(std::fabs(internalResistance));
+                    WEB_LOCK();
                     storeResistanceData(currentMeasurement.current, std::fabs(internalResistance),
                                       internalResistanceDataPairs, resistanceDataCountPairs);
+                    bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
+                    WEB_UNLOCK();
                 } else {
                     consecutiveInternalResistances.push_back(-1.0f);
                 }
@@ -399,17 +405,12 @@ void bubbleSort(float data[][2], int n) {
 }
 
 void storeResistanceData(float current, float resistance, float dataArray[MAX_RESISTANCE_POINTS][2], int& count) {
-    WEB_LOCK();
-    if (count >= MAX_RESISTANCE_POINTS) {
-        WEB_UNLOCK();
-        return;
-    }
+    if (count >= MAX_RESISTANCE_POINTS) return;
     if (resistance > MIN_VALID_RESISTANCE && resistance < 1000.0f) {
         dataArray[count][0] = current;
         dataArray[count][1] = resistance;
         count++;
     }
-    WEB_UNLOCK();
 }
 
 int findClosestIndex(float data[][2], int count, float targetCurrent) {
@@ -444,11 +445,7 @@ void removeDataPoint(float data[][2], int& count, int index) {
 }
 
 void storeOrAverageResistanceData(float current, float resistance, float data[][2], int& count) {
-    WEB_LOCK();
-    if (resistance <= MIN_VALID_RESISTANCE || resistance >= 1000.0f || current < 0.0f) {
-        WEB_UNLOCK();
-        return;
-    }
+    if (resistance <= MIN_VALID_RESISTANCE || resistance >= 1000.0f || current < 0.0f) return;
     if (count < MAX_RESISTANCE_POINTS) {
         int insertIndex = 0;
         while (insertIndex < count && data[insertIndex][0] < current) insertIndex++;
@@ -461,7 +458,6 @@ void storeOrAverageResistanceData(float current, float resistance, float data[][
         const float alpha = 0.5f;
         data[closestIndex][1] = alpha * resistance + (1.0f - alpha) * data[closestIndex][1];
         data[closestIndex][0] = alpha * current + (1.0f - alpha) * data[closestIndex][0];
-        WEB_UNLOCK();
         return;
     }
     int evictIndex = 0;
@@ -476,7 +472,6 @@ void storeOrAverageResistanceData(float current, float resistance, float data[][
     int insertIndex = 0;
     while (insertIndex < count && data[insertIndex][0] < current) insertIndex++;
     insertDataPoint(data, count, current, resistance, insertIndex);
-    WEB_UNLOCK();
 }
 
 float computeMedian(std::vector<float>& v) {

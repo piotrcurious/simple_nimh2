@@ -319,6 +319,8 @@ extern double THERMISTOR_1_OFFSET;
 // --- Function Declarations ---
 
 // from main .ino
+void setAppState(AppState s);
+void setBuildModelPhase(BuildModelPhase p);
 void applyDuty(uint32_t duty);
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
 void buildCurrentModel(bool warmStart);
