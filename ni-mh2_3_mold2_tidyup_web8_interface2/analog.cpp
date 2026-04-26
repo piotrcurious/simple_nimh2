@@ -7,7 +7,12 @@
 adc_calibration_data_t adc1_cal_data[ADC1_CHANNEL_COUNT];
 bool adc1_cal_initialized[ADC1_CHANNEL_COUNT] = {false};
 
+#ifndef MOCK_TEST
 int analogReadMillivolts(int pin, adc_atten_t attenuation, int oversampling) {
+#else
+int analogReadMillivolts(int pin, int attenuation, int oversampling) {
+#endif
+#ifndef MOCK_TEST
   // Try DMA system first
   if (pin == THERMISTOR_PIN_1) {
     return (int)getAdcMillivolts(ADC_IDX_THERM1);
@@ -63,4 +68,7 @@ int analogReadMillivolts(int pin, adc_atten_t attenuation, int oversampling) {
     log_w("analogReadMillivolts", "Calibration not initialized for pin %d, returning raw value scaled (approximate).", pin);
     return (raw_adc * 3300) / 4095;
   }
+#else
+  return analogRead(pin);
+#endif
 }

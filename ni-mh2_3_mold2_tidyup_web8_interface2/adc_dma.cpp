@@ -1,9 +1,8 @@
 #include "adc_dma.h"
 #include "definitions.h"
+#ifndef MOCK_TEST
 #include "esp_adc/adc_continuous.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/semphr.h"
+#endif
 #include <cstring>
 
 // ADC configuration constants
@@ -32,7 +31,9 @@ struct ChannelAccum {
 };
 
 // Global/static variables
+#ifndef MOCK_TEST
 static adc_continuous_handle_t adc_handle = nullptr;
+#endif
 
 static SampleEntry sample_ring[SAMPLE_RING_SIZE];
 static uint32_t sample_write_idx = 0;
@@ -41,6 +42,7 @@ static uint32_t sample_read_idx  = 0;
 static ChannelAccum channel_data[ADC_CH_COUNT];
 static int8_t CH_TO_IDX[10];
 
+#ifndef MOCK_TEST
 // Match reference code's exact channels and order
 static constexpr uint8_t SCAN_CH_COUNT = 6;
 static constexpr adc1_channel_t SCAN_CH[SCAN_CH_COUNT] = {
@@ -55,11 +57,13 @@ static constexpr adc1_channel_t SCAN_CH[SCAN_CH_COUNT] = {
 static adc_digi_pattern_config_t patterns[SCAN_CH_COUNT];
 
 static esp_adc_cal_characteristics_t adc_chars[ADC_CH_COUNT];
+#endif
 static bool cal_initialized[ADC_CH_COUNT] = {false};
 
 static SemaphoreHandle_t data_mutex = nullptr;
 
 void setupAdcDma() {
+#ifndef MOCK_TEST
     if (data_mutex == nullptr) {
         data_mutex = xSemaphoreCreateMutex();
     }
@@ -110,6 +114,7 @@ void setupAdcDma() {
     ESP_ERROR_CHECK(adc_continuous_config(adc_handle, &dig));
 
     ESP_ERROR_CHECK(adc_continuous_start(adc_handle));
+#endif
 }
 
 static inline void pushSample(uint8_t idx, uint16_t raw) {
@@ -122,6 +127,7 @@ static inline void pushSample(uint8_t idx, uint16_t raw) {
 }
 
 void processAdcDma() {
+#ifndef MOCK_TEST
     static uint8_t result[CONV_FRAME_SIZE];
     uint32_t ret_num = 0;
     static uint32_t total_processed = 0;
@@ -141,6 +147,7 @@ void processAdcDma() {
             }
         }
     }
+#endif
 
     if (xSemaphoreTake(data_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         while (sample_read_idx != sample_write_idx) {
@@ -155,18 +162,23 @@ void processAdcDma() {
             sample_read_idx = (sample_read_idx + 1) & SAMPLE_RING_MASK;
         }
 
+#ifndef MOCK_TEST
         static uint32_t last_log = 0;
         if (millis() - last_log > 5000) {
             last_log = millis();
             Serial.printf("ADC DMA: Processed %u total samples.\n", total_processed);
         }
+#endif
 
         for (int i = 0; i < ADC_CH_COUNT; i++) {
             if (channel_data[i].count_batch >= 32) {
                 uint32_t avg_raw = (uint32_t)((channel_data[i].sum_batch + (channel_data[i].count_batch / 2)) / channel_data[i].count_batch);
                 channel_data[i].latest_raw_avg = avg_raw;
+#ifndef MOCK_TEST
                 channel_data[i].latest_avg_mv = (float)esp_adc_cal_raw_to_voltage(avg_raw, &adc_chars[i]);
-
+#else
+                channel_data[i].latest_avg_mv = (float)avg_raw;
+#endif
                 channel_data[i].sum_batch = 0;
                 channel_data[i].count_batch = 0;
             }
@@ -213,5 +225,9 @@ uint32_t calculateSnapshotAverage(const AdcSnapshot &old_s, const AdcSnapshot &n
 
 float snapshotToMillivolts(AdcChannelIndex idx, uint32_t avg_raw) {
     if (!cal_initialized[idx]) return 0.0f;
+#ifndef MOCK_TEST
     return (float)esp_adc_cal_raw_to_voltage(avg_raw, &adc_chars[idx]);
+#else
+    return (float)avg_raw;
+#endif
 }

@@ -4,6 +4,14 @@
 #include <algorithm> // for nth_element
 #include <cmath>
 
+#ifndef MOCK_TEST
+#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
+#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
+#else
+#define WEB_LOCK()
+#define WEB_UNLOCK()
+#endif
+
 // External functions
 extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff,
                                    float& t1_millivolts, float& voltage, float& current);
@@ -348,6 +356,7 @@ void handleMeasurePairs() {
 }
 
 void completeResistanceMeasurement() {
+    WEB_LOCK();
     bubbleSort(internalResistanceData, resistanceDataCount);
     bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
 
@@ -367,6 +376,7 @@ void completeResistanceMeasurement() {
     if (resistanceDataCountPairs >= 2) {
         performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
     }
+    WEB_UNLOCK();
     isMeasuringResistance = false;
     currentIRState = IR_STATE_IDLE;
 }
@@ -427,7 +437,11 @@ void removeDataPoint(float data[][2], int& count, int index) {
 }
 
 void storeOrAverageResistanceData(float current, float resistance, float data[][2], int& count) {
-    if (resistance <= MIN_VALID_RESISTANCE || resistance >= 1000.0f || current < 0.0f) return;
+    WEB_LOCK();
+    if (resistance <= MIN_VALID_RESISTANCE || resistance >= 1000.0f || current < 0.0f) {
+        WEB_UNLOCK();
+        return;
+    }
     if (count < MAX_RESISTANCE_POINTS) {
         int insertIndex = 0;
         while (insertIndex < count && data[insertIndex][0] < current) insertIndex++;
@@ -440,6 +454,7 @@ void storeOrAverageResistanceData(float current, float resistance, float data[][
         const float alpha = 0.5f;
         data[closestIndex][1] = alpha * resistance + (1.0f - alpha) * data[closestIndex][1];
         data[closestIndex][0] = alpha * current + (1.0f - alpha) * data[closestIndex][0];
+        WEB_UNLOCK();
         return;
     }
     int evictIndex = 0;
@@ -454,6 +469,7 @@ void storeOrAverageResistanceData(float current, float resistance, float data[][
     int insertIndex = 0;
     while (insertIndex < count && data[insertIndex][0] < current) insertIndex++;
     insertDataPoint(data, count, current, resistance, insertIndex);
+    WEB_UNLOCK();
 }
 
 float computeMedian(std::vector<float>& v) {

@@ -5,6 +5,14 @@
 #include <cstring>
 #include <stdint.h>
 
+#ifndef MOCK_TEST
+#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
+#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
+#else
+#define WEB_LOCK()
+#define WEB_UNLOCK()
+#endif
+
 HomeScreen::HomeScreen()
     : lastRenderMs(0), lastGatherMs(0)
 {
@@ -29,6 +37,7 @@ void HomeScreen::gatherData() {
     if (now - lastGatherMs < GATHER_INTERVAL_MS) return;
     lastGatherMs = now;
 
+    WEB_LOCK();
     shiftHistoryLeft(temp_history, PLOT_WIDTH);
     shiftHistoryLeft(humidity_history, PLOT_WIDTH);
     shiftHistoryLeft(dew_point_history, PLOT_WIDTH);
@@ -40,6 +49,7 @@ void HomeScreen::gatherData() {
     temp_history[PLOT_WIDTH - 1] = t;
     humidity_history[PLOT_WIDTH - 1] = h;
     dew_point_history[PLOT_WIDTH - 1] = d;
+    WEB_UNLOCK();
 }
 
 double HomeScreen::calculateDewPoint(double temperature, double humidity) {

@@ -101,6 +101,7 @@ struct MockSerial {
 };
 extern MockSerial Serial;
 
+#define CONTENT_LENGTH_UNKNOWN -1
 struct WebServer {
     int lastResponseCode;
     String lastResponseType;
@@ -119,10 +120,13 @@ struct WebServer {
     void on(const char* path, void (*handler)()) {}
     void begin() {}
     void handleClient() {}
+    void setContentLength(int len) {}
+    void sendContent(const String& content) { lastResponseContent += content; }
 };
 
 inline void pinMode(int pin, int mode) {}
 inline void digitalWrite(int pin, int val) {}
+inline int analogRead(int pin) { return 0; }
 inline void analogWrite(int pin, int val) {}
 inline void analogWriteResolution(int pin, int res) {}
 inline void analogWriteFrequency(int pin, int freq) {}

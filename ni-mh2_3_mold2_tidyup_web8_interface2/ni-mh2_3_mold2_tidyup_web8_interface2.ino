@@ -63,6 +63,10 @@ SystemDataManager systemData(sht4Sensor, THERMISTOR_PIN_1, THERMISTOR_VCC_PIN, T
 // Web Server
 WebServer server(80);
 
+#ifndef MOCK_TEST
+SemaphoreHandle_t webDataMutex = NULL;
+#endif
+
 // --- Build model state ---
 volatile BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
 int buildModelDutyCycle = 0;
@@ -317,6 +321,13 @@ void task_updateSystemData(void* parameter) {
     }
 }
 
+void task_webServer(void* parameter) {
+    while (true) {
+        server.handleClient();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 // --- Initialization ---
 void setup() {
     Serial.begin(115200);
@@ -329,6 +340,10 @@ void setup() {
     server.on("/data", handleData);
     server.on("/command", handleCommand);
     server.begin();
+
+#ifndef MOCK_TEST
+    webDataMutex = xSemaphoreCreateMutex();
+#endif
 
     for (int i = 0; i < PLOT_WIDTH; ++i) {
         temp1_values[i] = 25.0f;
@@ -346,6 +361,7 @@ void setup() {
     xTaskCreatePinnedToCore(task_readSHT4x, "SHT4", 4096, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(task_processAdcDma, "ADC_DMA", 4096, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(task_updateSystemData, "SYS_DATA", 4096, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(task_webServer, "WebServer", 8192, NULL, 1, NULL, 1);
 
     setupPWM();
     Serial.println("System Ready.");
@@ -360,7 +376,6 @@ void gatherData() {
 
 void loop() {
     const unsigned long now = millis();
-    server.handleClient();
 
     switch (currentAppState) {
         case APP_STATE_IDLE: break;
