@@ -2,13 +2,6 @@
 #include "definitions.h"
 #include "logging.h"
 
-#ifndef MOCK_TEST
-#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
-#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
-#else
-#define WEB_LOCK()
-#define WEB_UNLOCK()
-#endif
 
 unsigned long chargingStartTime = 0;
 ChargingState chargingState = CHARGE_IDLE;

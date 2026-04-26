@@ -4,13 +4,6 @@
 #include <algorithm> // for nth_element
 #include <cmath>
 
-#ifndef MOCK_TEST
-#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
-#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
-#else
-#define WEB_LOCK()
-#define WEB_UNLOCK()
-#endif
 
 // External functions
 extern void getThermistorReadings(double& temp1, double& temp2, double& tempDiff,

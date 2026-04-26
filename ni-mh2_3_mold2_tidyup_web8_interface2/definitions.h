@@ -301,6 +301,11 @@ extern unsigned long lastChargingHouseTime;
 
 #ifndef MOCK_TEST
 extern SemaphoreHandle_t webDataMutex;
+#define WEB_LOCK() if (webDataMutex) xSemaphoreTakeRecursive(webDataMutex, portMAX_DELAY)
+#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGiveRecursive(webDataMutex)
+#else
+#define WEB_LOCK()
+#define WEB_UNLOCK()
 #endif
 
 extern volatile AppState currentAppState;
