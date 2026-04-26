@@ -37,7 +37,7 @@ volatile AppState currentAppState = APP_STATE_IDLE;
 DisplayState currentDisplayState = DISPLAY_STATE_IDLE;
 
 // Shared measurement / UI globals
-float MEASURABLE_CURRENT_THRESHOLD = 0.005f;
+volatile float MEASURABLE_CURRENT_THRESHOLD = 0.005f;
 volatile float voltage_mv = 1000.0f;
 volatile float current_ma = 0.0f;
 volatile double mAh_charged = 0.0;
@@ -65,6 +65,11 @@ WebServer server(80);
 
 #ifndef MOCK_TEST
 SemaphoreHandle_t webDataMutex = NULL;
+#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
+#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
+#else
+#define WEB_LOCK()
+#define WEB_UNLOCK()
 #endif
 
 // --- Build model state ---
@@ -75,7 +80,7 @@ float calibrationSum = 0;
 float calibrationMax = 0;
 int calibrationCount = 0;
 uint32_t lastKnownSampleCount = 0;
-float noiseFloorMv = 0;
+volatile float noiseFloorMv = 0;
 std::vector<float> dutyCycles;
 std::vector<float> currents;
 
@@ -129,9 +134,6 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
     t1_millivolts = 0;
     voltage = d.battery_voltage_v;
     current = d.charge_current_a;
-    voltage_mv = voltage * 1000.0f;
-    current_ma = current * 1000.0f;
-    mAh_charged = d.mah_charged;
 }
 
 // --- Non-blocking build current model ---
@@ -181,16 +183,12 @@ void buildCurrentModelStep() {
                 if (calibrationCount >= 20) {
                     float avgOffset = calibrationSum / calibrationCount;
                     systemData.setCurrentZeroOffsetMv(avgOffset);
-#ifndef MOCK_TEST
-                    if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
-                        noiseFloorMv = (calibrationMax - avgOffset) * 2.0f;
-                        if (noiseFloorMv < 2.5f) noiseFloorMv = 2.5f;
-                        xSemaphoreGive(webDataMutex);
-                    }
-#else
+
+                    WEB_LOCK();
                     noiseFloorMv = (calibrationMax - avgOffset) * 2.0f;
                     if (noiseFloorMv < 2.5f) noiseFloorMv = 2.5f;
-#endif
+                    WEB_UNLOCK();
+
                     Serial.printf("Auto-calibration complete. Offset: %.2f mV, NoiseFloor: %.2f mV\n", avgOffset, noiseFloorMv);
                     buildModelDutyCycle = 1;
                     applyDuty(buildModelDutyCycle); // Start applying duty immediately
@@ -219,7 +217,9 @@ void buildCurrentModelStep() {
                               buildModelDutyCycle, currentMv, noiseFloorMv, d.charge_current_a);
 
                 if (currentMv > noiseFloorMv && d.charge_current_a > 0.001f) {
+                    WEB_LOCK();
                     MEASURABLE_CURRENT_THRESHOLD = d.charge_current_a;
+                    WEB_UNLOCK();
                     dutyCycles.push_back(0.0f);
                     currents.push_back(0.0f);
                     dutyCycles.push_back(static_cast<float>(buildModelDutyCycle));
@@ -272,13 +272,24 @@ void buildCurrentModelStep() {
                 AdvancedPolynomialFitter fitter;
                 std::vector<float> coeffs = fitter.fitPolynomialLebesgue(dutyCycles, currents, degree);
 
+#ifndef MOCK_TEST
+                if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
+                    currentModel.coefficients.resize(coeffs.size());
+                    for (size_t i = 0; i < coeffs.size(); ++i) {
+                        currentModel.coefficients(i) = coeffs[i];
+                    }
+                    if (degree >= 0) currentModel.coefficients(0) = 0.0;
+                    currentModel.isModelBuilt = true;
+                    xSemaphoreGive(webDataMutex);
+                }
+#else
                 currentModel.coefficients.resize(coeffs.size());
-                for (size_t i = 0; i < coeffs.size(); ++i) {
+                for (size_t i = 0; i < (size_t)coeffs.size(); ++i) {
                     currentModel.coefficients(i) = coeffs[i];
                 }
-
                 if (degree >= 0) currentModel.coefficients(0) = 0.0;
                 currentModel.isModelBuilt = true;
+#endif
                 applyDuty(0);
                 setAppState(APP_STATE_IDLE);
                 startCharging();
@@ -293,13 +304,30 @@ void buildCurrentModelStep() {
 }
 
 float estimateCurrent(int duty) {
-    if (!currentModel.isModelBuilt) return 0.0f;
-    const float x = static_cast<float>(duty);
-    double sum = 0.0;
-    for (int i = 0; i < currentModel.coefficients.size(); ++i) {
-        sum += currentModel.coefficients(i) * std::pow(x, i);
+    float result = 0.0f;
+#ifndef MOCK_TEST
+    if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
+        if (currentModel.isModelBuilt) {
+            const float x = static_cast<float>(duty);
+            double sum = 0.0;
+            for (int i = 0; i < currentModel.coefficients.size(); ++i) {
+                sum += currentModel.coefficients(i) * std::pow(x, i);
+            }
+            result = static_cast<float>(std::max(0.0, sum));
+        }
+        xSemaphoreGive(webDataMutex);
     }
-    return static_cast<float>(std::max(0.0, sum));
+#else
+    if (currentModel.isModelBuilt) {
+        const float x = static_cast<float>(duty);
+        double sum = 0.0;
+        for (int i = 0; i < currentModel.coefficients.size(); ++i) {
+            sum += currentModel.coefficients(i) * std::pow(x, i);
+        }
+        result = static_cast<float>(std::max(0.0, sum));
+    }
+#endif
+    return result;
 }
 
 int estimateDutyCycleForCurrent(float targetCurrent) {
@@ -334,7 +362,17 @@ void task_processAdcDma(void* parameter) {
 
 void task_updateSystemData(void* parameter) {
     while (true) {
-        systemData.update();
+        float est = -1.0f;
+#ifndef MOCK_TEST
+        if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
+            est = estimateCurrent(dutyCycle);
+            xSemaphoreGive(webDataMutex);
+        }
+#else
+        est = estimateCurrent(dutyCycle);
+#endif
+
+        systemData.update(est);
         SystemData d = systemData.getData();
 
 #ifndef MOCK_TEST

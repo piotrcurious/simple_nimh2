@@ -17,11 +17,6 @@
  *    - TEMPERATURE (Ambient): Updated every 100ms (10Hz) via SHT4x I2C task.
  */
 
-// External estimateCurrent for mAh calculation if below threshold
-extern float estimateCurrent(int duty);
-extern uint32_t dutyCycle;
-extern CurrentModel currentModel;
-
 SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPin, double therm1Offset)
     : _sht4(sht4), _therm1Pin(therm1Pin), _vccPin(vccPin), _therm1Offset(therm1Offset),
       _lastVoltageUpdateMs(0), _lastMahUpdateMs(0), _currentZeroOffsetMv(CURRENT_SHUNT_PIN_ZERO_OFFSET) {
@@ -48,7 +43,7 @@ void SystemDataManager::begin() {
     Serial.println("SystemDataManager: Initialized.");
 }
 
-void SystemDataManager::update() {
+void SystemDataManager::update(float estimatedCurrentA) {
     uint32_t now = millis();
 
     // 1. Get Ambient Temp from SHT4x (already being updated by its own task)
@@ -66,16 +61,14 @@ void SystemDataManager::update() {
         uint32_t delta_ms = now - _lastMahUpdateMs;
         if (delta_ms > 0) {
             double delta_h = (double)delta_ms / 3600000.0;
-            float current_ma = _currentData.charge_current_a * 1000.0f;
+            float currentA = _currentData.charge_current_a;
 
-            // Decide whether to use measurement or model based on the *intended* current
-            float estimated_current_a = estimateCurrent(dutyCycle);
-
-            if (currentModel.isModelBuilt && estimated_current_a < MEASURABLE_CURRENT_THRESHOLD) {
-                current_ma = estimated_current_a * 1000.0f;
+            // Use provided estimate if valid and below measurable threshold
+            if (estimatedCurrentA >= 0.0f && estimatedCurrentA < MEASURABLE_CURRENT_THRESHOLD) {
+                currentA = estimatedCurrentA;
             }
 
-            _currentData.mah_charged += current_ma * delta_h;
+            _currentData.mah_charged += (double)currentA * 1000.0 * delta_h;
             _lastMahUpdateMs = now;
         }
 

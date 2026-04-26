@@ -53,7 +53,6 @@ String getJsonState() {
     snprintf(buf, sizeof(buf), "\"max_dt\":%.2f,", MAX_DIFF_TEMP); json += buf;
     json += "\"phase\":" + String((int)buildModelPhase) + ",";
     snprintf(buf, sizeof(buf), "\"offset\":%.2f,", systemData.getCurrentZeroOffsetMv()); json += buf;
-    extern float noiseFloorMv;
     snprintf(buf, sizeof(buf), "\"noise\":%.2f", noiseFloorMv); json += buf;
     json += "}";
     WEB_UNLOCK();
@@ -200,7 +199,6 @@ static void cborAddXYPairs(CborWriter& w, float data[][2], int count) {
 }
 
 static void appendCborState(CborWriter& w) {
-    extern float noiseFloorMv;
     w.startMap(10);
     w.addText("app");    w.addInt((int64_t)currentAppState);
     w.addText("display");w.addInt((int64_t)currentDisplayState);
