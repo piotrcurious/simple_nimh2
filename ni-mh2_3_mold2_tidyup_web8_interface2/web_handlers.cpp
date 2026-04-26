@@ -14,95 +14,77 @@
 
 extern WebServer server;
 
+/**
+ * HELPER: Streams a float array as JSON directly to the client.
+ * This prevents creating a giant String in the heap.
+ */
+static void streamFloatArrayJSON(const char* name, float* arr, int len, bool isLast = false) {
+    server.sendContent("\"");
+    server.sendContent(name);
+    server.sendContent("\":[");
 
-static void appendFloatArray(String& json, const char* name, float* arr, int len) {
-    json += "\"";
-    json += name;
-    json += "\":[";
     char buf[16];
     for (int i = 0; i < len; i++) {
-        if (std::isnan(arr[i])) json += "null";
-        else {
+        if (std::isnan(arr[i])) {
+            server.sendContent("null");
+        } else {
             snprintf(buf, sizeof(buf), "%.2f", arr[i]);
-            json += buf;
+            server.sendContent(buf);
         }
-        if (i < len - 1) json += ",";
+        if (i < len - 1) server.sendContent(",");
     }
-    json += "]";
+
+    server.sendContent(isLast ? "]" : "],");
 }
 
 String getJsonState() {
+    char buf[256];
     WEB_LOCK();
-    String json;
-    json.reserve(160);
-    char buf[32];
-    json = "{";
-    json += "\"app\":" + String(currentAppState) + ",";
-    json += "\"display\":" + String(currentDisplayState) + ",";
-    json += "\"duty\":" + String(dutyCycle) + ",";
-    snprintf(buf, sizeof(buf), "\"v\":%.3f,", voltage_mv / 1000.0f); json += buf;
-    snprintf(buf, sizeof(buf), "\"i\":%.3f,", current_ma / 1000.0f); json += buf;
-    snprintf(buf, sizeof(buf), "\"mah\":%.3f,", (float)mAh_charged); json += buf;
-    snprintf(buf, sizeof(buf), "\"max_dt\":%.2f,", MAX_DIFF_TEMP); json += buf;
-    json += "\"phase\":" + String((int)buildModelPhase) + ",";
-    snprintf(buf, sizeof(buf), "\"offset\":%.2f,", systemData.getCurrentZeroOffsetMv()); json += buf;
-    snprintf(buf, sizeof(buf), "\"noise\":%.2f", noiseFloorMv); json += buf;
-    json += "}";
+    snprintf(buf, sizeof(buf),
+        "{\"app\":%d,\"display\":%d,\"duty\":%d,\"v\":%.3f,\"i\":%.3f,\"mah\":%.3f,\"max_dt\":%.2f,\"phase\":%d,\"offset\":%.2f,\"noise\":%.2f}",
+        currentAppState, currentDisplayState, (int)dutyCycle,
+        voltage_mv / 1000.0f, current_ma / 1000.0f, (float)mAh_charged,
+        MAX_DIFF_TEMP, (int)buildModelPhase, systemData.getCurrentZeroOffsetMv(), (float)noiseFloorMv);
     WEB_UNLOCK();
-    return json;
+    return String(buf);
 }
 
-String getJsonHistory() {
+static void streamJsonHistory() {
+    float t1[PLOT_WIDTH], t2[PLOT_WIDTH], td[PLOT_WIDTH], v[PLOT_WIDTH], i[PLOT_WIDTH];
     WEB_LOCK();
-    String json;
-    json.reserve(PLOT_WIDTH * 5 * 8);
-    json = "{";
-    appendFloatArray(json, "t1", temp1_values, PLOT_WIDTH); json += ",";
-    appendFloatArray(json, "t2", temp2_values, PLOT_WIDTH); json += ",";
-    appendFloatArray(json, "td", diff_values, PLOT_WIDTH); json += ",";
-    appendFloatArray(json, "v", voltage_values, PLOT_WIDTH); json += ",";
-    appendFloatArray(json, "i", current_values, PLOT_WIDTH);
-    json += "}";
+    memcpy(t1, temp1_values, sizeof(t1));
+    memcpy(t2, temp2_values, sizeof(t2));
+    memcpy(td, diff_values, sizeof(td));
+    memcpy(v, voltage_values, sizeof(v));
+    memcpy(i, current_values, sizeof(i));
     WEB_UNLOCK();
-    return json;
+
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "application/json", "{");
+    streamFloatArrayJSON("t1", t1, PLOT_WIDTH);
+    streamFloatArrayJSON("t2", t2, PLOT_WIDTH);
+    streamFloatArrayJSON("td", td, PLOT_WIDTH);
+    streamFloatArrayJSON("v", v, PLOT_WIDTH);
+    streamFloatArrayJSON("i", i, PLOT_WIDTH, true);
+    server.sendContent("}");
+    server.sendContent("");
 }
 
-String getJsonAmbient() {
+static void streamJsonAmbient() {
+    float t[PLOT_WIDTH], h[PLOT_WIDTH], d[PLOT_WIDTH];
     WEB_LOCK();
-    String json;
-    json.reserve(PLOT_WIDTH * 3 * 8);
-    json = "{";
-    appendFloatArray(json, "t", homeScreen.temp_history, PLOT_WIDTH); json += ",";
-    appendFloatArray(json, "h", homeScreen.humidity_history, PLOT_WIDTH); json += ",";
-    appendFloatArray(json, "d", homeScreen.dew_point_history, PLOT_WIDTH);
-    json += "}";
+    memcpy(t, homeScreen.temp_history, sizeof(t));
+    memcpy(h, homeScreen.humidity_history, sizeof(h));
+    memcpy(d, homeScreen.dew_point_history, sizeof(d));
     WEB_UNLOCK();
-    return json;
-}
 
-
-String getJsonIR() {
-    WEB_LOCK();
-    String json;
-    json.reserve(256 + (resistanceDataCount + resistanceDataCountPairs) * 20);
-    json = "{";
-    auto addIRData = [&](const char* name, float data[][2], int count) {
-        json += "\"";
-        json += name;
-        json += "\":[";
-        char buf[40];
-        for (int i = 0; i < count; i++) {
-            snprintf(buf, sizeof(buf), "[%.3f,%.3f]", data[i][0], data[i][1]);
-            json += buf;
-            if (i < count - 1) json += ",";
-        }
-        json += "]";
-    };
-    addIRData("lu", internalResistanceData, resistanceDataCount); json += ",";
-    addIRData("pairs", internalResistanceDataPairs, resistanceDataCountPairs);
-    json += "}";
-    WEB_UNLOCK();
-    return json;
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "application/json", "{");
+    streamFloatArrayJSON("t", t, PLOT_WIDTH);
+    streamFloatArrayJSON("h", h, PLOT_WIDTH);
+    streamFloatArrayJSON("d", d, PLOT_WIDTH, true);
+    server.sendContent("}");
+    server.sendContent("");
 }
 
 struct CborWriter {
@@ -202,7 +184,7 @@ static void appendCborState(CborWriter& w) {
     w.addText("max_dt"); w.addFloat(MAX_DIFF_TEMP);
     w.addText("phase");  w.addInt((int64_t)buildModelPhase);
     w.addText("offset"); w.addFloat(systemData.getCurrentZeroOffsetMv());
-    w.addText("noise");  w.addFloat(noiseFloorMv);
+    w.addText("noise");  w.addFloat((float)noiseFloorMv);
 }
 
 static void appendCborHistory(CborWriter& w) {
@@ -230,21 +212,13 @@ static void appendCborIR(CborWriter& w) {
 
 static void sendBinaryResponse(const char* contentType, const std::vector<uint8_t>& payload) {
 #ifndef MOCK_TEST
-    NetworkClient &client = server.client();
-
-    client.print(F("HTTP/1.1 200 OK\r\n"));
-    client.print(F("Cache-Control: no-store\r\n"));
-    client.print(F("Connection: close\r\n"));
-    client.print(F("Content-Type: "));
-    client.print(contentType);
-    client.print(F("\r\nContent-Length: "));
-    client.print((unsigned long)payload.size());
-    client.print(F("\r\n\r\n"));
-
+    server.sendHeader(F("Cache-Control"), F("no-store"));
+    server.sendHeader(F("Connection"), F("close"));
+    server.setContentLength(payload.size());
+    server.send(200, contentType, "");
     if (!payload.empty()) {
-        client.write(payload.data(), payload.size());
+        server.sendContent((const char*)payload.data(), payload.size());
     }
-    client.flush();
 #endif
 }
 
@@ -287,21 +261,16 @@ static void sendCborIR() {
 static void sendCborChargeLog() {
 #ifndef MOCK_TEST
     size_t total = 0;
+    float currentRParam = 0.0f;
     {
         WEB_LOCK();
         total = chargeLog.size();
+        currentRParam = regressedInternalResistancePairsIntercept;
         WEB_UNLOCK();
     }
 
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.send(200, "application/cbor", "");
-
-    float currentRParam = 0.0f;
-    {
-        WEB_LOCK();
-        currentRParam = regressedInternalResistancePairsIntercept;
-        WEB_UNLOCK();
-    }
 
     uint32_t lastTimestamp = 0;
     const size_t batchSize = 20;
@@ -324,8 +293,6 @@ static void sendCborChargeLog() {
         CborWriter w;
         w.reserve(batch.size() * 100);
 
-        // If it's the very first batch, we need to start the array.
-        // CBOR arrays can be indefinite length.
         if (i == 0) {
             w.put(0x9F); // Start indefinite length array
         }
@@ -393,7 +360,6 @@ static void streamJsonChargeLog() {
         WEB_UNLOCK();
     }
 
-    char buf[256];
     const size_t batchSize = 10;
     uint32_t lastTimestamp = 0;
     for (size_t i = 0; i < total; i += batchSize) {
@@ -414,6 +380,7 @@ static void streamJsonChargeLog() {
 
         String chunk = "";
         chunk.reserve(batch.size() * 160);
+        char buf[256];
         for (size_t j = 0; j < batch.size(); j++) {
             const auto& entry = batch[j];
             float td = entry.batteryTemperature - entry.ambientTemperature;
@@ -445,7 +412,6 @@ static void streamJsonChargeLog() {
 }
 
 void handleData() {
-    Serial.printf("WEB: handleData type=%s\n", server.arg("type").c_str());
     String type = server.arg("type");
     bool wantCbor = server.arg("fmt") == "cbor";
 
@@ -460,22 +426,55 @@ void handleData() {
     }
 
     if (type == "state") server.send(200, "application/json", getJsonState());
-    else if (type == "history") server.send(200, "application/json", getJsonHistory());
-    else if (type == "ambient") server.send(200, "application/json", getJsonAmbient());
+    else if (type == "history") streamJsonHistory();
+    else if (type == "ambient") streamJsonAmbient();
     else if (type == "chargelog") streamJsonChargeLog();
-    else if (type == "ir") server.send(200, "application/json", getJsonIR());
-    else {
-        String json = "{";
-        json += "\"state\":" + getJsonState() + ",";
-        json += "\"ambient\":" + getJsonAmbient();
+    else if (type == "ir") {
+        WEB_LOCK();
+        String json;
+        json.reserve(256 + (resistanceDataCount + resistanceDataCountPairs) * 20);
+        json = "{";
+        auto addIRData = [&](const char* name, float data[][2], int count) {
+            json += "\"";
+            json += name;
+            json += "\":[";
+            char buf[40];
+            for (int i = 0; i < count; i++) {
+                snprintf(buf, sizeof(buf), "[%.3f,%.3f]", data[i][0], data[i][1]);
+                json += buf;
+                if (i < count - 1) json += ",";
+            }
+            json += "]";
+        };
+        addIRData("lu", internalResistanceData, resistanceDataCount); json += ",";
+        addIRData("pairs", internalResistanceDataPairs, resistanceDataCountPairs);
         json += "}";
+        WEB_UNLOCK();
         server.send(200, "application/json", json);
+    }
+    else {
+        server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+        server.send(200, "application/json", "{\"state\":");
+        server.sendContent(getJsonState());
+        server.sendContent(",\"ambient\":");
+        float t[PLOT_WIDTH], h[PLOT_WIDTH], d[PLOT_WIDTH];
+        WEB_LOCK();
+        memcpy(t, homeScreen.temp_history, sizeof(t));
+        memcpy(h, homeScreen.humidity_history, sizeof(h));
+        memcpy(d, homeScreen.dew_point_history, sizeof(d));
+        WEB_UNLOCK();
+        server.sendContent("{");
+        streamFloatArrayJSON("t", t, PLOT_WIDTH);
+        streamFloatArrayJSON("h", h, PLOT_WIDTH);
+        streamFloatArrayJSON("d", d, PLOT_WIDTH, true);
+        server.sendContent("}}");
+        server.sendContent("");
     }
 }
 
 void handleRoot() {
-    Serial.println("WEB: handleRoot");
 #ifndef MOCK_TEST
+    server.sendHeader(F("Connection"), F("close"));
     server.send_P(200, "text/html", INDEX_HTML);
 #else
     server.send(200, "text/html", INDEX_HTML);
@@ -484,8 +483,6 @@ void handleRoot() {
 
 void handleCommand() {
     String cmd = server.arg("cmd");
-    Serial.printf("DEBUG: Web command received: %s\n", cmd.c_str());
-
     WEB_LOCK();
     if (cmd == "charge") {
         resetAh = true;
@@ -501,6 +498,5 @@ void handleCommand() {
         applyDuty(0);
     }
     WEB_UNLOCK();
-
     server.send(200, "text/plain", "OK");
 }
