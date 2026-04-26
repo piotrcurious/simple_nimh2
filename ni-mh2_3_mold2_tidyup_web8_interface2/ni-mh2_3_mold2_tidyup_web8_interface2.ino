@@ -86,7 +86,14 @@ void applyDuty(uint32_t duty) {
 }
 
 static inline void setAppState(AppState s) {
+#ifndef MOCK_TEST
+    if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
+        currentAppState = s;
+        xSemaphoreGive(webDataMutex);
+    }
+#else
     currentAppState = s;
+#endif
 }
 
 // --- PWM setup ---
@@ -163,8 +170,16 @@ void buildCurrentModelStep() {
                 if (calibrationCount >= 20) {
                     float avgOffset = calibrationSum / calibrationCount;
                     systemData.setCurrentZeroOffsetMv(avgOffset);
+#ifndef MOCK_TEST
+                    if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
+                        noiseFloorMv = (calibrationMax - avgOffset) * 2.0f;
+                        if (noiseFloorMv < 2.5f) noiseFloorMv = 2.5f;
+                        xSemaphoreGive(webDataMutex);
+                    }
+#else
                     noiseFloorMv = (calibrationMax - avgOffset) * 2.0f;
                     if (noiseFloorMv < 2.5f) noiseFloorMv = 2.5f;
+#endif
                     Serial.printf("Auto-calibration complete. Offset: %.2f mV, NoiseFloor: %.2f mV\n", avgOffset, noiseFloorMv);
                     buildModelDutyCycle = 1;
                     applyDuty(buildModelDutyCycle); // Start applying duty immediately
@@ -308,15 +323,15 @@ void task_processAdcDma(void* parameter) {
 
 void task_updateSystemData(void* parameter) {
     while (true) {
-        if (resetAh) {
-            systemData.resetMah();
-            resetAh = false;
-        }
         systemData.update();
         SystemData d = systemData.getData();
 
 #ifndef MOCK_TEST
         if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
+            if (resetAh) {
+                systemData.resetMah();
+                resetAh = false;
+            }
             voltage_mv = d.battery_voltage_v * 1000.0f;
             current_ma = d.charge_current_a * 1000.0f;
             mAh_charged = d.mah_charged;

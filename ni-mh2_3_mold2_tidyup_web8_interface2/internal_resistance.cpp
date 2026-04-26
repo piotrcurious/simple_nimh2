@@ -73,8 +73,10 @@ void getSingleMeasurement(int dc, IRState nextState) {
 
 // Reset all state variables for new measurement
 void resetMeasurementState() {
+    WEB_LOCK();
     resistanceDataCount = 0;
     resistanceDataCountPairs = 0;
+    WEB_UNLOCK();
 
     voltagesLoaded.clear();
     voltagesLoaded.reserve(MAX_RESISTANCE_POINTS);

@@ -489,6 +489,7 @@ void handleCommand() {
     String cmd = server.arg("cmd");
     Serial.printf("DEBUG: Web command received: %s\n", cmd.c_str());
 
+    WEB_LOCK();
     if (cmd == "charge") {
         resetAh = true;
         buildModelPhase = BuildModelPhase::Idle;
@@ -503,6 +504,7 @@ void handleCommand() {
         currentAppState = APP_STATE_IDLE;
         applyDuty(0);
     }
+    WEB_UNLOCK();
 
     server.send(200, "text/plain", "OK");
 }
