@@ -19,8 +19,11 @@ typedef uint32_t TickType_t;
 #define xTaskCreatePinnedToCore(a,b,c,d,e,f,g)
 inline void vTaskDelay(uint32_t t) {}
 inline SemaphoreHandle_t xSemaphoreCreateMutex() { return (SemaphoreHandle_t)1; }
+inline SemaphoreHandle_t xSemaphoreCreateRecursiveMutex() { return (SemaphoreHandle_t)1; }
 #define xSemaphoreTake(s,t) (true)
 #define xSemaphoreGive(s)
+#define xSemaphoreTakeRecursive(s,t) (true)
+#define xSemaphoreGiveRecursive(s)
 #define pdTRUE true
 #define portMAX_DELAY 0xFFFFFFFF
 

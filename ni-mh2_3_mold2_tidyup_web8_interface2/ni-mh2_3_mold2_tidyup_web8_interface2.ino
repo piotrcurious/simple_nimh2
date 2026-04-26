@@ -65,11 +65,6 @@ WebServer server(80);
 
 #ifndef MOCK_TEST
 SemaphoreHandle_t webDataMutex = NULL;
-#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
-#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
-#else
-#define WEB_LOCK()
-#define WEB_UNLOCK()
 #endif
 
 // --- Build model state ---
@@ -91,25 +86,15 @@ void applyDuty(uint32_t duty) {
 }
 
 void setAppState(AppState s) {
-#ifndef MOCK_TEST
-    if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
-        currentAppState = s;
-        xSemaphoreGive(webDataMutex);
-    }
-#else
+    WEB_LOCK();
     currentAppState = s;
-#endif
+    WEB_UNLOCK();
 }
 
 void setBuildModelPhase(BuildModelPhase p) {
-#ifndef MOCK_TEST
-    if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
-        buildModelPhase = p;
-        xSemaphoreGive(webDataMutex);
-    }
-#else
+    WEB_LOCK();
     buildModelPhase = p;
-#endif
+    WEB_UNLOCK();
 }
 
 // --- PWM setup ---
@@ -189,7 +174,7 @@ void buildCurrentModelStep() {
                     if (noiseFloorMv < 2.5f) noiseFloorMv = 2.5f;
                     WEB_UNLOCK();
 
-                    Serial.printf("Auto-calibration complete. Offset: %.2f mV, NoiseFloor: %.2f mV\n", avgOffset, noiseFloorMv);
+                    Serial.printf("Auto-calibration complete. Offset: %.2f mV, NoiseFloor: %.2f mV\n", avgOffset, (float)noiseFloorMv);
                     buildModelDutyCycle = 1;
                     applyDuty(buildModelDutyCycle); // Start applying duty immediately
                     buildModelLastStepTime = now;
@@ -200,7 +185,9 @@ void buildCurrentModelStep() {
                 if (now - buildModelLastStepTime > 10000) { // Increased timeout
                     Serial.printf("Auto-calibration TIMEOUT (Samples: %d) - fallback to default.\n", calibrationCount);
                     systemData.setCurrentZeroOffsetMv(CURRENT_SHUNT_PIN_ZERO_OFFSET);
+                    WEB_LOCK();
                     noiseFloorMv = 5.0f;
+                    WEB_UNLOCK();
                     buildModelDutyCycle = 1;
                     applyDuty(buildModelDutyCycle);
                     buildModelLastStepTime = now;
@@ -214,7 +201,7 @@ void buildCurrentModelStep() {
                 float currentMv = d.current_mv - systemData.getCurrentZeroOffsetMv();
 
                 Serial.printf("  Detect: Duty %d, currentMv-Offset: %.2f mV (NoiseFloor: %.2f mV), I: %.4f A\n",
-                              buildModelDutyCycle, currentMv, noiseFloorMv, d.charge_current_a);
+                              buildModelDutyCycle, currentMv, (float)noiseFloorMv, d.charge_current_a);
 
                 if (currentMv > noiseFloorMv && d.charge_current_a > 0.001f) {
                     WEB_LOCK();
@@ -225,7 +212,7 @@ void buildCurrentModelStep() {
                     dutyCycles.push_back(static_cast<float>(buildModelDutyCycle));
                     currents.push_back(d.charge_current_a);
 
-                    Serial.printf("Dead region ends at Duty: %d, Threshold: %.3f A\n", buildModelDutyCycle, MEASURABLE_CURRENT_THRESHOLD);
+                    Serial.printf("Dead region ends at Duty: %d, Threshold: %.3f A\n", buildModelDutyCycle, (float)MEASURABLE_CURRENT_THRESHOLD);
                     buildModelDutyCycle += 5;
                     buildModelLastStepTime = now; // Reset timer for SetDuty
                     setBuildModelPhase(BuildModelPhase::SetDuty);
@@ -272,29 +259,23 @@ void buildCurrentModelStep() {
                 AdvancedPolynomialFitter fitter;
                 std::vector<float> coeffs = fitter.fitPolynomialLebesgue(dutyCycles, currents, degree);
 
-#ifndef MOCK_TEST
-                if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
-                    currentModel.coefficients.resize(coeffs.size());
-                    for (size_t i = 0; i < coeffs.size(); ++i) {
-                        currentModel.coefficients(i) = coeffs[i];
-                    }
-                    if (degree >= 0) currentModel.coefficients(0) = 0.0;
-                    currentModel.isModelBuilt = true;
-                    xSemaphoreGive(webDataMutex);
-                }
-#else
+                WEB_LOCK();
                 currentModel.coefficients.resize(coeffs.size());
-                for (size_t i = 0; i < (size_t)coeffs.size(); ++i) {
+                for (size_t i = 0; i < coeffs.size(); ++i) {
                     currentModel.coefficients(i) = coeffs[i];
                 }
+
                 if (degree >= 0) currentModel.coefficients(0) = 0.0;
                 currentModel.isModelBuilt = true;
-#endif
+                WEB_UNLOCK();
+
                 applyDuty(0);
                 setAppState(APP_STATE_IDLE);
                 startCharging();
             } else {
+                WEB_LOCK();
                 currentModel.isModelBuilt = false;
+                WEB_UNLOCK();
                 applyDuty(0);
                 setAppState(APP_STATE_IDLE);
             }
@@ -305,19 +286,7 @@ void buildCurrentModelStep() {
 
 float estimateCurrent(int duty) {
     float result = 0.0f;
-#ifndef MOCK_TEST
-    if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
-        if (currentModel.isModelBuilt) {
-            const float x = static_cast<float>(duty);
-            double sum = 0.0;
-            for (int i = 0; i < currentModel.coefficients.size(); ++i) {
-                sum += currentModel.coefficients(i) * std::pow(x, i);
-            }
-            result = static_cast<float>(std::max(0.0, sum));
-        }
-        xSemaphoreGive(webDataMutex);
-    }
-#else
+    WEB_LOCK();
     if (currentModel.isModelBuilt) {
         const float x = static_cast<float>(duty);
         double sum = 0.0;
@@ -326,7 +295,7 @@ float estimateCurrent(int duty) {
         }
         result = static_cast<float>(std::max(0.0, sum));
     }
-#endif
+    WEB_UNLOCK();
     return result;
 }
 
@@ -362,50 +331,39 @@ void task_processAdcDma(void* parameter) {
 
 void task_updateSystemData(void* parameter) {
     while (true) {
-        float est = -1.0f;
-#ifndef MOCK_TEST
-        if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
-            est = estimateCurrent(dutyCycle);
-            xSemaphoreGive(webDataMutex);
-        }
-#else
-        est = estimateCurrent(dutyCycle);
-#endif
-
+        float est = estimateCurrent(dutyCycle);
         systemData.update(est);
         SystemData d = systemData.getData();
 
-#ifndef MOCK_TEST
-        if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
-            if (resetAh) {
-                systemData.resetMah();
-                resetAh = false;
-            }
-            voltage_mv = d.battery_voltage_v * 1000.0f;
-            current_ma = d.charge_current_a * 1000.0f;
-            mAh_charged = d.mah_charged;
-            xSemaphoreGive(webDataMutex);
+        WEB_LOCK();
+        if (resetAh) {
+            systemData.resetMah();
+            resetAh = false;
         }
-#else
         voltage_mv = d.battery_voltage_v * 1000.0f;
         current_ma = d.charge_current_a * 1000.0f;
         mAh_charged = d.mah_charged;
-#endif
+        WEB_UNLOCK();
 
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
 void task_webServer(void* parameter) {
+    Serial.println("WebServer task started.");
     while (true) {
         server.handleClient();
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 
 // --- Initialization ---
 void setup() {
     Serial.begin(115200);
+
+#ifndef MOCK_TEST
+    webDataMutex = xSemaphoreCreateRecursiveMutex();
+#endif
 
     WiFi.softAP("NiMH-WebCharger", "password123");
     Serial.print("Web Interface at: http://");
@@ -415,10 +373,6 @@ void setup() {
     server.on("/data", handleData);
     server.on("/command", handleCommand);
     server.begin();
-
-#ifndef MOCK_TEST
-    webDataMutex = xSemaphoreCreateMutex();
-#endif
 
     for (int i = 0; i < PLOT_WIDTH; ++i) {
         temp1_values[i] = 25.0f;
@@ -436,7 +390,7 @@ void setup() {
     xTaskCreatePinnedToCore(task_readSHT4x, "SHT4", 4096, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(task_processAdcDma, "ADC_DMA", 4096, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(task_updateSystemData, "SYS_DATA", 4096, NULL, 1, NULL, 1);
-    xTaskCreatePinnedToCore(task_webServer, "WebServer", 8192, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(task_webServer, "WebServer", 16384, NULL, 1, NULL, 1);
 
     setupPWM();
     Serial.println("System Ready.");

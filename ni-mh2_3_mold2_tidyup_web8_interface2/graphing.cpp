@@ -2,13 +2,6 @@
 #include "definitions.h"
 #include <cfloat>
 
-#ifndef MOCK_TEST
-#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
-#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
-#else
-#define WEB_LOCK()
-#define WEB_UNLOCK()
-#endif
 
 float temp1_values[PLOT_WIDTH];
 float temp2_values[PLOT_WIDTH];

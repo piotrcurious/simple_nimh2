@@ -14,13 +14,6 @@
 
 extern WebServer server;
 
-#ifndef MOCK_TEST
-#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
-#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
-#else
-#define WEB_LOCK()
-#define WEB_UNLOCK()
-#endif
 
 static void appendFloatArray(String& json, const char* name, float* arr, int len) {
     json += "\"";
@@ -364,11 +357,11 @@ static void sendCborChargeLog() {
             w.addText("th");   w.addFloat(thresholdValue);
         }
 
-        server.sendContent((const char*)w.data.data(), w.data.size());
+        server.client().write(w.data.data(), w.data.size());
     }
 
     uint8_t stopByte = 0xFF; // Break for indefinite length array
-    server.sendContent((const char*)&stopByte, 1);
+    server.client().write(&stopByte, 1);
     server.sendContent(""); // Finish chunked encoding
 #endif
 }
@@ -452,6 +445,7 @@ static void streamJsonChargeLog() {
 }
 
 void handleData() {
+    Serial.printf("WEB: handleData type=%s\n", server.arg("type").c_str());
     String type = server.arg("type");
     bool wantCbor = server.arg("fmt") == "cbor";
 
@@ -480,7 +474,12 @@ void handleData() {
 }
 
 void handleRoot() {
+    Serial.println("WEB: handleRoot");
+#ifndef MOCK_TEST
+    server.send_P(200, "text/html", INDEX_HTML);
+#else
     server.send(200, "text/html", INDEX_HTML);
+#endif
 }
 
 void handleCommand() {

@@ -5,13 +5,6 @@
 #include <cstring>
 #include <stdint.h>
 
-#ifndef MOCK_TEST
-#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
-#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
-#else
-#define WEB_LOCK()
-#define WEB_UNLOCK()
-#endif
 
 HomeScreen::HomeScreen()
     : lastRenderMs(0), lastGatherMs(0)

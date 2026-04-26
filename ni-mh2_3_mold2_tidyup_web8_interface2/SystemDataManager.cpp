@@ -34,7 +34,7 @@ SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPi
 
 void SystemDataManager::begin() {
     if (_dataMutex == nullptr) {
-        _dataMutex = xSemaphoreCreateMutex();
+        _dataMutex = xSemaphoreCreateRecursiveMutex();
         if (_dataMutex == nullptr) {
             Serial.println("SystemDataManager: FAILED to create mutex!");
         }
@@ -53,7 +53,7 @@ void SystemDataManager::update(float estimatedCurrentA) {
     processAdcSnapshots();
 
     // 3. Perform inter-related calculations
-    if (xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+    if (xSemaphoreTakeRecursive(_dataMutex, portMAX_DELAY) == pdTRUE) {
         _currentData.ambient_temp_c = ambientTemp;
         _currentData.temp_diff_c = _currentData.battery_temp_c - _currentData.ambient_temp_c;
 
@@ -73,7 +73,7 @@ void SystemDataManager::update(float estimatedCurrentA) {
         }
 
         _currentData.last_update_ms = now;
-        xSemaphoreGive(_dataMutex);
+        xSemaphoreGiveRecursive(_dataMutex);
     }
 }
 
@@ -94,12 +94,12 @@ void SystemDataManager::processAdcSnapshots() {
         float shuntMv = mv - _currentZeroOffsetMv;
         float currentA = (shuntMv / (float)CURRENT_SHUNT_RESISTANCE) / 1000.0f;
 
-        if (xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        if (xSemaphoreTakeRecursive(_dataMutex, portMAX_DELAY) == pdTRUE) {
             // Remove the clamp to allow noise to average out to zero
             _currentData.charge_current_a = currentA;
             _currentData.current_mv = mv;
             _currentData.current_sample_count++;
-            xSemaphoreGive(_dataMutex);
+            xSemaphoreGiveRecursive(_dataMutex);
         }
         _lastSnapshots[ADC_IDX_CURRENT] = currentSnap;
     }
@@ -108,9 +108,9 @@ void SystemDataManager::processAdcSnapshots() {
     if (vccSnap.count != _lastSnapshots[ADC_IDX_THERM_VCC].count) {
         uint32_t avgRawVcc = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_THERM_VCC], vccSnap);
         float vccMv = snapshotToMillivolts(ADC_IDX_THERM_VCC, avgRawVcc);
-        if (xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        if (xSemaphoreTakeRecursive(_dataMutex, portMAX_DELAY) == pdTRUE) {
             _currentData.vcc_mv = vccMv;
-            xSemaphoreGive(_dataMutex);
+            xSemaphoreGiveRecursive(_dataMutex);
         }
         _lastSnapshots[ADC_IDX_THERM_VCC] = vccSnap;
     }
@@ -121,10 +121,10 @@ void SystemDataManager::processAdcSnapshots() {
         float therm1Mv = snapshotToMillivolts(ADC_IDX_THERM1, avgRawTherm1);
         double battTemp = calculateBatteryTemp(_currentData.ambient_temp_c, therm1Mv, _currentData.vcc_mv);
 
-        if (xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+        if (xSemaphoreTakeRecursive(_dataMutex, portMAX_DELAY) == pdTRUE) {
             // Apply slight smoothing as in original code
             _currentData.battery_temp_c = 0.9 * _currentData.battery_temp_c + 0.1 * battTemp;
-            xSemaphoreGive(_dataMutex);
+            xSemaphoreGiveRecursive(_dataMutex);
         }
         _lastSnapshots[ADC_IDX_THERM1] = therm1Snap;
     }
@@ -136,9 +136,9 @@ void SystemDataManager::processAdcSnapshots() {
             float sampledMv = snapshotToMillivolts(ADC_IDX_VOLTAGE, avgRawVoltage);
             float batteryV = ((_currentData.vcc_mv * (float)MAIN_VCC_RATIO) - sampledMv) / 1000.0f;
 
-            if (xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+            if (xSemaphoreTakeRecursive(_dataMutex, portMAX_DELAY) == pdTRUE) {
                 _currentData.battery_voltage_v = batteryV;
-                xSemaphoreGive(_dataMutex);
+                xSemaphoreGiveRecursive(_dataMutex);
             }
             _lastSnapshots[ADC_IDX_VOLTAGE] = voltageSnap;
             _lastVoltageUpdateMs = now;
@@ -163,9 +163,9 @@ double SystemDataManager::calculateBatteryTemp(double ambientTemp, float therm1M
 
 SystemData SystemDataManager::getData() {
     SystemData d;
-    if (_dataMutex && xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    if (_dataMutex && xSemaphoreTakeRecursive(_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         d = _currentData;
-        xSemaphoreGive(_dataMutex);
+        xSemaphoreGiveRecursive(_dataMutex);
     } else {
         // Fallback or debug logging
         memset(&d, 0, sizeof(d));
@@ -175,24 +175,24 @@ SystemData SystemDataManager::getData() {
 }
 
 void SystemDataManager::resetMah() {
-    if (xSemaphoreTake(_dataMutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTakeRecursive(_dataMutex, portMAX_DELAY) == pdTRUE) {
         _currentData.mah_charged = 0;
-        xSemaphoreGive(_dataMutex);
+        xSemaphoreGiveRecursive(_dataMutex);
     }
 }
 
 void SystemDataManager::setCurrentZeroOffsetMv(float mv) {
-    if (xSemaphoreTake(_dataMutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTakeRecursive(_dataMutex, portMAX_DELAY) == pdTRUE) {
         _currentZeroOffsetMv = mv;
-        xSemaphoreGive(_dataMutex);
+        xSemaphoreGiveRecursive(_dataMutex);
     }
 }
 
 float SystemDataManager::getCurrentZeroOffsetMv() {
     float mv = 0;
-    if (xSemaphoreTake(_dataMutex, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTakeRecursive(_dataMutex, portMAX_DELAY) == pdTRUE) {
         mv = _currentZeroOffsetMv;
-        xSemaphoreGive(_dataMutex);
+        xSemaphoreGiveRecursive(_dataMutex);
     }
     return mv;
 }
