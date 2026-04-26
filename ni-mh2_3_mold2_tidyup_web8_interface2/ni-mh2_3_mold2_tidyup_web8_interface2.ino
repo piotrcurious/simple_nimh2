@@ -314,9 +314,20 @@ void task_updateSystemData(void* parameter) {
         }
         systemData.update();
         SystemData d = systemData.getData();
+
+#ifndef MOCK_TEST
+        if (webDataMutex && xSemaphoreTake(webDataMutex, portMAX_DELAY) == pdTRUE) {
+            voltage_mv = d.battery_voltage_v * 1000.0f;
+            current_ma = d.charge_current_a * 1000.0f;
+            mAh_charged = d.mah_charged;
+            xSemaphoreGive(webDataMutex);
+        }
+#else
         voltage_mv = d.battery_voltage_v * 1000.0f;
         current_ma = d.charge_current_a * 1000.0f;
         mAh_charged = d.mah_charged;
+#endif
+
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }

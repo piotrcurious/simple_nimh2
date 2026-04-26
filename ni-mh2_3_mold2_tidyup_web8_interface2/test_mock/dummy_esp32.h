@@ -122,6 +122,7 @@ struct WebServer {
     void handleClient() {}
     void setContentLength(int len) {}
     void sendContent(const String& content) { lastResponseContent += content; }
+    void sendContent(const char* data, size_t size) { lastResponseContent.append(data, size); }
 };
 
 inline void pinMode(int pin, int mode) {}

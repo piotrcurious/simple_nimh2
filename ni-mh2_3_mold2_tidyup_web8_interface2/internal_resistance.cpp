@@ -397,12 +397,17 @@ void bubbleSort(float data[][2], int n) {
 }
 
 void storeResistanceData(float current, float resistance, float dataArray[MAX_RESISTANCE_POINTS][2], int& count) {
-    if (count >= MAX_RESISTANCE_POINTS) return;
+    WEB_LOCK();
+    if (count >= MAX_RESISTANCE_POINTS) {
+        WEB_UNLOCK();
+        return;
+    }
     if (resistance > MIN_VALID_RESISTANCE && resistance < 1000.0f) {
         dataArray[count][0] = current;
         dataArray[count][1] = resistance;
         count++;
     }
+    WEB_UNLOCK();
 }
 
 int findClosestIndex(float data[][2], int count, float targetCurrent) {

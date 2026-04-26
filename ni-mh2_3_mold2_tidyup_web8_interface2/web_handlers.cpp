@@ -305,6 +305,13 @@ static void sendCborChargeLog() {
     server.setContentLength(CONTENT_LENGTH_UNKNOWN);
     server.send(200, "application/cbor", "");
 
+    float currentRParam = 0.0f;
+    {
+        WEB_LOCK();
+        currentRParam = regressedInternalResistancePairsIntercept;
+        WEB_UNLOCK();
+    }
+
     uint32_t lastTimestamp = 0;
     const size_t batchSize = 20;
     for (size_t i = 0; i < total; i += batchSize) {
@@ -339,7 +346,7 @@ static void sendCborChargeLog() {
             uint32_t prevTs = (i == 0 && j == 0) ? entry.timestamp : lastTimestamp;
             float estimatedDiff = estimateTempDiff(
                 entry.voltage, entry.voltage, entry.current,
-                regressedInternalResistancePairsIntercept, entry.ambientTemperature,
+                currentRParam, entry.ambientTemperature,
                 entry.timestamp, prevTs, entry.batteryTemperature,
                 &localEnergy
             );
@@ -359,11 +366,11 @@ static void sendCborChargeLog() {
             w.addText("th");   w.addFloat(thresholdValue);
         }
 
-        server.client().write(w.data.data(), w.data.size());
+        server.sendContent((const char*)w.data.data(), w.data.size());
     }
 
     uint8_t stopByte = 0xFF; // Break for indefinite length array
-    server.client().write(&stopByte, 1);
+    server.sendContent((const char*)&stopByte, 1);
     server.sendContent(""); // Finish chunked encoding
 #endif
 }
@@ -387,9 +394,11 @@ static void streamJsonChargeLog() {
     server.sendContent("[");
 
     size_t total = 0;
+    float currentRParam = 0.0f;
     {
         WEB_LOCK();
         total = chargeLog.size();
+        currentRParam = regressedInternalResistancePairsIntercept;
         WEB_UNLOCK();
     }
 
@@ -421,7 +430,7 @@ static void streamJsonChargeLog() {
             uint32_t prevTs = (i == 0 && j == 0) ? entry.timestamp : lastTimestamp;
             float estimatedDiff = estimateTempDiff(
                 entry.voltage, entry.voltage, entry.current,
-                regressedInternalResistancePairsIntercept, entry.ambientTemperature,
+                currentRParam, entry.ambientTemperature,
                 entry.timestamp, prevTs, entry.batteryTemperature,
                 &localEnergy
             );
