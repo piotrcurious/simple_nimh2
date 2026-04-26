@@ -48,77 +48,32 @@ int estimateDutyCycleForCurrent(float target);
 
 // Physics Simulation
 struct BatterySim {
-    float voltage = 1.15f;
-    float unloaded_voltage = 1.25f;
-    float temp = 22.0f;
-    float ambient = 22.0f;
-    float soc = 0.05f;
-    float internal_resistance = 0.15f;
-    float capacity_ah = 2.0f;
-    float noise_mv = 0.0f;
-
-    // Non-linear duty-to-current mapping
     float getCurrent(int duty) {
         if (duty < 20) return 0.0f;
         float normalized = (float)(duty - 20) / 235.0f;
         return 2.5f * (normalized * normalized);
     }
-
-    void update(float dt_s, int duty) {
-        float current = getCurrent(duty);
-        soc += (current * dt_s) / (capacity_ah * 3600.0f);
-        float base_v = 1.2f + 0.15f * std::pow(soc, 0.5f);
-        unloaded_voltage = base_v;
-        voltage = base_v + current * internal_resistance;
-    }
 };
 BatterySim sim;
 
 // Global variables from .ino
-volatile float voltage_mv = 1000.0f;
-volatile float current_ma = 0.0f;
-float MEASURABLE_CURRENT_THRESHOLD = 0.005f;
-volatile double mAh_charged = 0.0;
-volatile bool resetAh = false;
-volatile uint32_t mAh_last_time = 0;
+float MEASURABLE_CURRENT_THRESHOLD = 0.010f; // 10mA
 uint32_t dutyCycle = 0;
-bool isCharging = false;
-volatile AppState currentAppState = APP_STATE_IDLE;
-DisplayState currentDisplayState = DISPLAY_STATE_IDLE;
-unsigned long lastPlotUpdateTime = 0;
-unsigned long lastChargingHouseTime = 0;
-const int pwmPin = 19;
-double THERMISTOR_1_OFFSET = 0.0;
 
 void applyDuty(uint32_t duty) { dutyCycle = duty; }
 
-void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current) {
-    SystemData d = systemData.getData();
-    temp1 = d.ambient_temp_c;
-    temp2 = d.battery_temp_c;
-    tempDiff = d.temp_diff_c;
-    t1_millivolts = 0;
-    voltage = d.battery_voltage_v;
-    current = d.charge_current_a;
-    voltage_mv = voltage * 1000.0f;
-    current_ma = current * 1000.0f;
-}
-
 // ADC DMA Stubs for SystemDataManager.cpp
 static uint32_t mock_sample_count = 0;
+static uint64_t mock_current_sum = 0;
+
 void getAdcSnapshot(AdcChannelIndex idx, AdcSnapshot &snapshot) {
-    snapshot.count = mock_sample_count;
-    float val_mv = 0;
     if (idx == ADC_IDX_CURRENT) {
-        val_mv = sim.getCurrent((int)dutyCycle) * CURRENT_SHUNT_RESISTANCE * 1000.0f + systemData.getCurrentZeroOffsetMv() + sim.noise_mv;
-    } else if (idx == ADC_IDX_VOLTAGE) {
-        val_mv = (dutyCycle == 0 ? sim.unloaded_voltage : sim.voltage) * 1000.0f;
-    } else if (idx == ADC_IDX_THERM1) {
-        val_mv = 1500.0f;
-    } else if (idx == ADC_IDX_THERM_VCC) {
-        val_mv = 3300.0f;
+        snapshot.count = mock_sample_count;
+        snapshot.sum = mock_current_sum;
+    } else {
+        snapshot.count = mock_sample_count;
+        snapshot.sum = (uint64_t)1200 * snapshot.count;
     }
-    snapshot.sum = (uint64_t)val_mv * snapshot.count;
 }
 uint32_t calculateSnapshotAverage(const AdcSnapshot &old_s, const AdcSnapshot &new_s) {
     uint32_t d_count = new_s.count - old_s.count;
@@ -133,7 +88,7 @@ void processAdcDma() {}
 
 SHT4xSensor::SHT4xSensor() : _temperature(0), _humidity(0) {}
 bool SHT4xSensor::begin() { return true; }
-void SHT4xSensor::read() { _temperature = sim.temp; _humidity = 50.0f; }
+void SHT4xSensor::read() { _temperature = 25.0f; _humidity = 50.0f; }
 
 SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPin, double therm1Offset)
     : _sht4(sht4), _therm1Pin(therm1Pin), _vccPin(vccPin), _therm1Offset(therm1Offset), _currentZeroOffsetMv(75.0f) {
@@ -141,49 +96,60 @@ SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPi
 }
 void SystemDataManager::begin() {}
 
-// We will use the implementation from the actual file via include if possible,
-// but here we are mocking SystemDataManager so we have to replicate the logic we want to test.
-void SystemDataManager::update() {
-    static uint32_t last_m = 0;
+void SystemDataManager_buggy_update(SystemDataManager* self, uint32_t& last_m) {
     uint32_t now = mock_millis;
-    if (last_m == 0) last_m = now;
-    processAdcSnapshots();
+
+    AdcSnapshot currentSnap;
+    getAdcSnapshot(ADC_IDX_CURRENT, currentSnap);
+    uint32_t avgRawCurrent = calculateSnapshotAverage(self->_lastSnapshots[ADC_IDX_CURRENT], currentSnap);
+    self->_lastSnapshots[ADC_IDX_CURRENT] = currentSnap;
+    self->_currentData.current_mv = snapshotToMillivolts(ADC_IDX_CURRENT, avgRawCurrent);
+    float currentA = (self->_currentData.current_mv - self->_currentZeroOffsetMv) / (CURRENT_SHUNT_RESISTANCE * 1000.0f);
+    self->_currentData.charge_current_a = std::max(0.0f, currentA); // BUG: clamping
 
     uint32_t delta_ms = now - last_m;
     if (delta_ms > 0) {
         double delta_h = (double)delta_ms / 3600000.0;
-        float current_ma = _currentData.charge_current_a * 1000.0f;
+        float current_ma = self->_currentData.charge_current_a * 1000.0f;
+
+        if (currentModel.isModelBuilt && self->_currentData.charge_current_a < MEASURABLE_CURRENT_THRESHOLD) {
+            current_ma = estimateCurrent(dutyCycle) * 1000.0f;
+        }
+
+        self->_currentData.mah_charged += (double)current_ma * delta_h;
+        last_m = now;
+    }
+}
+
+void SystemDataManager_fixed_update(SystemDataManager* self, uint32_t& last_m) {
+    uint32_t now = mock_millis;
+
+    AdcSnapshot currentSnap;
+    getAdcSnapshot(ADC_IDX_CURRENT, currentSnap);
+    uint32_t avgRawCurrent = calculateSnapshotAverage(self->_lastSnapshots[ADC_IDX_CURRENT], currentSnap);
+    self->_lastSnapshots[ADC_IDX_CURRENT] = currentSnap;
+    self->_currentData.current_mv = snapshotToMillivolts(ADC_IDX_CURRENT, avgRawCurrent);
+    float currentA = (self->_currentData.current_mv - self->_currentZeroOffsetMv) / (CURRENT_SHUNT_RESISTANCE * 1000.0f);
+    self->_currentData.charge_current_a = currentA; // FIXED: no clamping
+
+    uint32_t delta_ms = now - last_m;
+    if (delta_ms > 0) {
+        double delta_h = (double)delta_ms / 3600000.0;
+        float current_ma = self->_currentData.charge_current_a * 1000.0f;
 
         float estimated_current_a = estimateCurrent(dutyCycle);
         if (currentModel.isModelBuilt && estimated_current_a < MEASURABLE_CURRENT_THRESHOLD) {
             current_ma = estimated_current_a * 1000.0f;
         }
 
-        _currentData.mah_charged += current_ma * delta_h;
+        self->_currentData.mah_charged += (double)current_ma * delta_h;
         last_m = now;
     }
 }
 
-void SystemDataManager::processAdcSnapshots() {
-    AdcSnapshot currentSnap;
-    getAdcSnapshot(ADC_IDX_CURRENT, currentSnap);
-    uint32_t avgRawCurrent = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_CURRENT], currentSnap);
-    _lastSnapshots[ADC_IDX_CURRENT] = currentSnap;
-    _currentData.current_mv = snapshotToMillivolts(ADC_IDX_CURRENT, avgRawCurrent);
-
-    float currentA = (_currentData.current_mv - _currentZeroOffsetMv) / (CURRENT_SHUNT_RESISTANCE * 1000.0f);
-    _currentData.charge_current_a = currentA; // Removed clamp
-    _currentData.current_sample_count = currentSnap.count;
-
-    getAdcSnapshot(ADC_IDX_VOLTAGE, currentSnap);
-    uint32_t avgRawVoltage = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_VOLTAGE], currentSnap);
-    _lastSnapshots[ADC_IDX_VOLTAGE] = currentSnap;
-    _currentData.battery_voltage_v = snapshotToMillivolts(ADC_IDX_VOLTAGE, avgRawVoltage) / 1000.0f;
-}
 SystemData SystemDataManager::getData() { return _currentData; }
 void SystemDataManager::resetMah() { _currentData.mah_charged = 0; }
 void SystemDataManager::setCurrentZeroOffsetMv(float mv) { _currentZeroOffsetMv = mv; }
-float SystemDataManager::getCurrentZeroOffsetMv() { return _currentZeroOffsetMv; }
 
 SHT4xSensor sht4Sensor;
 SystemDataManager systemData(sht4Sensor, 36, 35, 0.0);
@@ -199,50 +165,64 @@ float estimateCurrent(int duty) {
     return static_cast<float>(std::max(0.0, sum));
 }
 
-void test_repro() {
-    std::cout << "Running test_repro with 140mV offset and noise..." << std::endl;
-    mock_millis = 0;
-    mock_sample_count = 1;
-    systemData.resetMah();
+void test_comparison() {
+    std::cout << "Running test_comparison: Buggy vs Fixed with 140mV offset and noise..." << std::endl;
 
-    // Simulate model built
-    currentModel.isModelBuilt = true;
-    currentModel.coefficients.resize(4);
-    currentModel.coefficients(0) = 0.0;
-    currentModel.coefficients(1) = 0.001;
-    currentModel.coefficients(2) = 0.0001;
-    currentModel.coefficients(3) = 0.000001;
+    auto run_sim = [](bool fixed, int duty) {
+        mock_millis = 0;
+        uint32_t last_m = 0;
+        mock_sample_count = 0;
+        mock_current_sum = 0;
+        systemData.resetMah();
+        memset(systemData._lastSnapshots, 0, sizeof(systemData._lastSnapshots));
 
-    // Proper calibration to 140mV
-    systemData.setCurrentZeroOffsetMv(140.0f);
+        currentModel.isModelBuilt = true;
+        currentModel.coefficients.resize(4);
+        currentModel.coefficients(0) = 0.0;
+        currentModel.coefficients(1) = 0.0001;
+        currentModel.coefficients(2) = 0.00001;
+        currentModel.coefficients(3) = 0.000001;
 
-    MEASURABLE_CURRENT_THRESHOLD = 0.010f; // 10mA. Shunt 2.5 Ohm -> 25mV unmeasurable region
+        systemData.setCurrentZeroOffsetMv(140.0f);
 
-    applyDuty(0);
+        applyDuty(duty);
+        srand(42);
+        double sum_measured_a = 0;
+        int iterations = 10000;
+        for(int i=0; i<iterations; ++i) {
+            mock_millis += 10;
+            for(int j=0; j<12; ++j) {
+                mock_sample_count++;
+                float noise = (float)(rand() % 161 - 80); // +/- 80mV -> +/- 32mA
+                float val_mv = sim.getCurrent(duty) * 2500.0f + 140.0f + noise;
+                mock_current_sum += (uint64_t)val_mv;
+            }
+            if (fixed) SystemDataManager_fixed_update(&systemData, last_m);
+            else SystemDataManager_buggy_update(&systemData, last_m);
+            sum_measured_a += systemData.getData().charge_current_a;
+        }
+        std::cout << "  Duty: " << duty << ", Avg Measured: " << (sum_measured_a / iterations) << " A, mAh: " << systemData.getData().mah_charged << std::endl;
+        return systemData.getData().mah_charged;
+    };
 
-    std::cout << "Starting simulation with duty 0, 140mV offset, and random noise..." << std::endl;
-    srand(42);
-    for(int i=0; i<1000; ++i) {
-        mock_millis += 100;
-        mock_sample_count++;
-        // Add random noise between -30 and +30 mV
-        sim.noise_mv = (float)(rand() % 61 - 30);
-        systemData.update();
-    }
+    std::cout << "--- Idle Case (Duty 0) ---" << std::endl;
+    double mah_buggy_idle = run_sim(false, 0);
+    double mah_fixed_idle = run_sim(true, 0);
 
-    SystemData d = systemData.getData();
-    std::cout << "After 100 seconds: mAh_charged = " << d.mah_charged << std::endl;
+    std::cout << "--- Low Power Case (Duty 30, expected ~0.002A) ---" << std::endl;
+    double mah_buggy_low = run_sim(false, 30);
+    double mah_fixed_low = run_sim(true, 30);
 
-    if (d.mah_charged > 0.0001) {
-        std::cout << "REPRODUCED: mAh counter advanced when duty cycle was 0!" << std::endl;
+    if (mah_buggy_idle > 0.001 && mah_fixed_idle < 0.00001) {
+        std::cout << "\nSUCCESS: Fixed logic eliminated idle drift." << std::endl;
     } else {
-        std::cout << "FAILED TO REPRODUCE." << std::endl;
+        std::cout << "\nFAILURE: " << std::endl;
     }
 
-    std::cout << "test_repro complete." << std::endl << std::endl;
+    std::cout << "test_comparison complete." << std::endl << std::endl;
 }
 
 int main() {
-    test_repro();
+    test_comparison();
     return 0;
 }

@@ -69,13 +69,14 @@ void SystemDataManager::update() {
             float current_ma = _currentData.charge_current_a * 1000.0f;
 
             // Decide whether to use measurement or model based on the *intended* current
+            // derived from the duty cycle, rather than the noisy measurement itself.
             float estimated_current_a = estimateCurrent(dutyCycle);
 
             if (currentModel.isModelBuilt && estimated_current_a < MEASURABLE_CURRENT_THRESHOLD) {
                 current_ma = estimated_current_a * 1000.0f;
             }
 
-            _currentData.mah_charged += current_ma * delta_h;
+            _currentData.mah_charged += (double)current_ma * delta_h;
             _lastMahUpdateMs = now;
         }
 
@@ -102,7 +103,8 @@ void SystemDataManager::processAdcSnapshots() {
         float currentA = (shuntMv / (float)CURRENT_SHUNT_RESISTANCE) / 1000.0f;
 
         if (xSemaphoreTake(_dataMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-            // Remove the clamp to allow noise to average out to zero
+            // Remove the clamp to allow noise to average out to zero over time.
+            // This is essential for unbiased integration and correct graphing.
             _currentData.charge_current_a = currentA;
             _currentData.current_mv = mv;
             _currentData.current_sample_count++;
