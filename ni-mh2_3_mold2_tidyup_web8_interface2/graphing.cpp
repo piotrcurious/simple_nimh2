@@ -2,6 +2,14 @@
 #include "definitions.h"
 #include <cfloat>
 
+#ifndef MOCK_TEST
+#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
+#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
+#else
+#define WEB_LOCK()
+#define WEB_UNLOCK()
+#endif
+
 float temp1_values[PLOT_WIDTH];
 float temp2_values[PLOT_WIDTH];
 float diff_values[PLOT_WIDTH];
@@ -11,6 +19,7 @@ float MAX_DIFF_TEMP = 1.5;
 
 // Function to update the temperature, voltage, and current history arrays
 void updateTemperatureHistory(double temp1, double temp2, double tempDiff, float voltage, float current) {
+    WEB_LOCK();
     for (int i = 0; i < PLOT_WIDTH - 1; i++) {
         temp1_values[i] = temp1_values[i + 1];
         temp2_values[i] = temp2_values[i + 1];
@@ -23,4 +32,5 @@ void updateTemperatureHistory(double temp1, double temp2, double tempDiff, float
     diff_values[PLOT_WIDTH - 1] = tempDiff;
     voltage_values[PLOT_WIDTH - 1] = voltage;
     current_values[PLOT_WIDTH - 1] = current;
+    WEB_UNLOCK();
 }

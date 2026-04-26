@@ -14,6 +14,14 @@
 
 extern WebServer server;
 
+#ifndef MOCK_TEST
+#define WEB_LOCK() if (webDataMutex) xSemaphoreTake(webDataMutex, portMAX_DELAY)
+#define WEB_UNLOCK() if (webDataMutex) xSemaphoreGive(webDataMutex)
+#else
+#define WEB_LOCK()
+#define WEB_UNLOCK()
+#endif
+
 static void appendFloatArray(String& json, const char* name, float* arr, int len) {
     json += "\"";
     json += name;
@@ -31,6 +39,7 @@ static void appendFloatArray(String& json, const char* name, float* arr, int len
 }
 
 String getJsonState() {
+    WEB_LOCK();
     String json;
     json.reserve(160);
     char buf[32];
@@ -47,10 +56,12 @@ String getJsonState() {
     extern float noiseFloorMv;
     snprintf(buf, sizeof(buf), "\"noise\":%.2f", noiseFloorMv); json += buf;
     json += "}";
+    WEB_UNLOCK();
     return json;
 }
 
 String getJsonHistory() {
+    WEB_LOCK();
     String json;
     json.reserve(PLOT_WIDTH * 5 * 8);
     json = "{";
@@ -60,10 +71,12 @@ String getJsonHistory() {
     appendFloatArray(json, "v", voltage_values, PLOT_WIDTH); json += ",";
     appendFloatArray(json, "i", current_values, PLOT_WIDTH);
     json += "}";
+    WEB_UNLOCK();
     return json;
 }
 
 String getJsonAmbient() {
+    WEB_LOCK();
     String json;
     json.reserve(PLOT_WIDTH * 3 * 8);
     json = "{";
@@ -71,10 +84,12 @@ String getJsonAmbient() {
     appendFloatArray(json, "h", homeScreen.humidity_history, PLOT_WIDTH); json += ",";
     appendFloatArray(json, "d", homeScreen.dew_point_history, PLOT_WIDTH);
     json += "}";
+    WEB_UNLOCK();
     return json;
 }
 
 String getJsonChargeLog() {
+    WEB_LOCK();
     String json;
     json.reserve(chargeLog.size() * 128);
     json = "[";
@@ -109,10 +124,12 @@ String getJsonChargeLog() {
         if (i < chargeLog.size() - 1) json += ",";
     }
     json += "]";
+    WEB_UNLOCK();
     return json;
 }
 
 String getJsonIR() {
+    WEB_LOCK();
     String json;
     json.reserve(256 + (resistanceDataCount + resistanceDataCountPairs) * 20);
     json = "{";
@@ -131,6 +148,7 @@ String getJsonIR() {
     addIRData("lu", internalResistanceData, resistanceDataCount); json += ",";
     addIRData("pairs", internalResistanceDataPairs, resistanceDataCountPairs);
     json += "}";
+    WEB_UNLOCK();
     return json;
 }
 
@@ -286,6 +304,7 @@ static void appendCborChargeLog(CborWriter& w) {
 }
 
 static void sendBinaryResponse(const char* contentType, const std::vector<uint8_t>& payload) {
+#ifndef MOCK_TEST
     NetworkClient &client = server.client();
 
     client.print(F("HTTP/1.1 200 OK\r\n"));
@@ -301,44 +320,56 @@ static void sendBinaryResponse(const char* contentType, const std::vector<uint8_
         client.write(payload.data(), payload.size());
     }
     client.flush();
+#endif
 }
 
 static void sendCborState() {
+    WEB_LOCK();
     CborWriter w;
     w.reserve(256);
     appendCborState(w);
+    WEB_UNLOCK();
     sendBinaryResponse("application/cbor", w.data);
 }
 
 static void sendCborHistory() {
+    WEB_LOCK();
     CborWriter w;
     w.reserve(PLOT_WIDTH * 5 * 8 + 32);
     appendCborHistory(w);
+    WEB_UNLOCK();
     sendBinaryResponse("application/cbor", w.data);
 }
 
 static void sendCborAmbient() {
+    WEB_LOCK();
     CborWriter w;
     w.reserve(PLOT_WIDTH * 3 * 8 + 32);
     appendCborAmbient(w);
+    WEB_UNLOCK();
     sendBinaryResponse("application/cbor", w.data);
 }
 
 static void sendCborIR() {
+    WEB_LOCK();
     CborWriter w;
     w.reserve(256 + (resistanceDataCount + resistanceDataCountPairs) * 24);
     appendCborIR(w);
+    WEB_UNLOCK();
     sendBinaryResponse("application/cbor", w.data);
 }
 
 static void sendCborChargeLog() {
+    WEB_LOCK();
     CborWriter w;
     w.reserve(chargeLog.size() * 96 + 64);
     appendCborChargeLog(w);
+    WEB_UNLOCK();
     sendBinaryResponse("application/cbor", w.data);
 }
 
 static void sendCborRoot() {
+    WEB_LOCK();
     CborWriter w;
     w.reserve(512);
     w.startMap(2);
@@ -346,6 +377,7 @@ static void sendCborRoot() {
     appendCborState(w);
     w.addText("ambient");
     appendCborAmbient(w);
+    WEB_UNLOCK();
     sendBinaryResponse("application/cbor", w.data);
 }
 

@@ -23,6 +23,7 @@
 #include <ctime>
 #ifndef MOCK_TEST
 #include <Arduino.h>
+#include <freertos/semphr.h>
 #else
 #include "test_mock/Arduino.h"
 #endif
@@ -297,6 +298,11 @@ extern std::vector<ChargeLogData> chargeLog;
 
 extern unsigned long lastPlotUpdateTime;
 extern unsigned long lastChargingHouseTime;
+
+#ifndef MOCK_TEST
+extern SemaphoreHandle_t webDataMutex;
+#endif
+
 extern volatile AppState currentAppState;
 extern volatile BuildModelPhase buildModelPhase;
 extern volatile IRState currentIRState;

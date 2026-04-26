@@ -123,6 +123,7 @@ struct WebServer {
 
 inline void pinMode(int pin, int mode) {}
 inline void digitalWrite(int pin, int val) {}
+inline int analogRead(int pin) { return 0; }
 inline void analogWrite(int pin, int val) {}
 inline void analogWriteResolution(int pin, int res) {}
 inline void analogWriteFrequency(int pin, int freq) {}

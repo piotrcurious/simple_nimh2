@@ -4,14 +4,20 @@
 #define ANALOG_H
 
 #include <Arduino.h>
+#ifndef MOCK_TEST
 #include "esp_adc_cal.h" // For ADC calibration
 #include "driver/adc.h"   // For ADC driver
+#endif
 #include "adc_dma.h"
 
 // Define a structure to hold ADC calibration characteristics
 typedef struct {
+#ifndef MOCK_TEST
   esp_adc_cal_characteristics_t *adc_chars;
   adc_atten_t current_atten;
+#else
+  int dummy;
+#endif
 } adc_calibration_data_t;
 
 // Global array to store calibration data for each ADC channel (ADC1)
@@ -47,6 +53,10 @@ static inline int get_adc1_channel(int pin) {
  * @param oversampling The number of samples to read and average for oversampling.
  * @return The analog reading in millivolts, or -1 if an error occurred.
  */
+#ifndef MOCK_TEST
 int analogReadMillivolts(int pin, adc_atten_t attenuation, int oversampling);
+#else
+int analogReadMillivolts(int pin, int attenuation, int oversampling);
+#endif
 
 #endif // ANALOG_H
