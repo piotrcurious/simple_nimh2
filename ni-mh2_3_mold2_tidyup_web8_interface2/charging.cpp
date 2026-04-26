@@ -188,8 +188,10 @@ bool findOptimalChargingDutyCycleStepAsync() {
             findOpt.targetVoltage = findOpt.initialUnloadedVoltage + (dataHigh.loadedVoltage - dataHigh.unloadedVoltage) * MH_ELECTRODE_RATIO;
             if (dataHigh.current > 0.01f) {
                 float irLU = (findOpt.initialUnloadedVoltage - dataHigh.loadedVoltage) / dataHigh.current;
+                WEB_LOCK();
                 storeOrAverageResistanceData(dataHigh.current, std::fabs(irLU), internalResistanceData, resistanceDataCount);
                 bubbleSort(internalResistanceData, resistanceDataCount);
+                WEB_UNLOCK();
             }
             findOpt.cache.push_back(dataHigh);
             findOpt.optimalDC = std::max(MIN_CHARGE_DUTY_CYCLE, findOpt.lowDC);
@@ -207,12 +209,14 @@ bool findOptimalChargingDutyCycleStepAsync() {
         MHElectrodeData result;
         if (fetchMeasurementResult(result)) {
             if (result.current > 0.001f) {
+                WEB_LOCK();
                 for (const auto& cached : findOpt.cache) {
                     if (std::fabs(result.current - cached.current) > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
                         float irPair = (cached.loadedVoltage - result.loadedVoltage) / (result.current - cached.current);
                         storeOrAverageResistanceData(std::max(result.current, cached.current), std::fabs(irPair), internalResistanceDataPairs, resistanceDataCountPairs);
                     }
                 }
+                WEB_UNLOCK();
             }
             findOpt.cache.push_back(result);
             if (++findOpt.exploratory_measurement_phase >= 2) findOpt.phase = RE_EVAL_FINISH;
@@ -277,12 +281,14 @@ bool findOptimalChargingDutyCycleStepAsync() {
             if (cur.current < MEASURABLE_CURRENT_THRESHOLD) cur.current = estimateCurrent(cur.dutyCycle);
             if (cur.current > 0.001f) {
                 float irLU = (cur.unloadedVoltage - cur.loadedVoltage) / cur.current;
+                WEB_LOCK();
                 storeOrAverageResistanceData(cur.current, std::fabs(irLU), internalResistanceData, resistanceDataCount);
                 bubbleSort(internalResistanceData, resistanceDataCount);
                 for (const auto& cached : findOpt.cache) if (std::fabs(cur.current - cached.current) > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
                     float irP = (cached.loadedVoltage - cur.loadedVoltage) / (cur.current - cached.current);
                     storeOrAverageResistanceData(std::max(cur.current, cached.current), std::fabs(irP), internalResistanceDataPairs, resistanceDataCountPairs);
                 }
+                WEB_UNLOCK();
             }
             findOpt.cache.push_back(cur);
             if (cur.loadedVoltage < findOpt.targetVoltage) findOpt.lowDC = cur.dutyCycle; else findOpt.highDC = cur.dutyCycle;
@@ -297,12 +303,14 @@ bool findOptimalChargingDutyCycleStepAsync() {
             if (finalData.current < MEASURABLE_CURRENT_THRESHOLD) finalData.current = estimateCurrent(finalData.dutyCycle);
             if (finalData.current > 0.01f) {
                 float irLU = (finalData.unloadedVoltage - finalData.loadedVoltage) / finalData.current;
+                WEB_LOCK();
                 storeOrAverageResistanceData(finalData.current, std::fabs(irLU), internalResistanceData, resistanceDataCount);
                 bubbleSort(internalResistanceData, resistanceDataCount);
                 for (const auto& cached : findOpt.cache) if (std::fabs(finalData.current - cached.current) > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
                     float irP = (cached.loadedVoltage - finalData.loadedVoltage) / (finalData.current - cached.current);
                     storeOrAverageResistanceData(std::max(finalData.current, cached.current), std::fabs(irP), internalResistanceDataPairs, resistanceDataCountPairs);
                 }
+                WEB_UNLOCK();
             }
             WEB_LOCK();
             distribute_error(internalResistanceData, resistanceDataCount, 0.05f, 1.05f);
@@ -338,12 +346,14 @@ bool remeasureStep() {
                 if (fetchMeasurementResult(res)) {
                     if (res.current > 0.001f) {
                         float irLU = (res.unloadedVoltage - res.loadedVoltage) / res.current;
+                    WEB_LOCK();
                         storeOrAverageResistanceData(res.current, std::fabs(irLU), internalResistanceData, resistanceDataCount);
                         bubbleSort(internalResistanceData, resistanceDataCount);
                         for (const auto& cached : findOpt.cache) if (std::fabs(res.current - cached.current) > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
                             float irP = (cached.loadedVoltage - res.loadedVoltage) / (res.current - cached.current);
                             storeOrAverageResistanceData(std::max(res.current, cached.current), std::fabs(irP), internalResistanceDataPairs, resistanceDataCountPairs);
                         }
+                    WEB_UNLOCK();
                     }
                     findOpt.cache.push_back(res);
                     if (res.current < remeasure.targetCurrent) remeasure.lowDC = res.dutyCycle; else remeasure.highDC = res.dutyCycle;
