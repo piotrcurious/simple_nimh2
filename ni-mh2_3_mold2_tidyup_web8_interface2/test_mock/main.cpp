@@ -49,6 +49,7 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
 float estimateCurrent(int duty);
 int estimateDutyCycleForCurrent(float target);
 void handleData();
+void handleCommand();
 void getAdcSnapshot(AdcChannelIndex idx, AdcSnapshot &snapshot);
 uint32_t calculateSnapshotAverage(const AdcSnapshot &old_s, const AdcSnapshot &new_s);
 float snapshotToMillivolts(AdcChannelIndex idx, uint32_t avg_raw);
@@ -527,33 +528,60 @@ void test_full_flow() {
 }
 
 void test_web_handlers() {
-    std::cout << "Running test_web_handlers (CBOR)..." << std::endl;
+    std::cout << "Running test_web_handlers (CBOR Large)..." << std::endl;
     reset_globals();
 
-    // Fill chargeLog with some data
-    for (int i=0; i<5; i++) {
+    const int NUM_ENTRIES = 100;
+    for (int i=0; i<NUM_ENTRIES; i++) {
         ChargeLogData d;
         d.timestamp = 1000 * i;
-        d.current = 0.1f * i;
-        d.voltage = 1.2f + 0.01f * i;
+        d.current = 0.1f;
+        d.voltage = 1.4f;
         d.ambientTemperature = 22.0f;
-        d.batteryTemperature = 23.0f + 0.1f * i;
-        d.dutyCycle = 50 + i;
+        d.batteryTemperature = 23.0f;
+        d.dutyCycle = 100;
         d.internalResistanceLoadedUnloaded = 0.15f;
         d.internalResistancePairs = 0.16f;
         chargeLog.push_back(d);
     }
 
+    server.lastResponseContent = "";
     server.args["type"] = "chargelog";
     server.args["fmt"] = "cbor";
     handleData();
 
     std::cout << "  CBOR Response size: " << server.lastResponseContent.length() << " bytes" << std::endl;
     assert(server.lastResponseContent.length() > 0);
-    // Check for the array header: major 4, value 5 (0x85)
-    uint8_t firstByte = (uint8_t)server.lastResponseContent[0];
-    std::cout << "  First byte: 0x" << std::hex << (int)firstByte << std::dec << std::endl;
-    assert(firstByte == 0x85);
+
+    // For 100 entries: major 4, ai 24, length 100 (0x64) -> 0x98 0x64
+    uint8_t first = (uint8_t)server.lastResponseContent[0];
+    uint8_t second = (uint8_t)server.lastResponseContent[1];
+    std::cout << "  Header: 0x" << std::hex << (int)first << " 0x" << (int)second << std::dec << std::endl;
+    assert(first == 0x98);
+    assert(second == 0x64);
+
+    std::cout << "Running test_web_handlers (JSON History)..." << std::endl;
+    for (int i=0; i<PLOT_WIDTH; i++) {
+        temp1_values[i] = 22.0f + i*0.1f;
+        if (i % 10 == 0) diff_values[i] = NAN;
+        else diff_values[i] = 1.0f + i*0.01f;
+    }
+    server.lastResponseContent = "";
+    server.args["type"] = "history";
+    server.args.erase("fmt");
+    handleData();
+    assert(server.lastResponseContent.find("\"t1\":[") != String::npos);
+    assert(server.lastResponseContent.find("null") != String::npos);
+    std::cout << "  JSON History contains 'null' for NaN: " << (server.lastResponseContent.find("null") != String::npos) << std::endl;
+
+    std::cout << "Running test_web_handlers (Command Handling)..." << std::endl;
+    mAh_charged = 1234.5;
+    server.args["cmd"] = "reset";
+    handleCommand();
+    std::cout << "  After reset cmd, mAh_charged: " << mAh_charged << std::endl;
+    // Note: handleCommand sets resetAh = true, which main loop/SystemDataManager processes.
+    // In our simplified mock update(), we handle it or just check the flag.
+    assert(resetAh == true);
 
     std::cout << "test_web_handlers PASSED" << std::endl << std::endl;
 }
