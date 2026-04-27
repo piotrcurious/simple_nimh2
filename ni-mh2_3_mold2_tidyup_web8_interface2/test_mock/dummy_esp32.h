@@ -105,11 +105,24 @@ struct MockSerial {
 extern MockSerial Serial;
 
 #define CONTENT_LENGTH_UNKNOWN -1
+
+struct MockClient {
+    String* output;
+    void write(const uint8_t* buf, size_t size) {
+        if (output) output->append((const char*)buf, size);
+    }
+};
+
 struct WebServer {
     int lastResponseCode;
     String lastResponseType;
     String lastResponseContent;
     std::map<String, String> args;
+    MockClient _mockClient;
+
+    WebServer() { _mockClient.output = &lastResponseContent; }
+
+    MockClient& client() { return _mockClient; }
 
     void send(int code, const char* type, String content) {
         lastResponseCode = code;
@@ -124,6 +137,7 @@ struct WebServer {
     void begin() {}
     void handleClient() {}
     void setContentLength(int len) {}
+    void sendHeader(const char* name, const char* value) {}
     void sendContent(const String& content) { lastResponseContent += content; }
     void sendContent(const char* data, size_t size) { lastResponseContent.append(data, size); }
 };
