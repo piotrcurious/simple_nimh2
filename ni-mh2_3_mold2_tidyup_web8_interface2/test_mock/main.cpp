@@ -48,6 +48,7 @@ void setBuildModelPhase(BuildModelPhase p);
 void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float& t1_millivolts, float& voltage, float& current);
 float estimateCurrent(int duty);
 int estimateDutyCycleForCurrent(float target);
+void handleData();
 void getAdcSnapshot(AdcChannelIndex idx, AdcSnapshot &snapshot);
 uint32_t calculateSnapshotAverage(const AdcSnapshot &old_s, const AdcSnapshot &new_s);
 float snapshotToMillivolts(AdcChannelIndex idx, uint32_t avg_raw);
@@ -525,12 +526,45 @@ void test_full_flow() {
     std::cout << "test_full_flow PASSED" << std::endl << std::endl;
 }
 
+void test_web_handlers() {
+    std::cout << "Running test_web_handlers (CBOR)..." << std::endl;
+    reset_globals();
+
+    // Fill chargeLog with some data
+    for (int i=0; i<5; i++) {
+        ChargeLogData d;
+        d.timestamp = 1000 * i;
+        d.current = 0.1f * i;
+        d.voltage = 1.2f + 0.01f * i;
+        d.ambientTemperature = 22.0f;
+        d.batteryTemperature = 23.0f + 0.1f * i;
+        d.dutyCycle = 50 + i;
+        d.internalResistanceLoadedUnloaded = 0.15f;
+        d.internalResistancePairs = 0.16f;
+        chargeLog.push_back(d);
+    }
+
+    server.args["type"] = "chargelog";
+    server.args["fmt"] = "cbor";
+    handleData();
+
+    std::cout << "  CBOR Response size: " << server.lastResponseContent.length() << " bytes" << std::endl;
+    assert(server.lastResponseContent.length() > 0);
+    // Check for the array header: major 4, value 5 (0x85)
+    uint8_t firstByte = (uint8_t)server.lastResponseContent[0];
+    std::cout << "  First byte: 0x" << std::hex << (int)firstByte << std::dec << std::endl;
+    assert(firstByte == 0x85);
+
+    std::cout << "test_web_handlers PASSED" << std::endl << std::endl;
+}
+
 int main() {
     test_model_accuracy();
     test_dead_region_detection();
     test_ir_measurement();
     test_overtemp_shutdown();
     test_full_flow();
+    test_web_handlers();
     std::cout << "ALL TESTS PASSED!" << std::endl;
     return 0;
 }

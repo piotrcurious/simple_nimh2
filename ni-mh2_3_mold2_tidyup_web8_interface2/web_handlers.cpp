@@ -195,15 +195,13 @@ static void appendCborIR(CborWriter& w) {
 }
 
 static void sendBinaryResponse(const char* contentType, const std::vector<uint8_t>& payload) {
-#ifndef MOCK_TEST
-    server.sendHeader(F("Cache-Control"), F("no-store"));
-    server.sendHeader(F("Connection"), F("close"));
+    server.sendHeader("Cache-Control", "no-store");
+    server.sendHeader("Connection", "close");
     server.setContentLength(payload.size());
     server.send(200, contentType, "");
     if (!payload.empty()) {
-        server.sendContent((const char*)payload.data(), payload.size());
+        server.client().write(payload.data(), payload.size());
     }
-#endif
 }
 
 static void sendCborState() {
@@ -243,7 +241,6 @@ static void sendCborIR() {
 }
 
 static void sendCborChargeLog() {
-#ifndef MOCK_TEST
     size_t total = 0;
     float currentRParam = 0.0f;
     {
@@ -258,6 +255,14 @@ static void sendCborChargeLog() {
 
     uint32_t lastTimestamp = 0;
     const size_t batchSize = 20;
+
+    // Send the array header (definite length)
+    {
+        CborWriter w;
+        w.addTypeVal(4, total);
+        server.client().write(w.data.data(), w.data.size());
+    }
+
     for (size_t i = 0; i < total; i += batchSize) {
         size_t currentBatchSize = std::min(batchSize, total - i);
         std::vector<ChargeLogData> batch;
@@ -276,8 +281,6 @@ static void sendCborChargeLog() {
 
         CborWriter w;
         w.reserve(batch.size() * 100);
-
-        if (i == 0) w.put(0x9F); // Start indefinite array
 
         for (size_t j = 0; j < batch.size(); j++) {
             const auto& entry = batch[j];
@@ -308,10 +311,7 @@ static void sendCborChargeLog() {
         server.client().write(w.data.data(), w.data.size());
     }
 
-    uint8_t stopByte = 0xFF; // Break for indefinite array
-    server.client().write(&stopByte, 1);
     server.sendContent("");
-#endif
 }
 
 static void sendCborRoot() {
