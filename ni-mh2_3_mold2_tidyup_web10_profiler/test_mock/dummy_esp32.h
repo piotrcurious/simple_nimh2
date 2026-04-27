@@ -146,12 +146,15 @@ struct AsyncWebSocketClient {
 struct AsyncWebSocket {
     const char* _url;
     void (*_eventCallback)(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) = nullptr;
+    std::vector<uint8_t> lastBinaryAll;
     AsyncWebSocket(const char* url) : _url(url) {}
     void onEvent(void (*cb)(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len)) {
         _eventCallback = cb;
     }
     size_t count() { return 1; }
-    void binaryAll(const uint8_t* data, size_t len) {}
+    void binaryAll(const uint8_t* data, size_t len) {
+        lastBinaryAll.assign(data, data + len);
+    }
     void cleanupClients() {}
 };
 

@@ -17,6 +17,7 @@ using std::max;
 
 MockSerial Serial;
 unsigned long mock_millis = 0;
+uint64_t mock_esp_timer_now = 0;
 
 // Redirect definitions.h includes
 #define SPI_h
@@ -38,6 +39,26 @@ unsigned long mock_millis = 0;
 #include "../definitions.h"
 #include "../internal_resistance.h"
 #include "../AdvancedPolynomialFitter.hpp"
+
+extern AsyncWebSocket ws;
+
+// Profile mocks
+CoreBuf g_coreBuf[CORE_COUNT];
+volatile uint32_t g_frameSeq = 0;
+volatile uint32_t g_frameStartUs = 0;
+void recordEvent(uint8_t core, uint8_t taskId, uint16_t startUs, uint16_t durUs, uint8_t flags) {
+    if (core < CORE_COUNT && g_coreBuf[core].count < MAX_EVENTS_PER_CORE) {
+        auto& e = g_coreBuf[core].events[g_coreBuf[core].count++];
+        e.taskId = taskId; e.flags = flags; e.startUs = startUs; e.durUs = durUs;
+    }
+}
+void sendFramePacket(bool timeoutFlag) {
+    uint8_t buf[1024];
+    buf[0] = 0x50; buf[1] = 0x54; // TP LE
+    buf[14] = g_coreBuf[0].count;
+    buf[15] = g_coreBuf[1].count;
+    ws.binaryAll(buf, 18 + (g_coreBuf[0].count + g_coreBuf[1].count) * 6);
+}
 
 WebServer mock_server;
 AsyncWebSocket ws("/ws");
@@ -549,7 +570,7 @@ void test_web_handlers() {
 
     AsyncWebServerRequest req;
 
-    const int NUM_ENTRIES = 100;
+    const int NUM_ENTRIES = 1000; // Increased for stress test
     for (int i=0; i<NUM_ENTRIES; i++) {
         ChargeLogData d;
         d.timestamp = 1000 * i;
@@ -571,12 +592,14 @@ void test_web_handlers() {
     std::cout << "  CBOR Response size: " << mock_server.lastResponseContent.length() << " bytes" << std::endl;
     assert(mock_server.lastResponseContent.length() > 0);
 
-    // For 100 entries: major 4, ai 24, length 100 (0x64) -> 0x98 0x64
+    // For 1000 entries: major 4, ai 25, length 1000 (0x03E8) -> 0x99 0x03 0xE8
     uint8_t first = (uint8_t)mock_server.lastResponseContent[0];
     uint8_t second = (uint8_t)mock_server.lastResponseContent[1];
-    std::cout << "  Header: 0x" << std::hex << (int)first << " 0x" << (int)second << std::dec << std::endl;
-    assert(first == 0x98);
-    assert(second == 0x64);
+    uint8_t third = (uint8_t)mock_server.lastResponseContent[2];
+    std::cout << "  Header: 0x" << std::hex << (int)first << " 0x" << (int)second << " 0x" << (int)third << std::dec << std::endl;
+    assert(first == 0x99);
+    assert(second == 0x03);
+    assert(third == 0xE8);
 
     std::cout << "Running test_web_handlers (JSON History)..." << std::endl;
     for (int i=0; i<PLOT_WIDTH; i++) {
@@ -606,6 +629,34 @@ void test_web_handlers() {
 
 void test_websocket_communications() {
     std::cout << "Running test_websocket_communications... (SKIPPED in Async mode)" << std::endl;
+}
+
+void test_profiling_logic() {
+    std::cout << "Running test_profiling_logic..." << std::endl;
+    reset_globals();
+
+    // Simulate a frame
+    g_frameStartUs = 1000000;
+    mock_esp_timer_now = 1000000;
+
+    // Core 0 event
+    recordEvent(0, 1, 100, 200);
+    // Core 1 event
+    recordEvent(1, 2, 500, 300);
+
+    sendFramePacket(false);
+
+    assert(ws.lastBinaryAll.size() >= 18 + 2*6);
+    uint16_t magic = ws.lastBinaryAll[0] | (ws.lastBinaryAll[1] << 8);
+    assert(magic == 0x5450); // "TP"
+
+    uint8_t c0 = ws.lastBinaryAll[14];
+    uint8_t c1 = ws.lastBinaryAll[15];
+    assert(c0 == 1);
+    assert(c1 == 1);
+
+    std::cout << "  Profiling packet verified (Magic: 0x" << std::hex << magic << std::dec << ", C0: " << (int)c0 << ", C1: " << (int)c1 << ")" << std::endl;
+    std::cout << "test_profiling_logic PASSED" << std::endl << std::endl;
 }
 
 void test_stress_web_requests() {
@@ -650,6 +701,7 @@ int main() {
     test_full_flow();
     test_web_handlers();
     test_websocket_communications();
+    test_profiling_logic();
     test_stress_web_requests();
     std::cout << "ALL TESTS PASSED!" << std::endl;
     return 0;
