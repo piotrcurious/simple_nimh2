@@ -45,6 +45,7 @@ private:
     double _therm1Offset;
 
     SystemData _currentData;
+    SystemData _lastValidData;
     float _currentZeroOffsetMv;
     SemaphoreHandle_t _dataMutex;
 

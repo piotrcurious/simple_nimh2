@@ -266,6 +266,7 @@ static void sendCborChargeLog() {
     }
 
     for (size_t i = 0; i < total; i += batchSize) {
+        vTaskDelay(0); // Yield to other tasks of same priority
         size_t currentBatchSize = std::min(batchSize, total - i);
         std::vector<ChargeLogData> batch;
         batch.reserve(currentBatchSize);
@@ -344,6 +345,7 @@ static void streamJsonChargeLog() {
     const size_t batchSize = 10;
     uint32_t lastTimestamp = 0;
     for (size_t i = 0; i < total; i += batchSize) {
+        vTaskDelay(0); // Yield
         size_t currentBatch = std::min(batchSize, total - i);
         std::vector<ChargeLogData> batch;
         batch.reserve(currentBatch);
