@@ -14,9 +14,7 @@
 #include <vector>
 
 extern WebServer server;
-#ifndef MOCK_TEST
 extern WebSocketsServer webSocket;
-#endif
 extern void setAppState(AppState s);
 extern void setBuildModelPhase(BuildModelPhase p);
 
@@ -492,7 +490,7 @@ void handleCommand() {
     server.send(200, "text/plain", "OK");
 }
 
-#ifndef MOCK_TEST
+#if !defined(MOCK_TEST) || defined(MOCK_TEST)
 void handleWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
     switch(type) {
         case WStype_DISCONNECTED:

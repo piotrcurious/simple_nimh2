@@ -9,6 +9,7 @@
 #include <cmath>
 #include <algorithm>
 #include <map>
+#include <cstring>
 
 // FreeRTOS dummies
 typedef void* TaskHandle_t;
@@ -126,14 +127,38 @@ struct IPAddress {
 };
 
 struct WebSocketsServer {
+    void (*_eventCallback)(uint8_t num, WStype_t type, uint8_t * payload, size_t length) = nullptr;
+    std::vector<uint8_t> lastSentData;
+    std::vector<uint8_t> lastBroadcastData;
+    int _connectedClients = 0;
+
     WebSocketsServer(int port) {}
     void begin() {}
     void loop() {}
-    void onEvent(void (*cb)(uint8_t num, WStype_t type, uint8_t * payload, size_t length)) {}
-    void sendBIN(uint8_t num, const uint8_t * payload, size_t length) {}
-    void broadcastBIN(const uint8_t * payload, size_t length) {}
-    int connectedClients() { return 0; }
+    void onEvent(void (*cb)(uint8_t num, WStype_t type, uint8_t * payload, size_t length)) {
+        _eventCallback = cb;
+    }
+    void sendBIN(uint8_t num, const uint8_t * payload, size_t length) {
+        lastSentData.assign(payload, payload + length);
+    }
+    void broadcastBIN(const uint8_t * payload, size_t length) {
+        lastBroadcastData.assign(payload, payload + length);
+    }
+    int connectedClients() { return _connectedClients; }
     IPAddress remoteIP(uint8_t num) { return {{192, 168, 4, 2}}; }
+
+    // Mock helpers
+    void mockConnect(uint8_t num) {
+        _connectedClients++;
+        if (_eventCallback) _eventCallback(num, WStype_CONNECTED, (uint8_t*)"/", 1);
+    }
+    void mockDisconnect(uint8_t num) {
+        if (_connectedClients > 0) _connectedClients--;
+        if (_eventCallback) _eventCallback(num, WStype_DISCONNECTED, nullptr, 0);
+    }
+    void mockReceiveText(uint8_t num, const char* text) {
+        if (_eventCallback) _eventCallback(num, WStype_TEXT, (uint8_t*)text, strlen(text));
+    }
 };
 
 struct MockClient {
