@@ -977,20 +977,20 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           if (data) handleWSData({ state: data });
         }
 
-        if (now - lastHistoryFetch > 1200) {
+        if (now - lastHistoryFetch > 5000) {
           lastHistoryFetch = now;
           const hist = await fetchPayload('/data?type=history&fmt=cbor');
           lastLiveDT = lastFinite(hist.td);
           renderMain(hist);
         }
 
-        if (now - lastIRFetch > 5000) {
+        if (now - lastIRFetch > 10000) {
           lastIRFetch = now;
           const ir = await fetchPayload('/data?type=ir&fmt=cbor');
           renderIR(ir);
         }
 
-        if (now - lastChargeFetch > 5000) {
+        if (now - lastChargeFetch > 20000) {
           lastChargeFetch = now;
           const charge = await fetchPayload('/data?type=chargelog&fmt=cbor');
           renderCharge(charge);
@@ -1008,7 +1008,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     function resizeAll() {
       document.querySelectorAll('canvas').forEach(canvas => fitCanvas(canvas));
-      updateData();
     }
 
     window.addEventListener('resize', resizeAll);

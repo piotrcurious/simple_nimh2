@@ -7,8 +7,8 @@
 
 // ADC configuration constants
 static constexpr uint32_t ADC_SAMPLE_RATE_HZ = 48000;
-static constexpr uint32_t CONV_FRAME_SIZE    = 512;
-static constexpr uint32_t DMA_POOL_BYTES     = 65536;
+static constexpr uint32_t CONV_FRAME_SIZE    = 256;
+static constexpr uint32_t DMA_POOL_BYTES     = 16384;
 
 static constexpr uint32_t SAMPLE_RING_SIZE    = 8192;
 static constexpr uint32_t SAMPLE_RING_MASK    = SAMPLE_RING_SIZE - 1;

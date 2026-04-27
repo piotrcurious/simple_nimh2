@@ -181,7 +181,7 @@ void buildCurrentModelStep() {
 
                     WEB_LOCK();
                     noiseFloorMv = (calibrationMax - avgOffset) * 2.0f;
-                    if (noiseFloorMv < 2.5f) noiseFloorMv = 2.5f;
+                    if (noiseFloorMv < 1.0f) noiseFloorMv = 1.0f;
                     WEB_UNLOCK();
 
                     Serial.printf("Auto-calibration complete. Offset: %.2f mV, NoiseFloor: %.2f mV\n", avgOffset, (float)noiseFloorMv);
@@ -367,7 +367,7 @@ void task_webServer(void* parameter) {
         webSocket.loop();
         broadcastLiveTelemetry();
 #endif
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
@@ -447,5 +447,5 @@ void loop() {
     homeScreen.gatherData();
 
     // Give other tasks time to run
-    vTaskDelay(1);
+    vTaskDelay(10);
 }
