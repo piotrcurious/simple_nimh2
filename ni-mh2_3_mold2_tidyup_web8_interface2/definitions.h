@@ -76,7 +76,7 @@ static const float STEFAN_BOLTZMANN           = 5.670374419e-8f;
 const float MAX_TEMP_DIFF_THRESHOLD = 0.5f;
 const uint8_t OVERTEMP_TRIP_TRESHOLD = 3;
 extern float maximumCurrent;
-const float MH_ELECTRODE_RATIO = 0.62f;
+const float MH_ELECTRODE_RATIO = 0.7f;
 const uint32_t CHARGE_EVALUATION_INTERVAL_MS = 240000;
 const int CHARGE_CURRENT_STEP = 1;
 const int MAX_CHARGE_DUTY_CYCLE = 250;
