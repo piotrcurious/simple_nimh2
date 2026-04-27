@@ -660,6 +660,30 @@ void test_stress_web_requests() {
     std::cout << "test_stress_web_requests PASSED" << std::endl << std::endl;
 }
 
+void test_polynomial_fitter() {
+    std::cout << "Running test_polynomial_fitter..." << std::endl;
+    AdvancedPolynomialFitter fitter;
+
+    // 1. Test fitPolynomial with linear data: y = 0.5x + 10
+    std::vector<float> x_lin = {0, 10, 20, 30, 40};
+    std::vector<float> y_lin = {10, 15, 20, 25, 30};
+    std::vector<float> coeffs_lin = fitter.fitPolynomial(x_lin, y_lin, 1);
+    std::cout << "  Linear Fit: " << coeffs_lin[0] << " + " << coeffs_lin[1] << "x" << std::endl;
+    assert(std::abs(coeffs_lin[0] - 10.0f) < 0.01f);
+    assert(std::abs(coeffs_lin[1] - 0.5f) < 0.01f);
+
+    // 2. Test fitPolynomial with quadratic data: y = 0.1x^2 - 0.5x + 5
+    std::vector<float> x_quad = {0, 1, 2, 3, 4, 5};
+    std::vector<float> y_quad = {5.0, 4.6, 4.4, 4.4, 4.6, 5.0};
+    std::vector<float> coeffs_quad = fitter.fitPolynomial(x_quad, y_quad, 2);
+    std::cout << "  Quadratic Fit: " << coeffs_quad[0] << " + " << coeffs_quad[1] << "x + " << coeffs_quad[2] << "x^2" << std::endl;
+    assert(std::abs(coeffs_quad[0] - 5.0f) < 0.01f);
+    assert(std::abs(coeffs_quad[1] - (-0.5f)) < 0.01f);
+    assert(std::abs(coeffs_quad[2] - 0.1f) < 0.01f);
+
+    std::cout << "test_polynomial_fitter PASSED" << std::endl << std::endl;
+}
+
 int main() {
     test_model_accuracy();
     test_dead_region_detection();
@@ -669,6 +693,7 @@ int main() {
     test_web_handlers();
     test_websocket_communications();
     test_stress_web_requests();
+    test_polynomial_fitter();
     std::cout << "ALL TESTS PASSED!" << std::endl;
     return 0;
 }
