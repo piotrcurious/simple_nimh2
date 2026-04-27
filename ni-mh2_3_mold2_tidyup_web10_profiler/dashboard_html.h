@@ -1,4 +1,9 @@
+#ifndef DASHBOARD_HTML_H
+#define DASHBOARD_HTML_H
 
+#include <Arduino.h>
+
+const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
@@ -1201,3 +1206,6 @@
   </script>
 </body>
 </html>
+)rawliteral";
+
+#endif
