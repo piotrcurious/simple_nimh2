@@ -172,10 +172,10 @@ void buildCurrentModelStep() {
                     calibrationSum += d.current_mv;
                     if (d.current_mv > calibrationMax) calibrationMax = d.current_mv;
                     calibrationCount++;
-                    Serial.printf("  Calibrating... %d/20 samples (Current: %.2f mV, count=%u)\n", calibrationCount, d.current_mv, d.current_sample_count);
+                    Serial.printf("  Calibrating... %d/200 samples (Current: %.2f mV, count=%u)\n", calibrationCount, d.current_mv, d.current_sample_count);
                 }
 
-                if (calibrationCount >= 20) {
+                if (calibrationCount >= 200) {
                     float avgOffset = calibrationSum / calibrationCount;
                     systemData.setCurrentZeroOffsetMv(avgOffset);
 
@@ -223,11 +223,11 @@ void buildCurrentModelStep() {
                     currents.push_back(d.charge_current_a);
 
                     Serial.printf("Dead region ends at Duty: %d, Threshold: %.3f A\n", buildModelDutyCycle, (float)MEASURABLE_CURRENT_THRESHOLD);
-                    buildModelDutyCycle += 5;
+                    buildModelDutyCycle += 1;
                     buildModelLastStepTime = now; // Reset timer for SetDuty
                     setBuildModelPhase(BuildModelPhase::SetDuty);
                 } else {
-                    buildModelDutyCycle += 4; // Slightly faster increment
+                    buildModelDutyCycle += 1; // Slightly faster increment
                     if (buildModelDutyCycle > MAX_DUTY_CYCLE) {
                         Serial.println("Error: Could not detect current above noise floor.");
                         applyDuty(0);
@@ -407,7 +407,7 @@ void setup() {
     setupAdcDma();
 
     xTaskCreatePinnedToCore(task_readSHT4x, "SHT4", 4096, NULL, 1, NULL, 0);
-    xTaskCreatePinnedToCore(task_processAdcDma, "ADC_DMA", 4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(task_processAdcDma, "ADC_DMA", 4096, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(task_updateSystemData, "SYS_DATA", 4096, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(task_webServer, "WebServer", 16384, NULL, 1, NULL, 1);
 

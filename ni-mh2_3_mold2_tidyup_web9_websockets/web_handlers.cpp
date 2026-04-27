@@ -242,6 +242,7 @@ static void sendCborIR() {
     sendBinaryResponse("application/cbor", w.data);
 }
 
+/*
 static void sendCborChargeLog() {
     size_t total = 0;
     float currentRParam = 0.0f;
@@ -315,6 +316,56 @@ static void sendCborChargeLog() {
     }
 
     server.sendContent("");
+}
+*/
+
+static void sendCborChargeLog() {
+    CborWriter w;
+    size_t total = 0;
+    float currentRParam = 0.0f;
+
+    WEB_LOCK();
+    total = chargeLog.size();
+    currentRParam = regressedInternalResistancePairsIntercept;
+    // Reserve roughly 100 bytes per entry to prevent frequent reallocations
+    w.reserve(total * 100 + 32); 
+    
+    // Start the Array
+    w.addTypeVal(4, total);
+
+    uint32_t lastTimestamp = 0;
+    for (size_t i = 0; i < total; i++) {
+        const auto& entry = chargeLog[i];
+        float td = entry.batteryTemperature - entry.ambientTemperature;
+        float localEnergy = 0.0f;
+        uint32_t prevTs = (i == 0) ? entry.timestamp : lastTimestamp;
+        
+        float estimatedDiff = estimateTempDiff(
+            entry.voltage, entry.voltage, entry.current,
+            currentRParam, entry.ambientTemperature,
+            entry.timestamp, prevTs, entry.batteryTemperature,
+            &localEnergy
+        );
+        float thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
+        lastTimestamp = entry.timestamp;
+
+        // Add the Map for this entry
+        w.startMap(10);
+        w.addText("t");    w.addUInt((uint64_t)entry.timestamp);
+        w.addText("i");    w.addFloat(entry.current);
+        w.addText("v");    w.addFloat(entry.voltage);
+        w.addText("at");   w.addFloat(entry.ambientTemperature);
+        w.addText("bt");   w.addFloat(entry.batteryTemperature);
+        w.addText("d");    w.addInt((int64_t)entry.dutyCycle);
+        w.addText("irlu"); w.addFloat(entry.internalResistanceLoadedUnloaded);
+        w.addText("irp");  w.addFloat(entry.internalResistancePairs);
+        w.addText("td");   w.addFloat(td);
+        w.addText("th");   w.addFloat(thresholdValue);
+    }
+    WEB_UNLOCK();
+
+    // Use the reliable binary response helper you already wrote
+    sendBinaryResponse("application/cbor", w.data);
 }
 
 static void sendCborRoot() {
