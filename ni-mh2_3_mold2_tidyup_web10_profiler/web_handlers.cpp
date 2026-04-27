@@ -305,48 +305,77 @@ static void sendCborChargeLog() {
 */
 
 static void sendCborChargeLog(AsyncWebServerRequest *request) {
-    CborWriter w;
     size_t total = 0;
     float currentRParam = 0.0f;
-
     WEB_LOCK();
     total = chargeLog.size();
     currentRParam = regressedInternalResistancePairsIntercept;
-    w.reserve(total * 100 + 32);
-
-    w.addTypeVal(4, total);
-
-    uint32_t lastTimestamp = 0;
-    for (size_t i = 0; i < total; i++) {
-        const auto& entry = chargeLog[i];
-        float td = entry.batteryTemperature - entry.ambientTemperature;
-        float localEnergy = 0.0f;
-        uint32_t prevTs = (i == 0) ? entry.timestamp : lastTimestamp;
-
-        float estimatedDiff = estimateTempDiff(
-            entry.voltage, entry.voltage, entry.current,
-            currentRParam, entry.ambientTemperature,
-            entry.timestamp, prevTs, entry.batteryTemperature,
-            &localEnergy
-        );
-        float thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
-        lastTimestamp = entry.timestamp;
-
-        w.startMap(10);
-        w.addText("t");    w.addUInt((uint64_t)entry.timestamp);
-        w.addText("i");    w.addFloat(entry.current);
-        w.addText("v");    w.addFloat(entry.voltage);
-        w.addText("at");   w.addFloat(entry.ambientTemperature);
-        w.addText("bt");   w.addFloat(entry.batteryTemperature);
-        w.addText("d");    w.addInt((int64_t)entry.dutyCycle);
-        w.addText("irlu"); w.addFloat(entry.internalResistanceLoadedUnloaded);
-        w.addText("irp");  w.addFloat(entry.internalResistancePairs);
-        w.addText("td");   w.addFloat(td);
-        w.addText("th");   w.addFloat(thresholdValue);
-    }
     WEB_UNLOCK();
 
-    sendBinaryResponse(request, "application/cbor", w.data);
+    AsyncWebServerResponse *response = request->beginChunkedResponse("application/cbor",
+        [total, currentRParam](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+            static size_t currentEntry = 0;
+            static uint32_t lastTimestamp = 0;
+            if (index == 0) {
+                currentEntry = 0;
+                lastTimestamp = 0;
+            }
+            if (currentEntry >= total) return 0;
+
+            CborWriter w;
+            w.reserve(maxLen);
+
+            // Header if starting
+            if (index == 0) {
+                w.addTypeVal(4, total);
+            }
+
+            while (currentEntry < total) {
+                ChargeLogData entry;
+                WEB_LOCK();
+                if (currentEntry < chargeLog.size()) entry = chargeLog[currentEntry];
+                WEB_UNLOCK();
+
+                float td = entry.batteryTemperature - entry.ambientTemperature;
+                float localEnergy = 0.0f;
+                uint32_t prevTs = (currentEntry == 0) ? entry.timestamp : lastTimestamp;
+                float estimatedDiff = estimateTempDiff(
+                    entry.voltage, entry.voltage, entry.current,
+                    currentRParam, entry.ambientTemperature,
+                    entry.timestamp, prevTs, entry.batteryTemperature,
+                    &localEnergy
+                );
+                float thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
+
+                CborWriter item;
+                item.startMap(10);
+                item.addText("t");    item.addUInt((uint64_t)entry.timestamp);
+                item.addText("i");    item.addFloat(entry.current);
+                item.addText("v");    item.addFloat(entry.voltage);
+                item.addText("at");   item.addFloat(entry.ambientTemperature);
+                item.addText("bt");   item.addFloat(entry.batteryTemperature);
+                item.addText("d");    item.addInt((int64_t)entry.dutyCycle);
+                item.addText("irlu"); item.addFloat(entry.internalResistanceLoadedUnloaded);
+                item.addText("irp");  item.addFloat(entry.internalResistancePairs);
+                item.addText("td");   item.addFloat(td);
+                item.addText("th");   item.addFloat(thresholdValue);
+
+                if (w.data.size() + item.data.size() > maxLen) {
+                    // Won't fit, item remains for next chunk
+                    break;
+                }
+
+                w.putBytes(item.data.data(), item.data.size());
+                lastTimestamp = entry.timestamp;
+                currentEntry++;
+            }
+
+            memcpy(buffer, w.data.data(), w.data.size());
+            return w.data.size();
+        });
+
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
 }
 
 static void sendCborRoot(AsyncWebServerRequest *request) {
@@ -360,48 +389,69 @@ static void sendCborRoot(AsyncWebServerRequest *request) {
     sendBinaryResponse(request, "application/cbor", w.data);
 }
 
-static String getJsonChargeLog() {
-    String json = "[";
+static void handleJsonChargeLog(AsyncWebServerRequest *request) {
     size_t total = 0;
     float currentRParam = 0.0f;
-    {
-        WEB_LOCK();
-        total = chargeLog.size();
-        currentRParam = regressedInternalResistancePairsIntercept;
-        WEB_UNLOCK();
-    }
+    WEB_LOCK();
+    total = chargeLog.size();
+    currentRParam = regressedInternalResistancePairsIntercept;
+    WEB_UNLOCK();
 
-    uint32_t lastTimestamp = 0;
-    for (size_t i = 0; i < total; i++) {
-        ChargeLogData entry;
-        WEB_LOCK();
-        if (i < chargeLog.size()) entry = chargeLog[i];
-        WEB_UNLOCK();
+    AsyncWebServerResponse *response = request->beginChunkedResponse("application/json",
+        [total, currentRParam](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
+            static size_t currentEntry = 0;
+            static uint32_t lastTimestamp = 0;
+            if (index == 0) {
+                currentEntry = 0;
+                lastTimestamp = 0;
+            }
+            if (currentEntry >= total) return 0;
 
-        float td = entry.batteryTemperature - entry.ambientTemperature;
-        float localEnergy = 0.0f;
-        uint32_t prevTs = (i == 0) ? entry.timestamp : lastTimestamp;
-        float estimatedDiff = estimateTempDiff(
-            entry.voltage, entry.voltage, entry.current,
-            currentRParam, entry.ambientTemperature,
-            entry.timestamp, prevTs, entry.batteryTemperature,
-            &localEnergy
-        );
-        float thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
-        lastTimestamp = entry.timestamp;
+            String s = "";
+            if (index == 0) s += "[";
 
-        char buf[256];
-        snprintf(buf, sizeof(buf),
-            "{\"t\":%u,\"i\":%.3f,\"v\":%.3f,\"at\":%.2f,\"bt\":%.2f,\"d\":%d,\"irlu\":%.3f,\"irp\":%.3f,\"td\":%.2f,\"th\":%.2f}",
-            (unsigned int)entry.timestamp, entry.current, entry.voltage, entry.ambientTemperature,
-            entry.batteryTemperature, entry.dutyCycle, entry.internalResistanceLoadedUnloaded,
-            entry.internalResistancePairs, td, thresholdValue
-        );
-        json += buf;
-        if (i < total - 1) json += ",";
-    }
-    json += "]";
-    return json;
+            while (currentEntry < total) {
+                ChargeLogData entry;
+                WEB_LOCK();
+                if (currentEntry < chargeLog.size()) entry = chargeLog[currentEntry];
+                WEB_UNLOCK();
+
+                float td = entry.batteryTemperature - entry.ambientTemperature;
+                float localEnergy = 0.0f;
+                uint32_t prevTs = (currentEntry == 0) ? entry.timestamp : lastTimestamp;
+                float estimatedDiff = estimateTempDiff(
+                    entry.voltage, entry.voltage, entry.current,
+                    currentRParam, entry.ambientTemperature,
+                    entry.timestamp, prevTs, entry.batteryTemperature,
+                    &localEnergy
+                );
+                float thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
+
+                char buf[256];
+                snprintf(buf, sizeof(buf),
+                    "{\"t\":%u,\"i\":%.3f,\"v\":%.3f,\"at\":%.2f,\"bt\":%.2f,\"d\":%d,\"irlu\":%.3f,\"irp\":%.3f,\"td\":%.2f,\"th\":%.2f}",
+                    (unsigned int)entry.timestamp, entry.current, entry.voltage, entry.ambientTemperature,
+                    entry.batteryTemperature, entry.dutyCycle, entry.internalResistanceLoadedUnloaded,
+                    entry.internalResistancePairs, td, thresholdValue
+                );
+
+                String item = buf;
+                if (currentEntry < total - 1) item += ",";
+                else item += "]";
+
+                if (s.length() + item.length() > maxLen) break;
+
+                s += item;
+                lastTimestamp = entry.timestamp;
+                currentEntry++;
+            }
+
+            memcpy(buffer, s.c_str(), s.length());
+            return s.length();
+        });
+
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
 }
 
 void handleData(AsyncWebServerRequest *request) {
@@ -422,7 +472,7 @@ void handleData(AsyncWebServerRequest *request) {
     if (type == "state") request->send(200, "application/json", getJsonState());
     else if (type == "history") request->send(200, "application/json", getJsonHistory());
     else if (type == "ambient") request->send(200, "application/json", getJsonAmbient());
-    else if (type == "chargelog") request->send(200, "application/json", getJsonChargeLog());
+    else if (type == "chargelog") handleJsonChargeLog(request);
     else if (type == "ir") {
         WEB_LOCK();
         String json;

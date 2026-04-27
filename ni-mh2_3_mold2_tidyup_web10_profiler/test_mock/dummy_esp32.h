@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <map>
 #include <cstring>
+#include <functional>
 
 // Forward declarations for AsyncWebServer dummies
 struct AsyncWebServerResponse;
@@ -158,6 +159,8 @@ struct AsyncWebSocket {
     void cleanupClients() {}
 };
 
+typedef std::function<size_t(uint8_t*, size_t, size_t)> AwsChunkedDataCallback;
+
 struct AsyncWebServerRequest {
     std::map<String, String> _args;
     String arg(const String& name) { return _args.count(name) ? _args[name] : ""; }
@@ -165,11 +168,14 @@ struct AsyncWebServerRequest {
     void send(AsyncWebServerResponse* response);
     AsyncWebServerResponse* beginResponse(int code, const char* type, const uint8_t* data, size_t size);
     AsyncWebServerResponse* beginResponse_P(int code, const char* type, const char* content);
+    AsyncWebServerResponse* beginChunkedResponse(const char* type, AwsChunkedDataCallback cb);
 };
 
 struct AsyncWebServerResponse {
     void addHeader(const char* name, const char* value) {}
     String _content;
+    bool _isChunked = false;
+    AwsChunkedDataCallback _callback;
 };
 
 inline AsyncWebServerResponse* AsyncWebServerRequest::beginResponse(int code, const char* type, const uint8_t* data, size_t size) {
@@ -177,7 +183,18 @@ inline AsyncWebServerResponse* AsyncWebServerRequest::beginResponse(int code, co
     if (data && size) r->_content.assign((const char*)data, size);
     return r;
 }
-inline AsyncWebServerResponse* AsyncWebServerRequest::beginResponse_P(int code, const char* type, const char* content) { return new AsyncWebServerResponse(); }
+inline AsyncWebServerResponse* AsyncWebServerRequest::beginResponse_P(int code, const char* type, const char* content) {
+    AsyncWebServerResponse* r = new AsyncWebServerResponse();
+    if (content) r->_content.assign(content);
+    return r;
+}
+
+inline AsyncWebServerResponse* AsyncWebServerRequest::beginChunkedResponse(const char* type, AwsChunkedDataCallback cb) {
+    AsyncWebServerResponse* r = new AsyncWebServerResponse();
+    r->_isChunked = true;
+    r->_callback = cb;
+    return r;
+}
 
 struct AsyncWebServer {
     AsyncWebServer(int port) {}

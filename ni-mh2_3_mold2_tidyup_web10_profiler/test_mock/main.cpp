@@ -146,7 +146,18 @@ void AsyncWebServerRequest::send(int code, const char* type, String content) {
 }
 
 void AsyncWebServerRequest::send(AsyncWebServerResponse* response) {
-    mock_server.lastResponseContent = response->_content;
+    if (response->_isChunked && response->_callback) {
+        mock_server.lastResponseContent = "";
+        uint8_t buf[1024];
+        size_t index = 0;
+        size_t written;
+        while ((written = response->_callback(buf, sizeof(buf), index)) > 0) {
+            mock_server.lastResponseContent.append((const char*)buf, written);
+            index += written;
+        }
+    } else {
+        mock_server.lastResponseContent = response->_content;
+    }
     delete response;
 }
 
