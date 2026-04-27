@@ -193,12 +193,15 @@ CurrentModel currentModel;
 HomeScreen homeScreen;
 
 WebServer server;
+WebSocketsServer webSocket(81);
 
 #include "../charging.h"
 #include "../logging.h"
 #include "../graphing.h"
 
 // Manually bring in parts of .ino for testing model build
+extern void handleWebSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length);
+extern void broadcastLiveTelemetry();
 volatile BuildModelPhase buildModelPhase = BuildModelPhase::Idle;
 int buildModelDutyCycle = 0;
 unsigned long buildModelLastStepTime = 0;
@@ -586,6 +589,44 @@ void test_web_handlers() {
     std::cout << "test_web_handlers PASSED" << std::endl << std::endl;
 }
 
+void test_websocket_communications() {
+    std::cout << "Running test_websocket_communications..." << std::endl;
+    reset_globals();
+    webSocket.onEvent(handleWebSocketEvent);
+    webSocket._connectedClients = 0;
+    webSocket.lastSentData.clear();
+    webSocket.lastBroadcastData.clear();
+
+    // 1. Test Connection
+    std::cout << "  Simulating client connection..." << std::endl;
+    webSocket.mockConnect(0);
+    assert(webSocket.connectedClients() == 1);
+    assert(webSocket.lastSentData.size() > 0);
+    // Initial data should contain "state" and "ambient" (CBOR map with 2 keys)
+    assert(webSocket.lastSentData[0] == 0xA2); // CBOR map(2)
+    std::cout << "  Initial data sent size: " << webSocket.lastSentData.size() << " bytes" << std::endl;
+
+    // 2. Test Command
+    std::cout << "  Simulating WebSocket command 'stop'..." << std::endl;
+    currentAppState = APP_STATE_CHARGING;
+    webSocket.mockReceiveText(0, "stop");
+    assert(currentAppState == APP_STATE_IDLE);
+    assert(dutyCycle == 0);
+    std::cout << "  Command 'stop' processed correctly." << std::endl;
+
+    // 3. Test Broadcast
+    std::cout << "  Simulating broadcastLiveTelemetry..." << std::endl;
+    webSocket.lastBroadcastData.clear();
+    mock_millis += 2000; // Ensure broadcast interval is met
+    broadcastLiveTelemetry();
+    assert(webSocket.lastBroadcastData.size() > 0);
+    // Broadcast state should be a map with 1 key ("state")
+    assert(webSocket.lastBroadcastData[0] == 0xA1); // CBOR map(1)
+    std::cout << "  Broadcast data size: " << webSocket.lastBroadcastData.size() << " bytes" << std::endl;
+
+    std::cout << "test_websocket_communications PASSED" << std::endl << std::endl;
+}
+
 int main() {
     test_model_accuracy();
     test_dead_region_detection();
@@ -593,6 +634,7 @@ int main() {
     test_overtemp_shutdown();
     test_full_flow();
     test_web_handlers();
+    test_websocket_communications();
     std::cout << "ALL TESTS PASSED!" << std::endl;
     return 0;
 }
