@@ -376,18 +376,7 @@ void handleRoot() {
 
 void handleCommand() {
     String cmd = server.arg("cmd");
-/*
-    if (cmd == "charge") {
-        resetAh = true;
-        buildModelPhase = BuildModelPhase::Idle;
-        __atomic_thread_fence(__ATOMIC_SEQ_CST);
-        currentAppState = APP_STATE_BUILDING_MODEL;
-    } else if (cmd == "stop") {
-        currentAppState = APP_STATE_IDLE;
-        applyDuty(0);
-    }
-    server.send(200, "text/plain", "OK");
- */   
+
     if (cmd == "charge") {
         resetAh = true;
         buildModelPhase = BuildModelPhase::Idle;
