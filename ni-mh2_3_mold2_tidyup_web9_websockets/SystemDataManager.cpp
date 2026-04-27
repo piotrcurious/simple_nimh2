@@ -30,6 +30,7 @@ SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPi
     _currentData.ambient_temp_c = 25.0;
     _currentData.battery_temp_c = 25.0;
     _currentData.vcc_mv = 3300.0f;
+    _lastValidData = _currentData;
 }
 
 void SystemDataManager::begin() {
@@ -162,16 +163,14 @@ double SystemDataManager::calculateBatteryTemp(double ambientTemp, float therm1M
 }
 
 SystemData SystemDataManager::getData() {
-    SystemData d;
     if (_dataMutex && xSemaphoreTakeRecursive(_dataMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        d = _currentData;
+        _lastValidData = _currentData;
         xSemaphoreGiveRecursive(_dataMutex);
-    } else {
-        // Fallback or debug logging
-        memset(&d, 0, sizeof(d));
-        if (_dataMutex) Serial.println("SystemDataManager::getData: Mutex timeout!");
+    } else if (_dataMutex) {
+        // Mutex timeout, but we still have _lastValidData to return
+        // Serial.println("SystemDataManager::getData: Mutex timeout!");
     }
-    return d;
+    return _lastValidData;
 }
 
 void SystemDataManager::resetMah() {

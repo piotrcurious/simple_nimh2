@@ -627,6 +627,39 @@ void test_websocket_communications() {
     std::cout << "test_websocket_communications PASSED" << std::endl << std::endl;
 }
 
+void test_stress_web_requests() {
+    std::cout << "Running test_stress_web_requests..." << std::endl;
+    reset_globals();
+
+    // Simulate many rapid requests
+    for (int i = 0; i < 100; i++) {
+        mock_millis += 1;
+        mock_sample_count++;
+        systemData.update(estimateCurrent(dutyCycle));
+
+        // Simulate AJAX state request
+        server.args["type"] = "state";
+        handleData();
+        assert(server.lastResponseContent.length() > 0);
+
+        // Simulate AJAX history request
+        server.args["type"] = "history";
+        handleData();
+
+        // Simulate broadcast
+        broadcastLiveTelemetry();
+
+        // Simulate random command
+        if (i % 20 == 0) {
+            server.args["cmd"] = "reset";
+            handleCommand();
+        }
+    }
+
+    std::cout << "  Processed 100 iterations of mixed requests successfully." << std::endl;
+    std::cout << "test_stress_web_requests PASSED" << std::endl << std::endl;
+}
+
 int main() {
     test_model_accuracy();
     test_dead_region_detection();
@@ -635,6 +668,7 @@ int main() {
     test_full_flow();
     test_web_handlers();
     test_websocket_communications();
+    test_stress_web_requests();
     std::cout << "ALL TESTS PASSED!" << std::endl;
     return 0;
 }
