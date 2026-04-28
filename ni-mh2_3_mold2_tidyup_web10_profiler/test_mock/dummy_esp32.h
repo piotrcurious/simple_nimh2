@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <map>
 #include <cstring>
+#include <functional>
 
 // Forward declarations for AsyncWebServer dummies
 struct AsyncWebServerResponse;
@@ -139,7 +140,10 @@ struct AwsFrameInfo {
 
 struct AsyncWebSocketClient {
     uint32_t id() { return 1; }
-    void binary(const uint8_t* data, size_t len) {}
+    std::vector<uint8_t> lastBinary;
+    void binary(const uint8_t* data, size_t len) {
+        lastBinary.assign(data, data + len);
+    }
     void text(const char* data) {}
 };
 
@@ -147,6 +151,7 @@ struct AsyncWebSocket {
     const char* _url;
     void (*_eventCallback)(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) = nullptr;
     std::vector<uint8_t> lastBinaryAll;
+    AsyncWebSocketClient _mockClient;
     AsyncWebSocket(const char* url) : _url(url) {}
     void onEvent(void (*cb)(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len)) {
         _eventCallback = cb;
@@ -156,7 +161,21 @@ struct AsyncWebSocket {
         lastBinaryAll.assign(data, data + len);
     }
     void cleanupClients() {}
+
+    // Mock helpers
+    void mockConnect() {
+        if (_eventCallback) _eventCallback(this, &_mockClient, WS_EVT_CONNECT, nullptr, nullptr, 0);
+    }
+    void mockReceiveText(const char* text) {
+        if (_eventCallback) {
+            AwsFrameInfo info;
+            info.final = true; info.index = 0; info.len = strlen(text); info.opcode = WS_TEXT;
+            _eventCallback(this, &_mockClient, WS_EVT_DATA, &info, (uint8_t*)text, info.len);
+        }
+    }
 };
+
+typedef std::function<size_t(uint8_t*, size_t, size_t)> AwsChunkedDataCallback;
 
 struct AsyncWebServerRequest {
     std::map<String, String> _args;
@@ -165,11 +184,14 @@ struct AsyncWebServerRequest {
     void send(AsyncWebServerResponse* response);
     AsyncWebServerResponse* beginResponse(int code, const char* type, const uint8_t* data, size_t size);
     AsyncWebServerResponse* beginResponse_P(int code, const char* type, const char* content);
+    AsyncWebServerResponse* beginChunkedResponse(const char* type, AwsChunkedDataCallback cb);
 };
 
 struct AsyncWebServerResponse {
     void addHeader(const char* name, const char* value) {}
     String _content;
+    bool _isChunked = false;
+    AwsChunkedDataCallback _callback;
 };
 
 inline AsyncWebServerResponse* AsyncWebServerRequest::beginResponse(int code, const char* type, const uint8_t* data, size_t size) {
@@ -177,7 +199,18 @@ inline AsyncWebServerResponse* AsyncWebServerRequest::beginResponse(int code, co
     if (data && size) r->_content.assign((const char*)data, size);
     return r;
 }
-inline AsyncWebServerResponse* AsyncWebServerRequest::beginResponse_P(int code, const char* type, const char* content) { return new AsyncWebServerResponse(); }
+inline AsyncWebServerResponse* AsyncWebServerRequest::beginResponse_P(int code, const char* type, const char* content) {
+    AsyncWebServerResponse* r = new AsyncWebServerResponse();
+    if (content) r->_content.assign(content);
+    return r;
+}
+
+inline AsyncWebServerResponse* AsyncWebServerRequest::beginChunkedResponse(const char* type, AwsChunkedDataCallback cb) {
+    AsyncWebServerResponse* r = new AsyncWebServerResponse();
+    r->_isChunked = true;
+    r->_callback = cb;
+    return r;
+}
 
 struct AsyncWebServer {
     AsyncWebServer(int port) {}
@@ -228,11 +261,6 @@ struct WebSocketsServer {
     int connectedClients() { return _connectedClients; }
     IPAddress remoteIP(uint8_t num) { return {{192, 168, 4, 2}}; }
 
-    // Mock helpers
-    void mockConnect(uint8_t num) {
-        _connectedClients++;
-        if (_eventCallback) _eventCallback(num, WStype_CONNECTED, (uint8_t*)"/", 1);
-    }
     void mockDisconnect(uint8_t num) {
         if (_connectedClients > 0) _connectedClients--;
         if (_eventCallback) _eventCallback(num, WStype_DISCONNECTED, nullptr, 0);

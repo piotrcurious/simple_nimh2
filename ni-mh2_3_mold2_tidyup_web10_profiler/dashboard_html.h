@@ -429,14 +429,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       }
     }
 
-    async function fetchPayload(url) {
-      const res = await fetch(url, { cache: 'no-store' });
-      const ct = (res.headers.get('content-type') || '').toLowerCase();
-      if (ct.includes('application/cbor')) {
-        return decodeCbor(new Uint8Array(await res.arrayBuffer()));
-      }
-      return await res.json();
-    }
 
     function readUint(ai, view, state) {
       if (ai < 24) return ai;
@@ -1143,53 +1135,51 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         `Latest: V=${fmt(last.v,3)}  I=${fmt(last.i,3)}  dT=${fmt(last.td,2)}  Th=${fmt(last.th,2)}`;
     }
 
+    let chargeLogBuffer = [];
     function handleWSData(data) {
       if (!data) return;
-      if (data.state) {
-        maxDT = Number.isFinite(data.state.max_dt) ? data.state.max_dt : 1.5;
-        updateMetricText(data.state);
-        drawAllGauges(data.state);
+
+      // Route based on structure
+      if (data.app !== undefined) {
+        maxDT = Number.isFinite(data.max_dt) ? data.max_dt : 1.5;
+        updateMetricText(data);
+        drawAllGauges(data);
       }
-      if (data.ambient) renderAmbient(data.ambient);
+      else if (data.t1 !== undefined) {
+        lastLiveDT = lastFinite(data.td);
+        renderMain(data);
+      }
+      else if (data.t !== undefined) {
+        renderAmbient(data);
+      }
+      else if (data.lu !== undefined) {
+        renderIR(data);
+      }
+      else if (data.batch !== undefined) {
+        // Chargelog batch
+        if (chargeLogBuffer.length >= data.total) chargeLogBuffer = [];
+        chargeLogBuffer.push(...data.batch);
+        renderCharge(chargeLogBuffer);
+      }
     }
 
-    async function updateData() {
-      try {
+    function loopData() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
         const now = Date.now();
-
-        // Fallback: if WebSocket is not open, fetch state via AJAX
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-          const data = await fetchPayload('/data?type=state&fmt=cbor');
-          if (data) handleWSData({ state: data });
-        }
-
         if (now - lastHistoryFetch > 5000) {
           lastHistoryFetch = now;
-          const hist = await fetchPayload('/data?type=history&fmt=cbor');
-          lastLiveDT = lastFinite(hist.td);
-          renderMain(hist);
+          ws.send('REQ_HISTORY');
         }
-
         if (now - lastIRFetch > 10000) {
           lastIRFetch = now;
-          const ir = await fetchPayload('/data?type=ir&fmt=cbor');
-          renderIR(ir);
+          ws.send('REQ_IR');
         }
-
         if (now - lastChargeFetch > 20000) {
           lastChargeFetch = now;
-          const charge = await fetchPayload('/data?type=chargelog&fmt=cbor');
-          renderCharge(charge);
+          ws.send('REQ_CHARGELOG');
         }
-      } catch (e) {
-        console.error(e);
       }
-    }
-
-    // Switched to setTimeout polling to prevent async fetch overlap/pileup on slow network connections
-    async function loopData() {
-        await updateData();
-        setTimeout(loopData, 2000);
+      setTimeout(loopData, 2000);
     }
 
     function resizeAll() {
