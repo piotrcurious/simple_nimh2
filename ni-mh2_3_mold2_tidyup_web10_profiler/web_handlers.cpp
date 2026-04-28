@@ -185,46 +185,44 @@ static void appendCborIR(CborWriter& w) {
     w.addText("pairs"); cborAddXYPairs(w, internalResistanceDataPairs, resistanceDataCountPairs);
 }
 
-static void sendBinaryResponse(AsyncWebServerRequest *request, const char* contentType, const std::vector<uint8_t>& payload) {
-    AsyncWebServerResponse *response = request->beginResponse(200, contentType, payload.data(), payload.size());
-    response->addHeader("Cache-Control", "no-store");
-    request->send(response);
-}
-
-static void sendCborState(AsyncWebServerRequest *request) {
+static void sendCborState(AsyncWebSocketClient *client) {
+    if (!client) return;
     WEB_LOCK();
     CborWriter w;
     w.reserve(256);
     appendCborState(w);
     WEB_UNLOCK();
-    sendBinaryResponse(request, "application/cbor", w.data);
+    client->binary(w.data.data(), w.data.size());
 }
 
-static void sendCborHistory(AsyncWebServerRequest *request) {
+static void sendCborHistory(AsyncWebSocketClient *client) {
+    if (!client) return;
     WEB_LOCK();
     CborWriter w;
     w.reserve(PLOT_WIDTH * 5 * 8 + 32);
     appendCborHistory(w);
     WEB_UNLOCK();
-    sendBinaryResponse(request, "application/cbor", w.data);
+    client->binary(w.data.data(), w.data.size());
 }
 
-static void sendCborAmbient(AsyncWebServerRequest *request) {
+static void sendCborAmbient(AsyncWebSocketClient *client) {
+    if (!client) return;
     WEB_LOCK();
     CborWriter w;
     w.reserve(PLOT_WIDTH * 3 * 8 + 32);
     appendCborAmbient(w);
     WEB_UNLOCK();
-    sendBinaryResponse(request, "application/cbor", w.data);
+    client->binary(w.data.data(), w.data.size());
 }
 
-static void sendCborIR(AsyncWebServerRequest *request) {
+static void sendCborIR(AsyncWebSocketClient *client) {
+    if (!client) return;
     WEB_LOCK();
     CborWriter w;
     w.reserve(256 + (resistanceDataCount + resistanceDataCountPairs) * 24);
     appendCborIR(w);
     WEB_UNLOCK();
-    sendBinaryResponse(request, "application/cbor", w.data);
+    client->binary(w.data.data(), w.data.size());
 }
 
 /*
@@ -304,7 +302,8 @@ static void sendCborChargeLog() {
 }
 */
 
-static void sendCborChargeLog(AsyncWebServerRequest *request) {
+static void sendCborChargeLog(AsyncWebSocketClient *client) {
+    if (!client) return;
     size_t total = 0;
     float currentRParam = 0.0f;
     WEB_LOCK();
@@ -312,73 +311,57 @@ static void sendCborChargeLog(AsyncWebServerRequest *request) {
     currentRParam = regressedInternalResistancePairsIntercept;
     WEB_UNLOCK();
 
-    AsyncWebServerResponse *response = request->beginChunkedResponse("application/cbor",
-        [total, currentRParam](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
-            static size_t currentEntry = 0;
-            static uint32_t lastTimestamp = 0;
-            if (index == 0) {
-                currentEntry = 0;
-                lastTimestamp = 0;
-            }
-            if (currentEntry >= total) return 0;
+    const size_t batchSize = 10;
+    uint32_t lastTimestamp = 0;
 
-            CborWriter w;
-            w.reserve(maxLen);
+    for (size_t i = 0; i < total; i += batchSize) {
+        vTaskDelay(0);
+        CborWriter w;
+        w.reserve(batchSize * 100 + 32);
 
-            // Header if starting
-            if (index == 0) {
-                w.addTypeVal(4, total);
-            }
+        // Individual packets must be valid CBOR objects.
+        // We wrap each batch in a map with "log" and "count" for the frontend to process incrementally.
+        size_t itemsInBatch = std::min(batchSize, total - i);
+        w.startMap(2);
+        w.addText("batch"); w.startArray(itemsInBatch);
 
-            while (currentEntry < total) {
-                ChargeLogData entry;
-                WEB_LOCK();
-                if (currentEntry < chargeLog.size()) entry = chargeLog[currentEntry];
-                WEB_UNLOCK();
+        for (size_t j = 0; j < itemsInBatch; j++) {
+            ChargeLogData entry;
+            WEB_LOCK();
+            if ((i + j) < chargeLog.size()) entry = chargeLog[i + j];
+            WEB_UNLOCK();
 
-                float td = entry.batteryTemperature - entry.ambientTemperature;
-                float localEnergy = 0.0f;
-                uint32_t prevTs = (currentEntry == 0) ? entry.timestamp : lastTimestamp;
-                float estimatedDiff = estimateTempDiff(
-                    entry.voltage, entry.voltage, entry.current,
-                    currentRParam, entry.ambientTemperature,
-                    entry.timestamp, prevTs, entry.batteryTemperature,
-                    &localEnergy
-                );
-                float thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
+            float td = entry.batteryTemperature - entry.ambientTemperature;
+            float localEnergy = 0.0f;
+            uint32_t prevTs = (i == 0 && j == 0) ? entry.timestamp : lastTimestamp;
+            float estimatedDiff = estimateTempDiff(
+                entry.voltage, entry.voltage, entry.current,
+                currentRParam, entry.ambientTemperature,
+                entry.timestamp, prevTs, entry.batteryTemperature,
+                &localEnergy
+            );
+            float thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
+            lastTimestamp = entry.timestamp;
 
-                CborWriter item;
-                item.startMap(10);
-                item.addText("t");    item.addUInt((uint64_t)entry.timestamp);
-                item.addText("i");    item.addFloat(entry.current);
-                item.addText("v");    item.addFloat(entry.voltage);
-                item.addText("at");   item.addFloat(entry.ambientTemperature);
-                item.addText("bt");   item.addFloat(entry.batteryTemperature);
-                item.addText("d");    item.addInt((int64_t)entry.dutyCycle);
-                item.addText("irlu"); item.addFloat(entry.internalResistanceLoadedUnloaded);
-                item.addText("irp");  item.addFloat(entry.internalResistancePairs);
-                item.addText("td");   item.addFloat(td);
-                item.addText("th");   item.addFloat(thresholdValue);
-
-                if (w.data.size() + item.data.size() > maxLen) {
-                    // Won't fit, item remains for next chunk
-                    break;
-                }
-
-                w.putBytes(item.data.data(), item.data.size());
-                lastTimestamp = entry.timestamp;
-                currentEntry++;
-            }
-
-            memcpy(buffer, w.data.data(), w.data.size());
-            return w.data.size();
-        });
-
-    response->addHeader("Cache-Control", "no-store");
-    request->send(response);
+            w.startMap(10);
+            w.addText("t");    w.addUInt((uint64_t)entry.timestamp);
+            w.addText("i");    w.addFloat(entry.current);
+            w.addText("v");    w.addFloat(entry.voltage);
+            w.addText("at");   w.addFloat(entry.ambientTemperature);
+            w.addText("bt");   w.addFloat(entry.batteryTemperature);
+            w.addText("d");    w.addInt((int64_t)entry.dutyCycle);
+            w.addText("irlu"); w.addFloat(entry.internalResistanceLoadedUnloaded);
+            w.addText("irp");  w.addFloat(entry.internalResistancePairs);
+            w.addText("td");   w.addFloat(td);
+            w.addText("th");   w.addFloat(thresholdValue);
+        }
+        w.addText("total"); w.addUInt(total);
+        client->binary(w.data.data(), w.data.size());
+    }
 }
 
-static void sendCborRoot(AsyncWebServerRequest *request) {
+static void sendCborRoot(AsyncWebSocketClient *client) {
+    if (!client) return;
     WEB_LOCK();
     CborWriter w;
     w.reserve(512);
@@ -386,7 +369,7 @@ static void sendCborRoot(AsyncWebServerRequest *request) {
     w.addText("state");   appendCborState(w);
     w.addText("ambient"); appendCborAmbient(w);
     WEB_UNLOCK();
-    sendBinaryResponse(request, "application/cbor", w.data);
+    client->binary(w.data.data(), w.data.size());
 }
 
 static void handleJsonChargeLog(AsyncWebServerRequest *request) {
@@ -455,53 +438,7 @@ static void handleJsonChargeLog(AsyncWebServerRequest *request) {
 }
 
 void handleData(AsyncWebServerRequest *request) {
-    Serial.printf("WEB: handleData type=%s\n", request->arg("type").c_str());
-    String type = request->arg("type");
-    bool wantCbor = (request->arg("fmt") == "cbor");
-
-    if (wantCbor) {
-        if (type == "state") sendCborState(request);
-        else if (type == "history") sendCborHistory(request);
-        else if (type == "ambient") sendCborAmbient(request);
-        else if (type == "chargelog") sendCborChargeLog(request);
-        else if (type == "ir") sendCborIR(request);
-        else sendCborRoot(request);
-        return;
-    }
-
-    if (type == "state") request->send(200, "application/json", getJsonState());
-    else if (type == "history") request->send(200, "application/json", getJsonHistory());
-    else if (type == "ambient") request->send(200, "application/json", getJsonAmbient());
-    else if (type == "chargelog") handleJsonChargeLog(request);
-    else if (type == "ir") {
-        WEB_LOCK();
-        String json;
-        json.reserve(256 + (resistanceDataCount + resistanceDataCountPairs) * 20);
-        json = "{";
-        auto addIRData = [&](const char* name, float data[][2], int count) {
-            json += "\""; json += name; json += "\":[";
-            char buf[40];
-            for (int i = 0; i < count; i++) {
-                snprintf(buf, sizeof(buf), "[%.3f,%.3f]", data[i][0], data[i][1]);
-                json += buf;
-                if (i < count - 1) json += ",";
-            }
-            json += "]";
-        };
-        addIRData("lu", internalResistanceData, resistanceDataCount); json += ",";
-        addIRData("pairs", internalResistanceDataPairs, resistanceDataCountPairs);
-        json += "}";
-        WEB_UNLOCK();
-        request->send(200, "application/json", json);
-    }
-    else {
-        String json = "{\"state\":";
-        json += getJsonState();
-        json += ",\"ambient\":";
-        json += getJsonAmbient();
-        json += "}";
-        request->send(200, "application/json", json);
-    }
+    request->send(410, "text/plain", "API migrated to WebSockets. Use REQ_* commands.");
 }
 
 void handleRoot(AsyncWebServerRequest *request) {
@@ -511,7 +448,13 @@ void handleRoot(AsyncWebServerRequest *request) {
     request->send(response);
 }
 
-static void processCommand(String cmd) {
+static void processCommand(String cmd, AsyncWebSocketClient *client = nullptr) {
+    if (cmd == "REQ_STATE") { sendCborState(client); return; }
+    if (cmd == "REQ_HISTORY") { sendCborHistory(client); return; }
+    if (cmd == "REQ_AMBIENT") { sendCborAmbient(client); return; }
+    if (cmd == "REQ_CHARGELOG") { sendCborChargeLog(client); return; }
+    if (cmd == "REQ_IR") { sendCborIR(client); return; }
+
     if (cmd == "charge") {
         WEB_LOCK();
         resetAh = true;
@@ -544,25 +487,21 @@ void handleCommand(AsyncWebServerRequest *request) {
 void handleWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
     if (type == WS_EVT_CONNECT) {
         Serial.printf("WS Client connected [%u]\n", client->id());
-        WEB_LOCK();
-        CborWriter w;
-        w.reserve(512);
-        w.startMap(2);
-        w.addText("state");   appendCborState(w);
-        w.addText("ambient"); appendCborAmbient(w);
-        WEB_UNLOCK();
-        client->binary(w.data.data(), w.data.size());
+        sendCborState(client);
+        sendCborAmbient(client);
     } else if (type == WS_EVT_DISCONNECT) {
         Serial.printf("WS Client disconnected [%u]\n", client->id());
     } else if (type == WS_EVT_DATA) {
         AwsFrameInfo *info = (AwsFrameInfo*)arg;
         if (info->final && info->index == 0 && info->len == len) {
             if (info->opcode == WS_TEXT) {
-                String cmd;
-                cmd.reserve(len);
-                for(size_t i=0; i<len; i++) cmd += (char)data[i];
+                char* buf = (char*)malloc(len + 1);
+                memcpy(buf, data, len);
+                buf[len] = 0;
+                String cmd = buf;
+                free(buf);
                 Serial.printf("WS Command received: %s\n", cmd.c_str());
-                processCommand(cmd);
+                processCommand(cmd, client);
             }
         }
     }

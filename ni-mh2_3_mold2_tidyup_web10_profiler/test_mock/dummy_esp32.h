@@ -140,7 +140,10 @@ struct AwsFrameInfo {
 
 struct AsyncWebSocketClient {
     uint32_t id() { return 1; }
-    void binary(const uint8_t* data, size_t len) {}
+    std::vector<uint8_t> lastBinary;
+    void binary(const uint8_t* data, size_t len) {
+        lastBinary.assign(data, data + len);
+    }
     void text(const char* data) {}
 };
 
@@ -148,6 +151,7 @@ struct AsyncWebSocket {
     const char* _url;
     void (*_eventCallback)(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) = nullptr;
     std::vector<uint8_t> lastBinaryAll;
+    AsyncWebSocketClient _mockClient;
     AsyncWebSocket(const char* url) : _url(url) {}
     void onEvent(void (*cb)(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len)) {
         _eventCallback = cb;
@@ -157,6 +161,18 @@ struct AsyncWebSocket {
         lastBinaryAll.assign(data, data + len);
     }
     void cleanupClients() {}
+
+    // Mock helpers
+    void mockConnect() {
+        if (_eventCallback) _eventCallback(this, &_mockClient, WS_EVT_CONNECT, nullptr, nullptr, 0);
+    }
+    void mockReceiveText(const char* text) {
+        if (_eventCallback) {
+            AwsFrameInfo info;
+            info.final = true; info.index = 0; info.len = strlen(text); info.opcode = WS_TEXT;
+            _eventCallback(this, &_mockClient, WS_EVT_DATA, &info, (uint8_t*)text, info.len);
+        }
+    }
 };
 
 typedef std::function<size_t(uint8_t*, size_t, size_t)> AwsChunkedDataCallback;
@@ -245,11 +261,6 @@ struct WebSocketsServer {
     int connectedClients() { return _connectedClients; }
     IPAddress remoteIP(uint8_t num) { return {{192, 168, 4, 2}}; }
 
-    // Mock helpers
-    void mockConnect(uint8_t num) {
-        _connectedClients++;
-        if (_eventCallback) _eventCallback(num, WStype_CONNECTED, (uint8_t*)"/", 1);
-    }
     void mockDisconnect(uint8_t num) {
         if (_connectedClients > 0) _connectedClients--;
         if (_eventCallback) _eventCallback(num, WStype_DISCONNECTED, nullptr, 0);

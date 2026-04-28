@@ -576,70 +576,50 @@ void test_full_flow() {
 }
 
 void test_web_handlers() {
-    std::cout << "Running test_web_handlers (CBOR Large)..." << std::endl;
+    std::cout << "Running test_web_handlers (API Migration check)..." << std::endl;
     reset_globals();
-
     AsyncWebServerRequest req;
-
-    const int NUM_ENTRIES = 1000; // Increased for stress test
-    for (int i=0; i<NUM_ENTRIES; i++) {
-        ChargeLogData d;
-        d.timestamp = 1000 * i;
-        d.current = 0.1f;
-        d.voltage = 1.4f;
-        d.ambientTemperature = 22.0f;
-        d.batteryTemperature = 23.0f;
-        d.dutyCycle = 100;
-        d.internalResistanceLoadedUnloaded = 0.15f;
-        d.internalResistancePairs = 0.16f;
-        chargeLog.push_back(d);
-    }
-
     mock_server.lastResponseContent = "";
-    req._args["type"] = "chargelog";
-    req._args["fmt"] = "cbor";
     handleData(&req);
-
-    std::cout << "  CBOR Response size: " << mock_server.lastResponseContent.length() << " bytes" << std::endl;
-    assert(mock_server.lastResponseContent.length() > 0);
-
-    // For 1000 entries: major 4, ai 25, length 1000 (0x03E8) -> 0x99 0x03 0xE8
-    uint8_t first = (uint8_t)mock_server.lastResponseContent[0];
-    uint8_t second = (uint8_t)mock_server.lastResponseContent[1];
-    uint8_t third = (uint8_t)mock_server.lastResponseContent[2];
-    std::cout << "  Header: 0x" << std::hex << (int)first << " 0x" << (int)second << " 0x" << (int)third << std::dec << std::endl;
-    assert(first == 0x99);
-    assert(second == 0x03);
-    assert(third == 0xE8);
-
-    std::cout << "Running test_web_handlers (JSON History)..." << std::endl;
-    for (int i=0; i<PLOT_WIDTH; i++) {
-        temp1_values[i] = 22.0f + i*0.1f;
-        if (i % 10 == 0) diff_values[i] = NAN;
-        else diff_values[i] = 1.0f + i*0.01f;
-    }
-    mock_server.lastResponseContent = "";
-    req._args["type"] = "history";
-    req._args.erase("fmt");
-    handleData(&req);
-    assert(mock_server.lastResponseContent.find("\"t1\":[") != String::npos);
-    assert(mock_server.lastResponseContent.find("null") != String::npos);
-    std::cout << "  JSON History contains 'null' for NaN: " << (mock_server.lastResponseContent.find("null") != String::npos) << std::endl;
-
-    std::cout << "Running test_web_handlers (Command Handling)..." << std::endl;
-    mAh_charged = 1234.5;
-    req._args["cmd"] = "reset";
-    handleCommand(&req);
-    std::cout << "  After reset cmd, mAh_charged: " << mAh_charged << std::endl;
-    // Note: handleCommand sets resetAh = true, which main loop/SystemDataManager processes.
-    // In our simplified mock update(), we handle it or just check the flag.
-    assert(resetAh == true);
-
+    assert(mock_server.lastResponseCode == 410);
+    std::cout << "  HTTP 410 Gone correctly returned for REST API." << std::endl;
     std::cout << "test_web_handlers PASSED" << std::endl << std::endl;
 }
 
 void test_websocket_communications() {
-    std::cout << "Running test_websocket_communications... (SKIPPED in Async mode)" << std::endl;
+    std::cout << "Running test_websocket_communications..." << std::endl;
+    reset_globals();
+    ws.onEvent(handleWebSocketEvent);
+    ws._mockClient.lastBinary.clear();
+
+    // 1. Test Connection
+    std::cout << "  Simulating client connection..." << std::endl;
+    ws.mockConnect();
+    // Connect triggers sendCborState and sendCborAmbient
+    assert(ws._mockClient.lastBinary.size() > 0);
+    std::cout << "  Initial data received size: " << ws._mockClient.lastBinary.size() << " bytes" << std::endl;
+
+    // 2. Test Command
+    std::cout << "  Simulating WebSocket command 'stop'..." << std::endl;
+    currentAppState = APP_STATE_CHARGING;
+    ws.mockReceiveText("stop");
+    // In mock, processCommand is called.
+    if (currentAppState != APP_STATE_IDLE) {
+        std::cout << "  Warning: currentAppState is " << (int)currentAppState << ", expected " << (int)APP_STATE_IDLE << std::endl;
+    }
+    assert(currentAppState == APP_STATE_IDLE);
+    assert(dutyCycle == 0);
+    std::cout << "  Command 'stop' processed correctly." << std::endl;
+
+    // 3. Test Data Request (History)
+    std::cout << "  Requesting history via WebSocket..." << std::endl;
+    ws._mockClient.lastBinary.clear();
+    ws.mockReceiveText("REQ_HISTORY");
+    assert(ws._mockClient.lastBinary.size() > 0);
+    assert(ws._mockClient.lastBinary[0] == 0xA5); // Map(5)
+    std::cout << "  History data received via WS." << std::endl;
+
+    std::cout << "test_websocket_communications PASSED" << std::endl << std::endl;
 }
 
 void test_profiling_logic() {
