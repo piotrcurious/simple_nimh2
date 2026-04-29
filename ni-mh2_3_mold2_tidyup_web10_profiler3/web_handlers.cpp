@@ -601,14 +601,22 @@ static void processCommand(String cmd, AsyncWebSocketClient *client = nullptr) {
     if (cmd == "charge") {
         WEB_LOCK();
         resetAh = true;
+        postModelAppState = APP_STATE_CHARGING;
         WEB_UNLOCK();
         setBuildModelPhase(BuildModelPhase::Idle);
         setAppState(APP_STATE_BUILDING_MODEL);
     } else if (cmd == "ir") {
         WEB_LOCK();
-        currentIRState = IR_STATE_START;
+        isMeasuringResistance = true;
+        if (currentModel.isModelBuilt) {
+            currentIRState = IR_STATE_START;
+            setAppState(APP_STATE_MEASURING_IR);
+        } else {
+            postModelAppState = APP_STATE_MEASURING_IR;
+            setBuildModelPhase(BuildModelPhase::Idle);
+            setAppState(APP_STATE_BUILDING_MODEL);
+        }
         WEB_UNLOCK();
-        setAppState(APP_STATE_MEASURING_IR);
     } else if (cmd == "reset") {
         WEB_LOCK();
         resetAh = true;

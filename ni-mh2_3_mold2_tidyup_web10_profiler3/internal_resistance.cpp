@@ -379,6 +379,7 @@ void completeResistanceMeasurement() {
     }
     WEB_UNLOCK();
     isMeasuringResistance = false;
+    applyDuty(0);
     currentIRState = IR_STATE_IDLE;
 }
 
