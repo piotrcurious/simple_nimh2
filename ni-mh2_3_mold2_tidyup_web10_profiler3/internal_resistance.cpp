@@ -133,40 +133,17 @@ void measureInternalResistanceStep() {
                                      initialUnloaded.voltage, initialUnloaded.current);
                 Serial.printf("Initial Unloaded Voltage: %.3f V\n", initialUnloaded.voltage);
 
-                findMinDcLow = MIN_DUTY_CYCLE_START;
-                findMinDcHigh = MAX_DUTY_CYCLE;
-                minimalDutyCycle = 0;
+                minimalDutyCycle = estimateDutyCycleForCurrent(MEASURABLE_CURRENT_THRESHOLD);
+                if (minimalDutyCycle < MIN_DUTY_CYCLE_START) minimalDutyCycle = MIN_DUTY_CYCLE_START;
 
-                Serial.println("Finding minimal duty cycle...");
-                currentIRState = IR_STATE_FIND_MIN_DC;
-                findMinDcMid = findMinDcLow + (findMinDcHigh - findMinDcLow) / 2;
-                getSingleMeasurement(findMinDcMid, IR_STATE_FIND_MIN_DC);
+                Serial.printf("Minimal duty cycle (from model): %d\n", minimalDutyCycle);
+                currentIRState = IR_STATE_GENERATE_PAIRS;
             }
             break;
 
         case IR_STATE_FIND_MIN_DC:
-            if (currentMeasurement.dutyCycle == findMinDcMid) {
-                if (currentMeasurement.current >= MEASURABLE_CURRENT_THRESHOLD) {
-                    minimalDutyCycle = findMinDcMid;
-                    findMinDcHigh = findMinDcMid - 1;
-                } else {
-                    findMinDcLow = findMinDcMid + 1;
-                }
-
-                if (findMinDcLow <= findMinDcHigh) {
-                    findMinDcMid = findMinDcLow + (findMinDcHigh - findMinDcLow) / 2;
-                    getSingleMeasurement(findMinDcMid, IR_STATE_FIND_MIN_DC);
-                } else {
-                    if (minimalDutyCycle > 0) {
-                        Serial.printf("Minimal duty cycle found: %d\n", minimalDutyCycle);
-                        currentIRState = IR_STATE_GENERATE_PAIRS;
-                    } else {
-                        Serial.println("Warning: No measurable current found.");
-                        currentIRState = IR_STATE_IDLE;
-                        isMeasuringResistance = false;
-                    }
-                }
-            }
+            // This state is now skipped but kept for state machine integrity if needed
+            currentIRState = IR_STATE_GENERATE_PAIRS;
             break;
 
         case IR_STATE_GENERATE_PAIRS:
@@ -237,47 +214,21 @@ void handleGeneratePairs() {
 }
 
 void handlePairGeneration() {
-    if (pairGenerationSubStep == 0) {
-        if (pairIndex < MAX_RESISTANCE_POINTS / 2) {
-            float targetHighCurrent = maxCurrent -
-                (pairIndex * (maxCurrent - minCurrent) / (MAX_RESISTANCE_POINTS / 2));
-            bestHighDc = -1;
-            minCurrentDifference = 1e9f;
-            lowBound = minimalDutyCycle;
-            highBound = previousHighDc;
-            pairGenerationSubStep = 1;
-        } else {
-            currentIRState = IR_STATE_MEASURE_L_UL;
-            pairIndex = 0;
-            measureStep = 0;
-        }
-    } else if (pairGenerationSubStep == 1) {
-        if (lowBound <= highBound) {
-            int midDc = lowBound + (highBound - lowBound) / 2;
-            getSingleMeasurement(midDc, IR_STATE_GENERATE_PAIRS);
-            pairGenerationSubStep = 2;
-        } else {
-            int currentHighDc = (bestHighDc != -1) ? bestHighDc : previousHighDc;
-            currentHighDc = std::max(currentHighDc, minimalDutyCycle);
-            dutyCyclePairs.push_back({lowDc, currentHighDc});
-            previousHighDc = currentHighDc - 1;
-            pairIndex++;
-            pairGenerationSubStep = 0;
-        }
-    } else if (pairGenerationSubStep == 2) {
+    if (pairIndex < MAX_RESISTANCE_POINTS / 2) {
         float targetHighCurrent = maxCurrent -
             (pairIndex * (maxCurrent - minCurrent) / (MAX_RESISTANCE_POINTS / 2));
-        float currentDifference = std::fabs(currentMeasurement.current - targetHighCurrent);
-        if (currentDifference < minCurrentDifference) {
-            minCurrentDifference = currentDifference;
-            bestHighDc = currentMeasurement.dutyCycle;
-        }
-        if (currentMeasurement.current > targetHighCurrent) {
-            highBound = currentMeasurement.dutyCycle - 1;
-        } else {
-            lowBound = currentMeasurement.dutyCycle + 1;
-        }
-        pairGenerationSubStep = 1;
+
+        int currentHighDc = estimateDutyCycleForCurrent(targetHighCurrent);
+        if (currentHighDc > previousHighDc && pairIndex > 0) currentHighDc = previousHighDc;
+        if (currentHighDc < minimalDutyCycle) currentHighDc = minimalDutyCycle;
+
+        dutyCyclePairs.push_back({minimalDutyCycle, currentHighDc});
+        previousHighDc = currentHighDc - 1;
+        pairIndex++;
+    } else {
+        currentIRState = IR_STATE_MEASURE_L_UL;
+        pairIndex = 0;
+        measureStep = 0;
     }
 }
 
@@ -303,8 +254,9 @@ void handleMeasureLoadedUnloaded() {
         case 2:
             {
                 float loadedCurrent = currentsLoaded.back();
-                if (loadedCurrent > 0.01f) {
-                    float internalResistance = (currentMeasurement.voltage - voltagesLoaded.back()) / loadedCurrent;
+                float currentDiff = loadedCurrent - currentMeasurement.current;
+                if (std::fabs(currentDiff) > 0.01f) {
+                    float internalResistance = (currentMeasurement.voltage - voltagesLoaded.back()) / currentDiff;
                     WEB_LOCK();
                     storeResistanceData(loadedCurrent, std::fabs(internalResistance),
                                       internalResistanceData, resistanceDataCount);
@@ -509,7 +461,7 @@ void distribute_error(float data[][2], int count, float spacing_threshold, float
 
 bool performLinearRegression(float data[][2], int count, float& slope, float& intercept) {
     if (count < 2) return false;
-#ifndef MOCK_TEST
+#ifndef MOCK_TEST_DISABLED // Use it even in mock if possible, but let's provide a fallback
     std::vector<float> x(count), y(count);
     for (int i = 0; i < count; ++i) {
         x[i] = data[i][0];
@@ -524,6 +476,18 @@ bool performLinearRegression(float data[][2], int count, float& slope, float& in
     }
     return false;
 #else
-    slope = 0; intercept = 0.2f; return true;
+    // Simple least squares fallback for mock or if fitter fails
+    double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+    for (int i = 0; i < count; i++) {
+        sumX += data[i][0];
+        sumY += data[i][1];
+        sumXY += (double)data[i][0] * data[i][1];
+        sumX2 += (double)data[i][0] * data[i][0];
+    }
+    double denominator = (count * sumX2 - sumX * sumX);
+    if (std::abs(denominator) < 1e-9) return false;
+    slope = (float)((count * sumXY - sumX * sumY) / denominator);
+    intercept = (float)((sumY - (double)slope * sumX) / count);
+    return true;
 #endif
 }

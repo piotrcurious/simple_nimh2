@@ -477,20 +477,20 @@ void buildCurrentModelStep() {
 
                 applyDuty(0);
                 if (postModelAppState == APP_STATE_CHARGING) {
-                    currentAppState = APP_STATE_CHARGING;
+                    setAppState(APP_STATE_CHARGING);
                     startCharging();
                 } else if (postModelAppState == APP_STATE_MEASURING_IR) {
                     currentIRState = IR_STATE_START;
-                    currentAppState = APP_STATE_MEASURING_IR;
+                    setAppState(APP_STATE_MEASURING_IR);
                 } else {
-                    currentAppState = APP_STATE_IDLE;
+                    setAppState(APP_STATE_IDLE);
                 }
                 postModelAppState = APP_STATE_IDLE;
                 WEB_UNLOCK();
             } else {
                 WEB_LOCK();
                 currentModel.isModelBuilt = false;
-                currentAppState = APP_STATE_IDLE;
+                setAppState(APP_STATE_IDLE);
                 postModelAppState = APP_STATE_IDLE;
                 WEB_UNLOCK();
                 applyDuty(0);

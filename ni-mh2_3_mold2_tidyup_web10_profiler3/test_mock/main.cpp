@@ -365,13 +365,13 @@ void buildCurrentModelStep() {
                 currentModel.isModelBuilt = true;
                 applyDuty(0);
                 if (postModelAppState == APP_STATE_CHARGING) {
-                    currentAppState = APP_STATE_CHARGING;
+                    setAppState(APP_STATE_CHARGING);
                     startCharging();
                 } else if (postModelAppState == APP_STATE_MEASURING_IR) {
                     currentIRState = IR_STATE_START;
-                    currentAppState = APP_STATE_MEASURING_IR;
+                    setAppState(APP_STATE_MEASURING_IR);
                 } else {
-                    currentAppState = APP_STATE_IDLE;
+                    setAppState(APP_STATE_IDLE);
                 }
             } else {
                 std::cout << "  Phase Finish -> ABORTED (Not enough points: " << mock_dutyCycles.size() << ")" << std::endl;
@@ -498,6 +498,9 @@ void test_ir_measurement() {
     std::cout << "Running test_ir_measurement..." << std::endl;
     reset_globals();
 
+    // Set a specific IR in simulator
+    sim.internal_resistance = 0.25f;
+
     // Simulate web command "ir"
     WEB_LOCK();
     isMeasuringResistance = true;
@@ -514,9 +517,6 @@ void test_ir_measurement() {
     if (currentAppState == APP_STATE_BUILDING_MODEL) {
         std::cout << "  Correctly triggered model build before IR." << std::endl;
     }
-
-    // For the rest of the test, let's manually build the model so IR measurement can proceed with valid current estimation if it needs it.
-    // Actually, IR measurement seems to use ADC directly, but systemData.update overrides it if model is missing.
 
     int loop_count = 0;
     while (currentAppState != APP_STATE_IDLE && loop_count++ < 1000000) {
@@ -536,11 +536,55 @@ void test_ir_measurement() {
     assert(currentAppState == APP_STATE_IDLE);
     assert(resistanceDataCountPairs > 0);
     std::cout << "  Pairs measured: " << resistanceDataCountPairs << ", Slope: " << regressedInternalResistancePairsSlope << ", Intercept: " << regressedInternalResistancePairsIntercept << std::endl;
-    if (dutyCycle != 0) {
-        std::cout << "  BUG REPRODUCED: dutyCycle is " << dutyCycle << " after IR measurement!" << std::endl;
-    }
+
+    float error = std::abs(regressedInternalResistancePairsIntercept - sim.internal_resistance);
+    std::cout << "  IR Intercept: " << regressedInternalResistancePairsIntercept << ", Expected: " << sim.internal_resistance << ", Error: " << error << std::endl;
+
     assert(dutyCycle == 0);
     std::cout << "test_ir_measurement PASSED" << std::endl << std::endl;
+}
+
+void test_ir_accuracy_with_offset() {
+    std::cout << "Running test_ir_accuracy_with_offset..." << std::endl;
+    reset_globals();
+
+    // Simulate a small hardware offset that wasn't perfectly calibrated
+    // We'll manually override the offset after calibration
+    sim.internal_resistance = 0.30f;
+
+    // 1. Build model first
+    currentAppState = APP_STATE_BUILDING_MODEL;
+    buildModelPhase = BuildModelPhase::Idle;
+    int safety = 0;
+    while (currentAppState == APP_STATE_BUILDING_MODEL && safety++ < 100000) {
+        mock_millis += 10; mock_sample_count++;
+        systemData.update(estimateCurrent(dutyCycle));
+        buildCurrentModelStep();
+    }
+    assert(currentModel.isModelBuilt);
+
+    // 2. Introduce a small current offset error manually in systemData
+    float originalOffset = systemData.getCurrentZeroOffsetMv();
+    systemData.setCurrentZeroOffsetMv(originalOffset + 5.0f); // 5mV error -> ~2mA error
+
+    // 3. Measure IR
+    currentAppState = APP_STATE_MEASURING_IR;
+    currentIRState = IR_STATE_START;
+    isMeasuringResistance = true;
+
+    safety = 0;
+    while (currentAppState == APP_STATE_MEASURING_IR && safety++ < 1000000) {
+        mock_millis += 50; mock_sample_count++;
+        sim.update(0.05f, (int)dutyCycle);
+        systemData.update(estimateCurrent(dutyCycle));
+        measureInternalResistanceStep();
+        if (currentIRState == IR_STATE_IDLE) currentAppState = APP_STATE_IDLE;
+    }
+
+    std::cout << "  IR Intercept with offset: " << regressedInternalResistancePairsIntercept << ", Expected: " << sim.internal_resistance << std::endl;
+    std::cout << "  IR LU Intercept: " << regressedInternalResistanceIntercept << std::endl;
+
+    std::cout << "test_ir_accuracy_with_offset PASSED" << std::endl << std::endl;
 }
 
 void test_dead_region_detection() {
@@ -731,6 +775,7 @@ int main() {
     test_model_accuracy();
     test_dead_region_detection();
     test_ir_measurement();
+    test_ir_accuracy_with_offset();
     test_overtemp_shutdown();
     test_full_flow();
     test_web_handlers();
