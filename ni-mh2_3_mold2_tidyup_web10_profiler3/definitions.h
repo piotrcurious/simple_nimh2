@@ -311,6 +311,7 @@ extern SemaphoreHandle_t webDataMutex;
 #endif
 
 extern volatile AppState currentAppState;
+extern volatile AppState postModelAppState;
 extern volatile BuildModelPhase buildModelPhase;
 extern volatile IRState currentIRState;
 extern volatile float noiseFloorMv;
