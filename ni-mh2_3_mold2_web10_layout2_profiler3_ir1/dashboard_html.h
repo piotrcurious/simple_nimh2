@@ -1,0 +1,1360 @@
+#ifndef DASHBOARD_HTML_H
+#define DASHBOARD_HTML_H
+
+#include <Arduino.h>
+
+const char INDEX_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Ni-MH Charger UI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <style>
+    :root{
+      --bg0:#02040a;
+      --bg1:#07111d;
+      --panel:rgba(8,16,28,0.78);
+      --text:#dbffff;
+      --muted:#8acfd8;
+      --cyan:#00f7ff;
+      --mag:#ff4dff;
+      --yel:#ffe86a;
+      --red:#ff6c7a;
+      --grn:#58ff98;
+      --blu:#58a8ff;
+      --org:#ffb05a;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(0,255,255,0.08), transparent 28%),
+        radial-gradient(circle at 80% 100%, rgba(255,0,255,0.06), transparent 24%),
+        linear-gradient(180deg, var(--bg1), var(--bg0));
+      color: var(--text);
+      font-family: Consolas, "Liberation Mono", Menlo, monospace;
+      overflow-x: hidden;
+      padding-bottom: 24px;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(to bottom, rgba(255,255,255,0.03), transparent 10%, transparent 90%, rgba(255,255,255,0.025)),
+        repeating-linear-gradient(
+          to bottom,
+          rgba(255,255,255,0.02) 0px,
+          rgba(255,255,255,0.015) 1px,
+          transparent 2px,
+          transparent 4px
+        );
+      opacity: 0.22;
+    }
+
+    .wrap {
+      width: min(100%, 1400px);
+      margin: 0 auto;
+      padding: 8px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    /* Profiler styles */
+    #profiler-wrap {
+      width: 100%;
+      height: 60px;
+      background: #0b0f14;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      position: relative;
+      overflow: hidden;
+    }
+    #gl {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    #profiler-status {
+      position: absolute;
+      top: 2px;
+      right: 5px;
+      font-size: 9px;
+      color: var(--muted);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .card, .panel, .controls {
+      background: var(--panel);
+      border: 1px solid rgba(0,255,255,0.14);
+      border-radius: 9px;
+      box-shadow:
+        0 0 0 1px rgba(0,255,255,0.03) inset,
+        0 0 10px rgba(0,255,255,0.07);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .card::after, .panel::after, .controls::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border-radius: 9px;
+      box-shadow: inset 0 0 12px rgba(0,255,255,0.035);
+    }
+
+    .topGrid {
+      display: grid;
+      grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.2fr);
+      gap: 8px;
+    }
+
+    .statusBox {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .statusGrid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px 12px;
+    }
+
+    .mainStat {
+      grid-column: 1 / -1;
+      border-bottom: 1px solid rgba(0,255,255,0.15);
+      padding-bottom: 8px;
+      margin-bottom: 4px;
+    }
+
+    .statItem {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .statLabel {
+      font-size: 9px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .statValue {
+      font-size: 16px;
+      font-weight: bold;
+      color: var(--cyan);
+      text-shadow: 0 0 8px rgba(0,255,255,0.25);
+    }
+    
+    .mainStat .statValue {
+      font-size: 18px;
+      color: #fff;
+    }
+
+    .statusFootnote {
+      font-size: 9px;
+      color: rgba(138, 207, 216, 0.6);
+      margin-top: 12px;
+      text-align: right;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 10px;
+      justify-content: center;
+    }
+
+    button {
+      appearance: none;
+      border: 1px solid rgba(0,255,255,0.22);
+      background: linear-gradient(180deg, rgba(12,24,40,0.94), rgba(3,8,14,0.98));
+      color: #b8ffff;
+      border-radius: 6px;
+      padding: 10px 16px;
+      font: inherit;
+      font-size: 11px;
+      font-weight: bold;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      box-shadow:
+        0 0 0 1px rgba(0,255,255,0.03) inset,
+        0 0 7px rgba(0,255,255,0.06);
+      transition: all 0.2s ease;
+    }
+
+    button:hover {
+      background: linear-gradient(180deg, rgba(20,40,60,0.94), rgba(5,15,25,0.98));
+      box-shadow: 0 0 12px rgba(0,255,255,0.15);
+      border-color: rgba(0,255,255,0.4);
+    }
+
+    button:active {
+      background: linear-gradient(180deg, rgba(3,8,14,0.98), rgba(12,24,40,0.94));
+      transform: translateY(1px);
+    }
+
+    .gaugesBar {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+      padding: 6px;
+      height: 100%;
+      box-sizing: border-box;
+    }
+
+    .gaugeCard {
+      padding: 6px;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .gaugeLabel {
+      font-size: 9px;
+      color: var(--muted);
+      opacity: 0.9;
+      margin: 0 0 4px 2px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    canvas.gauge {
+      width: 100%;
+      flex-grow: 1;
+      display: block;
+      border-radius: 7px;
+      background:
+        radial-gradient(circle at 50% 45%, rgba(0,255,255,0.05), transparent 56%),
+        linear-gradient(180deg, rgba(0,0,0,0.18), rgba(0,0,0,0.42)),
+        #02060b;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      align-items: start;
+    }
+
+    .panel {
+      padding: 6px;
+      min-height: 0;
+    }
+
+    .fullWidth {
+      grid-column: 1 / -1;
+    }
+
+    .smallGraph canvas.graph {
+      height: clamp(165px, 20vh, 220px);
+    }
+
+    .chargePanel canvas.graph {
+      height: clamp(340px, 50vh, 660px);
+    }
+
+    .panelHead {
+      display: flex;
+      justify-content: space-between;
+      gap: 5px;
+      align-items: baseline;
+      margin: 0 4px 6px 4px;
+    }
+
+    .panelTitle {
+      font-size: 10px;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #eaffff;
+    }
+
+    .panelHint {
+      font-size: 9px;
+      color: var(--muted);
+      opacity: 0.9;
+      text-align: right;
+    }
+
+    canvas.graph {
+      width: 100%;
+      display: block;
+      border-radius: 7px;
+      background:
+        linear-gradient(rgba(0,255,255,0.028) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,255,255,0.028) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(0,0,0,0.18), rgba(0,0,0,0.42)),
+        #02060b;
+      background-size: 18px 18px, 18px 18px, auto, auto;
+    }
+
+    .legend {
+      margin-top: 6px;
+      font-size: 9px;
+      line-height: 1.4;
+      color: #9ce9f4;
+      white-space: pre-wrap;
+      opacity: 0.92;
+      padding: 0 4px;
+    }
+
+    @media (max-width: 1024px) {
+      .grid { grid-template-columns: 1fr 1fr; }
+    }
+
+    @media (max-width: 900px) {
+      .topGrid { grid-template-columns: 1fr; }
+      .gaugesBar { grid-template-columns: 1fr 1fr; }
+      canvas.gauge { height: 100px; }
+    }
+
+    @media (max-width: 640px) {
+      .wrap { padding: 4px; }
+      .gaugesBar { grid-template-columns: 1fr; }
+      .grid { grid-template-columns: 1fr; }
+      .smallGraph canvas.graph { height: 185px; }
+      .chargePanel canvas.graph { height: 320px; }
+      canvas.gauge { height: 120px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="profiler-wrap">
+    <div id="profiler-status">profiler idle</div>
+    <canvas id="gl"></canvas>
+  </div>
+  <div class="wrap">
+    <div class="topGrid">
+      <div class="card statusBox">
+        <div class="statusGrid">
+          <div class="statItem mainStat">
+            <span class="statLabel">System State</span>
+            <span class="statValue" id="appState">IDLE</span>
+          </div>
+          <div class="statItem">
+            <span class="statLabel">Voltage</span>
+            <span class="statValue" id="vValue">0.000 V</span>
+          </div>
+          <div class="statItem">
+            <span class="statLabel">Current</span>
+            <span class="statValue" id="iValue">0.000 A</span>
+          </div>
+          <div class="statItem" style="grid-column: span 2;">
+            <span class="statLabel">Capacity Transferred</span>
+            <span class="statValue" id="mahValue">0.000 mAh</span>
+          </div>
+        </div>
+        <div class="statusFootnote" id="extraState">CBOR live telemetry</div>
+      </div>
+
+      <div class="card">
+        <div class="gaugesBar">
+          <div class="gaugeCard">
+            <div class="gaugeLabel">Voltage</div>
+            <canvas class="gauge" id="gaugeV"></canvas>
+          </div>
+          <div class="gaugeCard">
+            <div class="gaugeLabel">Current</div>
+            <canvas class="gauge" id="gaugeI"></canvas>
+          </div>
+          <div class="gaugeCard">
+            <div class="gaugeLabel">Max dT</div>
+            <canvas class="gauge" id="gaugeTD"></canvas>
+          </div>
+          <div class="gaugeCard">
+            <div class="gaugeLabel">Duty</div>
+            <canvas class="gauge" id="gaugeDuty"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button onclick="sendCommand('charge')">Start Charge</button>
+      <button onclick="sendCommand('ir')">Measure IR</button>
+      <button onclick="sendCommand('reset')">Reset Ah</button>
+      <button onclick="sendCommand('stop')">Stop</button>
+    </div>
+
+    <div class="grid">
+      <div class="panel smallGraph">
+        <div class="panelHead">
+          <div class="panelTitle">Main Graph</div>
+          <div class="panelHint">V yellow · I magenta · T1 red · T2 green · dT blue</div>
+        </div>
+        <canvas class="graph" id="mainGraph"></canvas>
+      </div>
+
+      <div class="panel smallGraph">
+        <div class="panelHead">
+          <div class="panelTitle">Ambient / Mold</div>
+          <div class="panelHint">T red · Dew green · H blue</div>
+        </div>
+        <canvas class="graph" id="ambientGraph"></canvas>
+      </div>
+
+      <div class="panel smallGraph">
+        <div class="panelHead">
+          <div class="panelTitle">IR Graph</div>
+          <div class="panelHint">LU white · Pairs cyan</div>
+        </div>
+        <canvas class="graph" id="irGraph"></canvas>
+      </div>
+
+      <div class="panel chargePanel fullWidth">
+        <div class="panelHead">
+          <div class="panelTitle">Charge Log</div>
+          <div class="panelHint">Largest area · auto-scaled traces · 1px glowing lines</div>
+        </div>
+        <canvas class="graph" id="chargeGraph"></canvas>
+        <div class="legend" id="chargeLegend"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let maxDT = 1.5;
+    let lastHistoryFetch = 0;
+    let lastAmbientFetch = 0;
+    let lastIRFetch = 0;
+    let lastChargeFetch = 0;
+    let lastLiveDT = NaN;
+
+    const appStates = ['IDLE', 'BUILDING_MODEL', 'MEASURING_IR', 'CHARGING'];
+    const modelPhases = ['Idle', 'Settle', 'Calibrate', 'DetectDeadRegion', 'SetDuty', 'WaitMeasurement', 'Finish'];
+
+    // DOM Element Cache to prevent layout thrashing
+    const dom = {
+      appState: document.getElementById('appState'),
+      vValue: document.getElementById('vValue'),
+      iValue: document.getElementById('iValue'),
+      mahValue: document.getElementById('mahValue'),
+      extraState: document.getElementById('extraState'),
+      gaugeV: document.getElementById('gaugeV'),
+      gaugeI: document.getElementById('gaugeI'),
+      gaugeTD: document.getElementById('gaugeTD'),
+      gaugeDuty: document.getElementById('gaugeDuty'),
+      chargeLegend: document.getElementById('chargeLegend')
+    };
+
+    // Reusing a single TextDecoder is much faster than creating one per string block
+    const textDecoder = new TextDecoder();
+
+    let ws = null;
+    function connectWS() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      // Unified WebSocket on /ws
+      const url = `${protocol}//${window.location.host}/ws`;
+      ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => {
+        console.log('WS Connected');
+        dom.extraState.innerText = 'WebSocket live';
+      };
+      ws.onmessage = (e) => {
+        if (!(e.data instanceof ArrayBuffer)) return;
+        const bytes = new Uint8Array(e.data);
+
+        // Check for Profiler Magic "TP" (0x50, 0x54) LE
+        if (bytes.length >= 18 && bytes[0] === 0x50 && bytes[1] === 0x54) {
+          decodeProfilerFrame(e.data);
+          return;
+        }
+
+        const data = decodeCbor(bytes);
+        handleWSData(data);
+      };
+      ws.onclose = () => {
+        console.log('WS Disconnected, retrying...');
+        setTimeout(connectWS, 2000);
+      };
+      ws.onerror = (err) => console.error('WS Error:', err);
+    }
+
+    function sendCommand(cmd) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(cmd);
+      } else {
+        fetch('/command?cmd=' + encodeURIComponent(cmd), { cache: 'no-store' }).catch(console.error);
+      }
+    }
+
+
+    function readUint(ai, view, state) {
+      if (ai < 24) return ai;
+      if (ai === 24) return view.getUint8(state.pos++);
+      if (ai === 25) {
+        const v = view.getUint16(state.pos, false); state.pos += 2; return v;
+      }
+      if (ai === 26) {
+        const v = view.getUint32(state.pos, false); state.pos += 4; return v;
+      }
+      if (ai === 27) {
+        const hi = view.getUint32(state.pos, false);
+        const lo = view.getUint32(state.pos + 4, false);
+        state.pos += 8;
+        return hi * 4294967296 + lo;
+      }
+      throw new Error('Unsupported CBOR length');
+    }
+
+    function decodeItem(view, state) {
+      const head = view.getUint8(state.pos++);
+      const major = head >> 5;
+      const ai = head & 0x1f;
+
+      if (major === 0) return readUint(ai, view, state);
+      if (major === 1) return -1 - readUint(ai, view, state);
+
+      if (major === 2) {
+        const len = readUint(ai, view, state);
+        const bytes = new Uint8Array(view.buffer, view.byteOffset + state.pos, len);
+        state.pos += len;
+        return bytes.slice();
+      }
+
+      if (major === 3) {
+        const len = readUint(ai, view, state);
+        const bytes = new Uint8Array(view.buffer, view.byteOffset + state.pos, len);
+        state.pos += len;
+        return textDecoder.decode(bytes); // Use cached instance
+      }
+
+      if (major === 4) {
+        const len = readUint(ai, view, state);
+        const arr = [];
+        for (let i = 0; i < len; i++) arr.push(decodeItem(view, state));
+        return arr;
+      }
+
+      if (major === 5) {
+        const len = readUint(ai, view, state);
+        const obj = {};
+        for (let i = 0; i < len; i++) {
+          const k = decodeItem(view, state);
+          const v = decodeItem(view, state);
+          obj[k] = v;
+        }
+        return obj;
+      }
+
+      if (major === 6) {
+        readUint(ai, view, state);
+        return decodeItem(view, state);
+      }
+
+      if (major === 7) {
+        if (ai === 20) return false;
+        if (ai === 21) return true;
+        if (ai === 22) return null;
+        if (ai === 23) return undefined;
+        if (ai === 25) {
+          const half = view.getUint16(state.pos, false); state.pos += 2;
+          const s = (half & 0x8000) ? -1 : 1;
+          const e = (half >> 10) & 0x1f;
+          const f = half & 0x3ff;
+          if (e === 0) return s * Math.pow(2, -14) * (f / 1024);
+          if (e === 31) return f ? NaN : s * Infinity;
+          return s * Math.pow(2, e - 15) * (1 + f / 1024);
+        }
+        if (ai === 26) {
+          const v = view.getFloat32(state.pos, false); state.pos += 4; return v;
+        }
+        if (ai === 27) {
+          const v = view.getFloat64(state.pos, false); state.pos += 8; return v;
+        }
+        if (ai === 31) throw new Error('Indefinite CBOR not supported');
+      }
+
+      throw new Error('Unsupported CBOR major type: ' + major);
+    }
+
+    function decodeCbor(bytes) {
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      try {
+        return decodeItem(view, { pos: 0 });
+      } catch(e) {
+        return null;
+      }
+    }
+
+    // --- Profiler WebGL Logic ---
+    const profilerCanvas = document.getElementById('gl');
+    const profilerStatus = document.getElementById('profiler-status');
+    let p_gl, p_program, p_buffer, p_aPos, p_aColor, p_uRes;
+    const FRAME_US_DEFAULT = 50000;
+    const ROW_H = 30;
+    const LANE_H = 8;
+    const LANE_TOP = 4;
+    const LANE_GAP = 4;
+
+    function initProfilerGL() {
+      p_gl = profilerCanvas.getContext('webgl', { antialias: false, alpha: false });
+      if (!p_gl) return;
+
+      const compile = (type, src) => {
+        const sh = p_gl.createShader(type);
+        p_gl.shaderSource(sh, src);
+        p_gl.compileShader(sh);
+        return sh;
+      };
+
+      const vs = compile(p_gl.VERTEX_SHADER, `
+        attribute vec2 a_pos;
+        attribute vec4 a_color;
+        uniform vec2 u_res;
+        varying vec4 v_color;
+        void main() {
+          vec2 zeroToOne = a_pos / u_res;
+          vec2 clip = (zeroToOne * 2.0) - 1.0;
+          gl_Position = vec4(clip * vec2(1.0, -1.0), 0.0, 1.0);
+          v_color = a_color;
+        }
+      `);
+
+      const fs = compile(p_gl.FRAGMENT_SHADER, `
+        precision mediump float;
+        varying vec4 v_color;
+        void main() { gl_FragColor = v_color; }
+      `);
+
+      p_program = p_gl.createProgram();
+      p_gl.attachShader(p_program, vs);
+      p_gl.attachShader(p_program, fs);
+      p_gl.linkProgram(p_program);
+      p_gl.useProgram(p_program);
+
+      p_buffer = p_gl.createBuffer();
+      p_gl.bindBuffer(p_gl.ARRAY_BUFFER, p_buffer);
+      p_aPos = p_gl.getAttribLocation(p_program, 'a_pos');
+      p_aColor = p_gl.getAttribLocation(p_program, 'a_color');
+      p_uRes = p_gl.getUniformLocation(p_program, 'u_res');
+
+      p_gl.enableVertexAttribArray(p_aPos);
+      p_gl.enableVertexAttribArray(p_aColor);
+      p_gl.enable(p_gl.BLEND);
+      p_gl.blendFunc(p_gl.SRC_ALPHA, p_gl.ONE_MINUS_SRC_ALPHA);
+      p_gl.clearColor(0.05, 0.07, 0.10, 1.0);
+    }
+
+    function colorForTask(taskId) {
+      const palette = [
+        [0.37, 0.78, 1.00, 0.9], [1.00, 0.71, 0.37, 0.9],
+        [0.53, 1.00, 0.53, 0.9], [1.00, 0.42, 0.62, 0.9],
+        [0.68, 0.56, 1.00, 0.9], [0.98, 0.93, 0.35, 0.9],
+        [0.35, 0.90, 0.88, 0.9], [1.00, 0.55, 0.32, 0.9],
+      ];
+      return palette[taskId % palette.length];
+    }
+
+    function pushRect(arr, x1, y1, x2, y2, r, g, b, a) {
+      arr.push(x1,y1,r,g,b,a, x2,y1,r,g,b,a, x1,y2,r,g,b,a, x1,y2,r,g,b,a, x2,y1,r,g,b,a, x2,y2,r,g,b,a);
+    }
+
+    function drawProfilerFrame(frame) {
+      if (!p_gl) return;
+      const dpr = window.devicePixelRatio || 1;
+      const w = profilerCanvas.width;
+      const h = profilerCanvas.height;
+      p_gl.viewport(0, 0, w, h);
+      p_gl.clear(p_gl.COLOR_BUFFER_BIT);
+      p_gl.useProgram(p_program);
+      p_gl.uniform2f(p_uRes, w, h);
+
+      const verts = [];
+      const period = frame.framePeriodUs || FRAME_US_DEFAULT;
+
+      // Background
+      pushRect(verts, 0, 0, w, h, 0.06, 0.08, 0.11, 1.0);
+      // Grid 10ms
+      for (let ms = 10; ms < period / 1000; ms += 10) {
+        const x = (ms * 1000 / period) * w;
+        pushRect(verts, x, 0, x + 1, h, 1, 1, 1, 0.05);
+      }
+
+      for (let core = 0; core < 2; core++) {
+        const laneTop = LANE_TOP + core * (LANE_H + LANE_GAP);
+        const laneBottom = laneTop + LANE_H;
+        for (const ev of frame.lanes[core]) {
+          let x1 = (ev.startUs / period) * w;
+          let x2 = ((ev.startUs + ev.durUs) / period) * w;
+          const c = colorForTask(ev.taskId);
+          pushRect(verts, x1, laneTop, x2, laneBottom, c[0], c[1], c[2], c[3]);
+        }
+      }
+
+      p_gl.bindBuffer(p_gl.ARRAY_BUFFER, p_buffer);
+      p_gl.bufferData(p_gl.ARRAY_BUFFER, new Float32Array(verts), p_gl.STREAM_DRAW);
+      p_gl.vertexAttribPointer(p_aPos, 2, p_gl.FLOAT, false, 24, 0);
+      p_gl.vertexAttribPointer(p_aColor, 4, p_gl.FLOAT, false, 24, 8);
+      p_gl.drawArrays(p_gl.TRIANGLES, 0, verts.length / 6);
+    }
+
+    function decodeProfilerFrame(arrayBuffer) {
+      const dv = new DataView(arrayBuffer);
+      const framePeriodUs = dv.getUint16(12, true);
+      const c0 = dv.getUint8(14);
+      const c1 = dv.getUint8(15);
+      let off = 18;
+      const lanes = [[], []];
+      for (let core = 0; core < 2; core++) {
+        const count = core === 0 ? c0 : c1;
+        for (let i = 0; i < count; i++) {
+          lanes[core].push({
+            taskId: dv.getUint8(off),
+            flags: dv.getUint8(off + 1),
+            startUs: dv.getUint16(off + 2, true),
+            durUs: dv.getUint16(off + 4, true)
+          });
+          off += 6;
+        }
+      }
+      const frame = { framePeriodUs, lanes };
+      drawProfilerFrame(frame);
+      profilerStatus.textContent = `frame ${dv.getUint32(4, true)} | C0:${c0} C1:${c1}`;
+    }
+
+    function fitProfiler() {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = profilerCanvas.getBoundingClientRect();
+      profilerCanvas.width = rect.width * dpr;
+      profilerCanvas.height = rect.height * dpr;
+    }
+
+    function clamp(v, lo, hi) {
+      return Math.min(hi, Math.max(lo, v));
+    }
+
+    function fmt(v, digits = 2) {
+      return Number.isFinite(v) ? v.toFixed(digits) : '—';
+    }
+
+    function lastFinite(arr) {
+      if (!arr || !arr.length) return NaN;
+      for (let i = arr.length - 1; i >= 0; --i) {
+        const v = arr[i];
+        if (Number.isFinite(v)) return v;
+      }
+      return NaN;
+    }
+
+    function autoScale(arr, padRatio = 0.12) {
+      let min = Infinity, max = -Infinity;
+      for (const v of arr) {
+        if (v == null || !Number.isFinite(v)) continue;
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      if (min === Infinity) return [0, 1];
+      const range = (max - min) || 1;
+      return [min - range * padRatio, max + range * padRatio];
+    }
+
+    function fitCanvas(canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const w = Math.max(1, Math.round(rect.width * dpr));
+      const h = Math.max(1, Math.round(rect.height * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      return { w, h, dpr };
+    }
+
+    function clearCanvas(ctx) {
+      ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    }
+
+    function drawGlowText(ctx, text, x, y, color, align = 'left', size = 11, weight = 'bold') {
+      ctx.save();
+      ctx.font = `${weight} ${size}px Consolas, monospace`;
+      ctx.textAlign = align;
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 8;
+      ctx.fillText(text, x, y);
+      ctx.restore();
+    }
+
+    function drawAxes(ctx, margin, xMin, xMax, xLabel, yMin, yMax, yLabel) {
+      const w = ctx.canvas.width;
+      const h = ctx.canvas.height;
+      const plotW = w - margin.left - margin.right;
+      const plotH = h - margin.top - margin.bottom;
+
+      ctx.save();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = 'rgba(120,255,255,0.18)';
+      ctx.fillStyle = 'rgba(200,255,255,0.72)';
+      ctx.font = '10px Consolas, monospace';
+
+      ctx.beginPath();
+      ctx.moveTo(margin.left, h - margin.bottom);
+      ctx.lineTo(w - margin.right, h - margin.bottom);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(margin.left, margin.top);
+      ctx.lineTo(margin.left, h - margin.bottom);
+      ctx.stroke();
+
+      for (let i = 0; i <= 5; i++) {
+        const x = margin.left + (i / 5) * plotW;
+        const val = xMin + (i / 5) * (xMax - xMin);
+        ctx.beginPath();
+        ctx.moveTo(x, h - margin.bottom);
+        ctx.lineTo(x, h - margin.bottom + 4);
+        ctx.stroke();
+        ctx.textAlign = 'center';
+        ctx.fillText(val.toFixed((xMax - xMin) < 2 ? 2 : 0), x, h - margin.bottom + 13);
+      }
+
+      for (let i = 0; i <= 5; i++) {
+        const y = h - margin.bottom - (i / 5) * plotH;
+        const val = yMin + (i / 5) * (yMax - yMin);
+        ctx.beginPath();
+        ctx.moveTo(margin.left - 4, y);
+        ctx.lineTo(margin.left, y);
+        ctx.stroke();
+        ctx.textAlign = 'right';
+        ctx.fillText(val.toFixed((yMax - yMin) < 2 ? 2 : 0), margin.left - 6, y + 3);
+      }
+
+      ctx.textAlign = 'center';
+      ctx.fillText(xLabel, margin.left + plotW / 2, h - 2);
+
+      ctx.save();
+      ctx.translate(11, margin.top + plotH / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText(yLabel, 0, 0);
+      ctx.restore();
+      ctx.restore();
+    }
+
+    // LABEL COLLISION RESOLVER
+    function renderLabels(ctx, labelsList, margin, h) {
+      if (!labelsList || !labelsList.length) return;
+      
+      // Sort labels top-to-bottom
+      labelsList.sort((a, b) => a.targetY - b.targetY);
+
+      const LABEL_H = 12; // Minimum vertical space per label
+
+      // Pass 1: Push overlapping labels downwards
+      for (let i = 1; i < labelsList.length; i++) {
+        if (labelsList[i].targetY < labelsList[i-1].targetY + LABEL_H) {
+          labelsList[i].targetY = labelsList[i-1].targetY + LABEL_H;
+        }
+      }
+
+      // Pass 2: Push labels back upwards if they overflow the bottom margin
+      const maxBottom = h - margin.bottom - 4;
+      if (labelsList[labelsList.length - 1].targetY > maxBottom) {
+        labelsList[labelsList.length - 1].targetY = maxBottom;
+        for (let i = labelsList.length - 2; i >= 0; i--) {
+          if (labelsList[i].targetY > labelsList[i+1].targetY - LABEL_H) {
+            labelsList[i].targetY = labelsList[i+1].targetY - LABEL_H;
+          }
+        }
+      }
+
+      // Draw Labels and Connection Lines
+      labelsList.forEach(lbl => {
+        ctx.fillStyle = lbl.color;
+        ctx.font = 'bold 10px Consolas, monospace';
+        ctx.textAlign = 'left';
+
+        // Draw a tiny angled connecting line if we shifted the label vertically
+        if (Math.abs(lbl.targetY - lbl.originalY) > 2) {
+          ctx.beginPath();
+          ctx.strokeStyle = lbl.color;
+          ctx.globalAlpha = 0.5;
+          ctx.moveTo(lbl.x, lbl.originalY);
+          ctx.lineTo(lbl.x + 4, lbl.targetY - 3);
+          ctx.stroke();
+          ctx.globalAlpha = 1.0;
+        }
+
+        ctx.fillText(lbl.text, lbl.x + 6, lbl.targetY);
+      });
+    }
+
+    function drawSeries(ctx, arr, color, min, max, margin, label = '', lineWidth = 1, labelsList = null) {
+      if (!arr || !arr.length) return;
+
+      const w = ctx.canvas.width;
+      const h = ctx.canvas.height;
+      const plotW = w - margin.left - margin.right;
+      const plotH = h - margin.top - margin.bottom;
+      const range = (max - min) || 1;
+
+      let first = true;
+      let lastX = 0, lastY = 0, lastVal = null;
+
+      ctx.save();
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+
+      ctx.beginPath();
+      arr.forEach((v, i) => {
+        if (v == null || !Number.isFinite(v)) return;
+        const x = margin.left + (i / Math.max(1, arr.length - 1)) * plotW;
+        const y = (h - margin.bottom) - ((v - min) / range) * plotH;
+        if (first) {
+          ctx.moveTo(x, y);
+          first = false;
+        } else {
+          ctx.lineTo(x, y);
+        }
+        lastX = x;
+        lastY = y;
+        lastVal = v;
+      });
+
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10;
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.22;
+      ctx.lineWidth = lineWidth + 2;
+      ctx.stroke();
+
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1.0;
+      ctx.lineWidth = lineWidth;
+      ctx.stroke();
+
+      if (label && Number.isFinite(lastY)) {
+        const yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
+        if (labelsList) {
+          // Push to collection array instead of drawing immediately
+          labelsList.push({
+            text: `${label}:${lastVal.toFixed(2)}`,
+            x: lastX,
+            targetY: yPos,
+            originalY: lastY,
+            color: color
+          });
+        } else {
+          // Fallback if no array passed
+          ctx.fillStyle = color;
+          ctx.font = 'bold 10px Consolas, monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
+        }
+      }
+
+      ctx.restore();
+    }
+
+    function drawXY(ctx, points, color, xMin, xMax, yMin, yMax, margin, label = '', labelsList = null) {
+      if (!points || !points.length) return;
+
+      const w = ctx.canvas.width;
+      const h = ctx.canvas.height;
+      const plotW = w - margin.left - margin.right;
+      const plotH = h - margin.top - margin.bottom;
+      const xRange = (xMax - xMin) || 1;
+      const yRange = (yMax - yMin) || 1;
+
+      let lastX = 0, lastY = 0, lastVal = null;
+      let first = true;
+
+      ctx.save();
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+
+      points.forEach((p) => {
+        if (!p || p.length < 2) return;
+        const px = p[0], py = p[1];
+        if (!Number.isFinite(px) || !Number.isFinite(py)) return;
+        const x = margin.left + ((px - xMin) / xRange) * plotW;
+        const y = (h - margin.bottom) - ((py - yMin) / yRange) * plotH;
+        if (first) {
+          ctx.moveTo(x, y);
+          first = false;
+        } else {
+          ctx.lineTo(x, y);
+        }
+        lastX = x;
+        lastY = y;
+        lastVal = py;
+      });
+
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10;
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.22;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1.0;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      if (label && Number.isFinite(lastY)) {
+        const yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
+        if (labelsList) {
+          labelsList.push({
+            text: `${label}:${lastVal.toFixed(2)}`,
+            x: lastX,
+            targetY: yPos,
+            originalY: lastY,
+            color: color
+          });
+        } else {
+          ctx.fillStyle = color;
+          ctx.font = 'bold 10px Consolas, monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
+        }
+      }
+
+      ctx.restore();
+    }
+
+    function drawRegion(ctx, arr1, arr2, color, min, max, margin) {
+      if (!arr1 || !arr1.length || !arr2 || !arr2.length) return;
+      const w = ctx.canvas.width;
+      const h = ctx.canvas.height;
+      const plotW = w - margin.left - margin.right;
+      const plotH = h - margin.top - margin.bottom;
+      const range = (max - min) || 1;
+
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+
+      let first = true;
+      for (let i = 0; i < arr1.length; i++) {
+        const v = arr1[i];
+        if (v == null || !Number.isFinite(v)) continue;
+        const x = margin.left + (i / Math.max(1, arr1.length - 1)) * plotW;
+        const y = (h - margin.bottom) - ((v - min) / range) * plotH;
+        if (first) {
+          ctx.moveTo(x, y);
+          first = false;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+
+      for (let i = arr2.length - 1; i >= 0; i--) {
+        const v = arr2[i];
+        if (v == null || !Number.isFinite(v)) continue;
+        const x = margin.left + (i / Math.max(1, arr2.length - 1)) * plotW;
+        const y = (h - margin.bottom) - ((v - min) / range) * plotH;
+        ctx.lineTo(x, y);
+      }
+
+      ctx.closePath();
+      ctx.globalAlpha = 0.18;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawGauge(canvas, value, min, max, color, label, line1 = '', line2 = '') {
+      const ctx = canvas.getContext('2d');
+      const { w, h } = fitCanvas(canvas);
+      ctx.clearRect(0, 0, w, h);
+
+      const cx = w / 2;
+      const cy = h * 0.66;
+      const r = Math.min(w, h) * 0.30;
+      const start = Math.PI;
+      const end = 2 * Math.PI;
+
+      ctx.save();
+      ctx.lineCap = 'round';
+
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(0,255,255,0.14)';
+      ctx.lineWidth = 3;
+      ctx.arc(cx, cy, r, start, end);
+      ctx.stroke();
+
+      const norm = clamp((value - min) / ((max - min) || 1), 0, 1);
+      const a = start + norm * Math.PI;
+
+      ctx.beginPath();
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10;
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.18;
+      ctx.lineWidth = 4;
+      ctx.arc(cx, cy, r, start, a);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 1;
+      ctx.arc(cx, cy, r, start, a);
+      ctx.stroke();
+
+      drawGlowText(ctx, label, cx, h * 0.16, 'rgba(190,255,255,0.90)', 'center', 9, 'bold');
+      drawGlowText(ctx, fmt(value, 2), cx, h * 0.44, color, 'center', 13, 'bold');
+      if (line1) drawGlowText(ctx, line1, cx, h * 0.61, 'rgba(180,255,255,0.88)', 'center', 8, 'normal');
+      if (line2) drawGlowText(ctx, line2, cx, h * 0.75, 'rgba(180,255,255,0.88)', 'center', 8, 'normal');
+
+      ctx.restore();
+    }
+
+    function stateText(state) {
+      const app = appStates[state.app] || 'UNKNOWN';
+      if (state.app === 1) return `${app} (${modelPhases[state.phase] || '...'})`;
+      return app;
+    }
+
+    function updateMetricText(state) {
+      dom.appState.innerText = stateText(state);
+      dom.vValue.innerText = `${fmt(state.v, 3)} V`;
+      dom.iValue.innerText = `${fmt(state.i, 3)} A`;
+      dom.mahValue.innerText = `${fmt(state.mah, 3)} mAh`;
+      dom.extraState.innerText = `offset ${fmt(state.offset, 2)} mV · noise ${fmt(state.noise, 2)} mV`;
+    }
+
+    function drawAllGauges(state) {
+      const dtLimit = Number.isFinite(state.max_dt) ? state.max_dt : 1.5;
+      const liveDT = Number.isFinite(lastLiveDT) ? lastLiveDT : dtLimit;
+      const gaugeDTMax = Math.max(3.0, dtLimit, liveDT);
+
+      drawGauge(dom.gaugeV, state.v, 1.0, 2.0, '#ffe86a', 'Voltage', '', '');
+      drawGauge(dom.gaugeI, state.i, 0.0, 0.5, '#ff4dff', 'Current', '', '');
+      drawGauge(
+        dom.gaugeTD,
+        liveDT,
+        0.0,
+        gaugeDTMax,
+        '#58a8ff',
+        'Max dT',
+        `max ${fmt(dtLimit, 2)} °C`,
+        `dT ${fmt(liveDT, 2)} °C`
+      );
+      drawGauge(dom.gaugeDuty, state.duty || 0, 0, 255, '#58ff98', 'Duty', '', '');
+    }
+
+    function renderMain(data) {
+      const canvas = document.getElementById('mainGraph');
+      const ctx = canvas.getContext('2d');
+      // Increased right margin slightly to ensure label values fit completely
+      const margin = { top: 12, right: 55, bottom: 16, left: 30 };
+      fitCanvas(canvas);
+      clearCanvas(ctx);
+
+      drawAxes(ctx, margin, 0, 320, 'Time', 0, 40, 'Value');
+      
+      const labels = [];
+      drawSeries(ctx, data.v, '#ffe86a', 1.0, 2.0, margin, 'V', 1, labels);
+      drawSeries(ctx, data.i, '#ff4dff', 0.0, 0.5, margin, 'I', 1, labels);
+      drawSeries(ctx, data.t1, '#ff6c7a', 15, 40, margin, 'T1', 1, labels);
+      drawSeries(ctx, data.t2, '#58ff98', 15, 40, margin, 'T2', 1, labels);
+      drawSeries(ctx, data.td, '#58a8ff', -0.5, maxDT, margin, 'dT', 1, labels);
+      
+      renderLabels(ctx, labels, margin, canvas.height);
+    }
+
+    function renderAmbient(data) {
+      const canvas = document.getElementById('ambientGraph');
+      const ctx = canvas.getContext('2d');
+      const margin = { top: 12, right: 55, bottom: 16, left: 30 };
+      fitCanvas(canvas);
+      clearCanvas(ctx);
+
+      drawAxes(ctx, margin, 0, 320, 'Time', 0, 100, 'T / H');
+      
+      const labels = [];
+      drawSeries(ctx, data.t, '#ff6c7a', 10, 40, margin, 'T', 1, labels);
+      drawSeries(ctx, data.d, '#58ff98', 10, 40, margin, 'Dew', 1, labels);
+      drawSeries(ctx, data.h, '#58a8ff', 0, 100, margin, 'H', 1, labels);
+      
+      const y = canvas.height - margin.bottom - (65 / 100) * (canvas.height - margin.top - margin.bottom);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,176,90,0.72)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 5]);
+      ctx.shadowColor = 'rgba(255,176,90,0.55)';
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      ctx.moveTo(margin.left, y);
+      ctx.lineTo(canvas.width - margin.right, y);
+      ctx.stroke();
+      ctx.restore();
+
+      renderLabels(ctx, labels, margin, canvas.height);
+    }
+
+    function renderIR(data) {
+      const canvas = document.getElementById('irGraph');
+      const ctx = canvas.getContext('2d');
+      const margin = { top: 12, right: 55, bottom: 16, left: 30 };
+      fitCanvas(canvas);
+      clearCanvas(ctx);
+
+      const all = (data.lu || []).concat(data.pairs || []);
+      let xMin = 0, xMax = 0.5, yMin = 0, yMax = 0.5;
+
+      if (all.length) {
+        xMin = Math.min(...all.map(p => p[0]));
+        xMax = Math.max(...all.map(p => p[0]));
+        yMin = Math.min(...all.map(p => p[1]));
+        yMax = Math.max(...all.map(p => p[1]));
+        const xr = (xMax - xMin) || 0.1;
+        const yr = (yMax - yMin) || 0.1;
+        xMin = Math.max(0, xMin - xr * 0.1);
+        xMax = xMax + xr * 0.1;
+        yMin = Math.max(0, yMin - yr * 0.1);
+        yMax = yMax + yr * 0.1;
+      }
+
+      drawAxes(ctx, margin, xMin, xMax, 'Current (A)', yMin, yMax, 'Resistance (Ω)');
+      
+      const labels = [];
+      drawXY(ctx, data.lu, '#f6ffff', xMin, xMax, yMin, yMax, margin, 'LU', labels);
+      drawXY(ctx, data.pairs, '#58fff3', xMin, xMax, yMin, yMax, margin, 'Pairs', labels);
+      
+      renderLabels(ctx, labels, margin, canvas.height);
+    }
+
+    function renderCharge(data) {
+      const canvas = document.getElementById('chargeGraph');
+      const ctx = canvas.getContext('2d');
+      const margin = { top: 12, right: 65, bottom: 16, left: 30 };
+      fitCanvas(canvas);
+      clearCanvas(ctx);
+
+      if (!data || !data.length) {
+        drawAxes(ctx, margin, 0, 100, 'Index', 0, 1, 'Value');
+        dom.chargeLegend.textContent = '';
+        return;
+      }
+
+      const arrI = data.map(d => d.i);
+      const arrV = data.map(d => d.v);
+      const arrD = data.map(d => d.d);
+      const arrTD = data.map(d => d.td);
+      const arrTH = data.map(d => d.th);
+      const arrIRLU = data.map(d => d.irlu);
+      const arrIRP = data.map(d => d.irp);
+
+      const sI = autoScale(arrI);
+      const sV = autoScale(arrV);
+      const sD = autoScale(arrD);
+      const sTD = autoScale(arrTD);
+      const sTH = autoScale(arrTH);
+      const sIRLU = autoScale(arrIRLU);
+      const sIRP = autoScale(arrIRP);
+
+      const yMin = Math.min(sI[0], sV[0], sD[0], sTD[0], sTH[0], sIRLU[0], sIRP[0]);
+      const yMax = Math.max(sI[1], sV[1], sD[1], sTD[1], sTH[1], sIRLU[1], sIRP[1]);
+
+      drawAxes(ctx, margin, 0, data.length - 1, 'Index', yMin, yMax, 'Auto-scaled');
+      drawRegion(ctx, arrTD, arrTH, 'rgba(255,108,122,0.20)', Math.min(sTD[0], sTH[0]), Math.max(sTD[1], sTH[1]), margin);
+
+      const labels = [];
+      drawSeries(ctx, arrI, '#ff4dff', sI[0], sI[1], margin, 'I', 1, labels);
+      drawSeries(ctx, arrV, '#ffe86a', sV[0], sV[1], margin, 'V', 1, labels);
+      drawSeries(ctx, arrD, '#a9a9a9', sD[0], sD[1], margin, 'Duty', 1, labels);
+      drawSeries(ctx, arrTD, '#58a8ff', sTD[0], sTD[1], margin, 'dT', 1, labels);
+      drawSeries(ctx, arrTH, '#ff6c7a', sTH[0], sTH[1], margin, 'Th', 1, labels);
+      drawSeries(ctx, arrIRLU, '#ffb05a', sIRLU[0], sIRLU[1], margin, 'RiLU', 1, labels);
+      drawSeries(ctx, arrIRP, '#58fff3', sIRP[0], sIRP[1], margin, 'RiP', 1, labels);
+
+      renderLabels(ctx, labels, margin, canvas.height);
+
+      const last = data[data.length - 1];
+      dom.chargeLegend.textContent =
+        `I[${fmt(sI[0],2)}, ${fmt(sI[1],2)}]  V[${fmt(sV[0],2)}, ${fmt(sV[1],2)}]  Duty[${fmt(sD[0],0)}, ${fmt(sD[1],0)}]  dT[${fmt(sTD[0],2)}, ${fmt(sTD[1],2)}]\n` +
+        `Th[${fmt(sTH[0],2)}, ${fmt(sTH[1],2)}]  RiLU[${fmt(sIRLU[0],2)}, ${fmt(sIRLU[1],2)}]  RiP[${fmt(sIRP[0],2)}, ${fmt(sIRP[1],2)}]\n` +
+        `Latest: V=${fmt(last.v,3)}  I=${fmt(last.i,3)}  dT=${fmt(last.td,2)}  Th=${fmt(last.th,2)}`;
+    }
+
+    let chargeLogBuffer = [];
+
+    
+    function handleWSData(data) {
+      if (!data) return;
+
+      // Route based on structure
+      if (data.app !== undefined) {
+        maxDT = Number.isFinite(data.max_dt) ? data.max_dt : 1.5;
+        updateMetricText(data);
+        drawAllGauges(data);
+      }
+      else if (data.t1 !== undefined) {
+        lastLiveDT = lastFinite(data.td);
+        renderMain(data);
+      }
+      else if (data.t !== undefined) {
+        renderAmbient(data);
+      }
+      else if (data.lu !== undefined) {
+        renderIR(data);
+      }
+      else if (data.batch !== undefined) {
+        // Chargelog batch
+        if (chargeLogBuffer.length >= data.total) chargeLogBuffer = [];
+        chargeLogBuffer.push(...data.batch);
+        renderCharge(chargeLogBuffer);
+      }
+    }
+
+    function loopData() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const now = Date.now();
+        
+        if (now - lastHistoryFetch > 5000) {
+          lastHistoryFetch = now;
+          ws.send('REQ_HISTORY');
+        }
+        
+        if (now - lastAmbientFetch > 1000) {
+          lastAmbientFetch = now;
+          ws.send('REQ_AMBIENT');
+        }
+
+        if (now - lastIRFetch > 10000) {
+          lastIRFetch = now;
+          ws.send('REQ_IR');
+        }
+        if (now - lastChargeFetch > 20000) {
+          lastChargeFetch = now;
+          ws.send('REQ_CHARGELOG');
+        }
+      }
+      setTimeout(loopData, 1000);
+    }
+
+
+    function resizeAll() {
+      document.querySelectorAll('canvas').forEach(canvas => fitCanvas(canvas));
+    }
+
+    window.addEventListener('resize', () => { resizeAll(); fitProfiler(); });
+    window.addEventListener('orientationchange', () => { resizeAll(); fitProfiler(); });
+    resizeAll();
+    fitProfiler();
+    initProfilerGL();
+    connectWS();
+    loopData(); // start the loop
+  </script>
+</body>
+</html>
+)rawliteral";
+
+#endif
