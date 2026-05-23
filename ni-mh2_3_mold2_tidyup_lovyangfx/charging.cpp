@@ -33,6 +33,7 @@ static float lastReeval_avgCurrent_A = 0.0f;
 
 AsyncMeasure meas;
 FindOptManager findOpt;
+RemeasureManager remeasure;
 
 
 // --- new configurable parameters for temprise absolute/blending ---
@@ -353,8 +354,168 @@ bool findOptimalChargingDutyCycleStepAsync() {
         return true;
     }
 
+    if (findOpt.phase == RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE) {
+        int dc;
+        if (findOpt.exploratory_measurement_phase == 0) {
+            // Low exploratory measurement
+            dc = findOpt.lowDC - 10;
+            if (dc < MIN_CHARGE_DUTY_CYCLE) dc = MIN_CHARGE_DUTY_CYCLE;
+            Serial.printf("Starting low exploratory measurement at DC=%d\n", dc);
+        } else {
+            // High exploratory measurement
+            dc = findOpt.highDC + 10;
+            if (dc > MAX_CHARGE_DUTY_CYCLE) dc = MAX_CHARGE_DUTY_CYCLE;
+            Serial.printf("Starting high exploratory measurement at DC=%d\n", dc);
+        }
+        startMHElectrodeMeasurement(dc, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
+        findOpt.phase = RE_EVAL_EXPLORATORY_MEASUREMENT_WAIT;
+        return true;
+    }
+
+    if (findOpt.phase == RE_EVAL_EXPLORATORY_MEASUREMENT_WAIT) {
+        if (meas.resultReady) {
+            MHElectrodeData result;
+            if (fetchMeasurementResult(result)) {
+                Serial.printf("Exploratory measurement finished. New data: current=%.3f\n", result.current);
+                if (result.current > 0.001f) {
+                    for (const auto& cached : findOpt.cache) {
+                        if (std::fabs(result.current - cached.current) > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
+                            float internalResistancePair = (cached.loadedVoltage - result.loadedVoltage) / (result.current - cached.current);
+                            float higherCurrent = std::max(result.current, cached.current);
+                            storeOrAverageResistanceData(higherCurrent, std::fabs(internalResistancePair),
+                                                         internalResistanceDataPairs, resistanceDataCountPairs);
+                        }
+                    }
+                }
+                findOpt.cache.push_back(result);
+                findOpt.exploratory_measurement_phase++;
+                if (findOpt.exploratory_measurement_phase >= 2) {
+                    findOpt.phase = RE_EVAL_FINISH;
+                } else {
+                    findOpt.phase = RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE;
+                }
+            }
+        }
+        return true;
+    }
+
+    if (findOpt.phase == RE_EVAL_CORRECTIVE_MEASUREMENT_PREPARE) {
+        if (findOpt.outlier_measurement_index >= findOpt.outliers.size()) {
+            Serial.println("Corrective measurements finished.");
+            findOpt.phase = RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE;
+            return true;
+        }
+
+        const OutlierInfo& outlier = findOpt.outliers[findOpt.outlier_measurement_index];
+        startRemeasure(outlier.current);
+
+        // Remove the original outlier data now
+        for (int i = outlier.original_index; i < resistanceDataCountPairs - 1; ++i) {
+            internalResistanceDataPairs[i][0] = internalResistanceDataPairs[i + 1][0];
+            internalResistanceDataPairs[i][1] = internalResistanceDataPairs[i + 1][1];
+        }
+        resistanceDataCountPairs--;
+
+        findOpt.phase = RE_EVAL_CORRECTIVE_MEASUREMENT_WAIT;
+        return true;
+    }
+
+    if (findOpt.phase == RE_EVAL_CORRECTIVE_MEASUREMENT_WAIT) {
+        if (!remeasureStep()) { // This will return false when the binary search is complete
+            findOpt.outlier_measurement_index++;
+            findOpt.phase = RE_EVAL_CORRECTIVE_MEASUREMENT_PREPARE;
+        }
+        return true;
+    }
+
+    if (findOpt.phase == RE_EVAL_FINISH) {
+        Serial.println("Re-evaluation finished. Re-running linear regression...");
+        distribute_error(internalResistanceData, resistanceDataCount, 0.05f, 1.05f);
+        distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, 0.05f, 1.05f);
+
+        if (resistanceDataCount >= 2) {
+            if (performLinearRegression(internalResistanceData, resistanceDataCount,
+                                        regressedInternalResistanceSlope, regressedInternalResistanceIntercept)) {
+                Serial.printf("Regressed Internal Resistance (Loaded/Unloaded): Slope = %.4f, Intercept = %.4f\n",
+                              regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
+            }
+        } else {
+            Serial.println("Not enough data points for linear regression of Loaded/Unloaded resistance.");
+        }
+
+        if (resistanceDataCountPairs >= 2) {
+            if (performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs,
+                                        regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept)) {
+                Serial.printf("Regressed Internal Resistance (Pairs): Slope = %.4f, Intercept = %.4f\n",
+                              regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
+            }
+        } else {
+            Serial.println("Not enough data points for linear regression of paired resistance.");
+        }
+        findOpt.phase = FIND_COMPLETE;
+        findOpt.active = false;
+        return false;
+    }
+
+    if (findOpt.phase == RE_EVAL_START) {
+        Serial.println("Starting re-evaluation process...");
+        findOpt.outliers.clear();
+        findOpt.outlier_measurement_index = 0;
+        findOpt.exploratory_measurement_phase = 0;
+        findOpt.phase = RE_EVAL_DETECT_OUTLIERS;
+    }
+
+    if (findOpt.phase == RE_EVAL_DETECT_OUTLIERS) {
+        Serial.println("Detecting outliers in resistance data...");
+        if (resistanceDataCountPairs < 5) {
+            Serial.println("Not enough data to perform outlier detection. Skipping to exploratory measurements.");
+            findOpt.phase = RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE;
+            return true;
+        }
+
+        float mean = 0.0f;
+        float std_dev = 0.0f;
+        for (int i = 0; i < resistanceDataCountPairs; ++i) {
+            mean += internalResistanceDataPairs[i][1];
+        }
+        mean /= resistanceDataCountPairs;
+
+        for (int i = 0; i < resistanceDataCountPairs; ++i) {
+            std_dev += pow(internalResistanceDataPairs[i][1] - mean, 2);
+        }
+        std_dev = sqrt(std_dev / resistanceDataCountPairs);
+
+        Serial.printf("Mean resistance: %.4f, Std Dev: %.4f\n", mean, std_dev);
+
+        for (int i = 0; i < resistanceDataCountPairs; ++i) {
+            if (fabs(internalResistanceDataPairs[i][1] - mean) > 2 * std_dev) {
+                OutlierInfo outlier;
+                outlier.original_index = i;
+                outlier.current = internalResistanceDataPairs[i][0];
+                outlier.resistance = internalResistanceDataPairs[i][1];
+                findOpt.outliers.push_back(outlier);
+                Serial.printf("Outlier detected: index=%d, current=%.3f, resistance=%.4f\n", i, outlier.current, outlier.resistance);
+            }
+        }
+
+        if (findOpt.outliers.empty()) {
+            Serial.println("No outliers detected. Skipping to exploratory measurements.");
+            findOpt.phase = RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE;
+        } else {
+            std::sort(findOpt.outliers.begin(), findOpt.outliers.end(), [](const OutlierInfo& a, const OutlierInfo& b) {
+                return a.original_index > b.original_index;
+            });
+            findOpt.phase = RE_EVAL_CORRECTIVE_MEASUREMENT_PREPARE;
+        }
+        return true;
+    }
+
     if (findOpt.phase == FIND_BINARY_PREPARE) {
         if (findOpt.highDC - findOpt.lowDC <= CHARGE_CURRENT_STEP * 2) {
+            if (findOpt.isReevaluation) {
+                findOpt.phase = RE_EVAL_START;
+                return true;
+            }
             distribute_error(internalResistanceData, resistanceDataCount, 0.05f, 1.05f);
             distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, 0.05f, 1.05f);
 
@@ -510,6 +671,78 @@ bool findOptimalChargingDutyCycleStepAsync() {
 
     return true;
 }
+
+void startRemeasure(float targetCurrent) {
+    remeasure = RemeasureManager();
+    remeasure.active = true;
+    remeasure.targetCurrent = targetCurrent;
+
+    int predicted_dc = estimateDutyCycleForCurrent(targetCurrent);
+    remeasure.lowDC = max(MIN_CHARGE_DUTY_CYCLE, predicted_dc - 20);
+    remeasure.highDC = min(MAX_CHARGE_DUTY_CYCLE, predicted_dc + 20);
+
+    remeasure.phase = REMEASURE_BINARY_SEARCH_PREPARE;
+    Serial.printf("Remeasure started for target current %.3fA with warm start DC=%d (range %d-%d)\n",
+                  targetCurrent, predicted_dc, remeasure.lowDC, remeasure.highDC);
+}
+
+bool remeasureStep() {
+    if (!remeasure.active) return false;
+
+    measurementStep(); // Process any ongoing measurement
+
+    switch (remeasure.phase) {
+        case REMEASURE_BINARY_SEARCH_PREPARE: {
+            if (remeasure.highDC - remeasure.lowDC <= CHARGE_CURRENT_STEP * 2) {
+                remeasure.phase = REMEASURE_COMPLETE;
+                return false; // Binary search complete
+            }
+            int midDC = (remeasure.lowDC + remeasure.highDC) / 2;
+            startMHElectrodeMeasurement(midDC, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
+            remeasure.phase = REMEASURE_BINARY_SEARCH_WAIT;
+            return true;
+        }
+        case REMEASURE_BINARY_SEARCH_WAIT: {
+            if (meas.resultReady) {
+                MHElectrodeData result;
+                if (fetchMeasurementResult(result)) {
+                    // Add the new data point to the datasets
+                    if (result.current > 0.001f) {
+                        float internalResistanceLU = (result.unloadedVoltage - result.loadedVoltage) / result.current;
+                        storeOrAverageResistanceData(result.current, std::fabs(internalResistanceLU), internalResistanceData, resistanceDataCount);
+                        bubbleSort(internalResistanceData, resistanceDataCount);
+
+                        for (const auto& cached : findOpt.cache) {
+                            if (std::fabs(result.current - cached.current) > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
+                                float internalResistancePair = (cached.loadedVoltage - result.loadedVoltage) / (result.current - cached.current);
+                                float higherCurrent = std::max(result.current, cached.current);
+                                storeOrAverageResistanceData(higherCurrent, std::fabs(internalResistancePair),
+                                                             internalResistanceDataPairs, resistanceDataCountPairs);
+                                bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
+                            }
+                        }
+                    }
+                    findOpt.cache.push_back(result);
+
+                    // Process the result of the measurement for the binary search
+                    if (result.current < remeasure.targetCurrent) {
+                        remeasure.lowDC = result.dutyCycle;
+                    } else {
+                        remeasure.highDC = result.dutyCycle;
+                    }
+                    remeasure.phase = REMEASURE_BINARY_SEARCH_PREPARE;
+                }
+            }
+            return true;
+        }
+        case REMEASURE_COMPLETE:
+            remeasure.active = false;
+            return false;
+        default:
+            return true;
+    }
+}
+
 
 static float computeDissipatedPower(float vUnderLoad, float vNoLoad, float current, float Rparam) {
   const float epsI = 1e-9f;
