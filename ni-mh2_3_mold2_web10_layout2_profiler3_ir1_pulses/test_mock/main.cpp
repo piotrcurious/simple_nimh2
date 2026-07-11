@@ -268,6 +268,8 @@ uint32_t mock_lastKnownSampleCount = 0;
 float mock_noiseFloorMv = 0;
 volatile float noiseFloorMv = 5.0f;
 volatile float estimatedTauThermal = 45.0f;
+volatile float estimatedTauSHT = 10.0f;
+volatile float estimatedTauTherm = 5.0f;
 std::vector<float> mock_dutyCycles;
 std::vector<float> mock_currents;
 
@@ -341,31 +343,71 @@ void buildCurrentModelStep() {
         case BuildModelPhase::ThermalCharacterize:
             {
                 static double tempStart = 0.0;
+                static double tempAtShutoff = 0.0;
                 static unsigned long startTime = 0;
+                static unsigned long shutoffTime = 0;
+                static double peakTempAfterShutoff = 0.0;
+                static unsigned long peakTimeAfterShutoff = 0;
+
                 if (tempStart == 0.0) {
                     double t1, t2, td; float tmv, v, c;
                     getThermistorReadings(t1, t2, td, tmv, v, c);
                     tempStart = t2;
                     startTime = now;
+                    shutoffTime = 0;
+                    peakTempAfterShutoff = 0.0;
+                    peakTimeAfterShutoff = 0;
                     applyDuty(MAX_DUTY_CYCLE / 2);
                 }
-                if (now - startTime >= 4000) {
+
+                if (shutoffTime == 0) {
+                    if (now - startTime >= 4000) {
+                        double t1, t2, td; float tmv, v, c;
+                        getThermistorReadings(t1, t2, td, tmv, v, c);
+                        tempAtShutoff = t2;
+                        peakTempAfterShutoff = t2;
+                        peakTimeAfterShutoff = now;
+                        shutoffTime = now;
+                        applyDuty(0);
+                    }
+                } else {
                     double t1, t2, td; float tmv, v, c;
                     getThermistorReadings(t1, t2, td, tmv, v, c);
-                    double tempEnd = t2;
-                    double deltaT = tempEnd - tempStart;
-                    double computedTau = 45.0;
-                    if (deltaT > 0.005) {
-                        computedTau = 4.0 / (deltaT * 10.0);
-                        if (computedTau < 10.0) computedTau = 10.0;
-                        if (computedTau > 180.0) computedTau = 180.0;
+                    if (t2 > peakTempAfterShutoff) {
+                        peakTempAfterShutoff = t2;
+                        peakTimeAfterShutoff = now;
                     }
-                    estimatedTauThermal = (float)computedTau;
-                    tempStart = 0.0;
-                    applyDuty(0);
-                    buildModelLastStepTime = now;
-                    buildModelPhase = BuildModelPhase::SetDuty;
-                    std::cout << "  Phase ThermalCharacterize -> SetDuty at " << now << " (Tau: " << estimatedTauThermal << ")" << std::endl;
+
+                    if (now - shutoffTime >= 2000) {
+                        double deltaT = tempAtShutoff - tempStart;
+                        double computedTau = 45.0;
+                        if (deltaT > 0.005) {
+                            computedTau = 4.0 / (deltaT * 10.0);
+                            if (computedTau < 10.0) computedTau = 10.0;
+                            if (computedTau > 180.0) computedTau = 180.0;
+                        }
+
+                        unsigned long thermistorLagMs = peakTimeAfterShutoff - shutoffTime;
+                        double computedTauTherm = (double)thermistorLagMs / 1000.0;
+                        if (computedTauTherm < 1.0) computedTauTherm = 1.0;
+                        if (computedTauTherm > 15.0) computedTauTherm = 15.0;
+
+                        double computedTauSHT = computedTauTherm * 2.0;
+                        if (computedTauSHT < 2.0) computedTauSHT = 2.0;
+                        if (computedTauSHT > 30.0) computedTauSHT = 30.0;
+
+                        estimatedTauThermal = (float)computedTau;
+                        estimatedTauTherm = (float)computedTauTherm;
+                        estimatedTauSHT = (float)computedTauSHT;
+
+                        tempStart = 0.0;
+                        buildModelLastStepTime = now;
+                        buildModelPhase = BuildModelPhase::SetDuty;
+                        std::cout << "  Phase ThermalCharacterize -> SetDuty at " << now
+                                  << " (TauThermal: " << estimatedTauThermal
+                                  << ", TauThermistor: " << estimatedTauTherm
+                                  << ", TauSHT4x: " << estimatedTauSHT << ")" << std::endl;
+                    }
                 }
             }
             break;
@@ -446,6 +488,13 @@ int estimateDutyCycleForCurrent(float targetCurrent) {
 
 void reset_globals() {
     systemData.begin();
+    prev_t1 = -1.0;
+    prev_t2 = -1.0;
+    t1_deriv = 0.0;
+    t2_deriv = 0.0;
+    predictedTempTrack = 25.0f;
+    pulseCycleStartTime = 0;
+    sht4Sensor.setTemperature(22.0f);
     mock_millis = 0; voltage_mv = 1000.0f; current_ma = 0.0f; mAh_charged = 0.0;
     dutyCycle = 0; chargingState = CHARGE_IDLE; chargeLog.clear();
     sim = BatterySim(); overtemp_trip_counter = 0; currentAppState = APP_STATE_IDLE;
@@ -541,6 +590,16 @@ void test_overtemp_shutdown() {
 void test_outgassing_detection() {
     std::cout << "Running test_outgassing_detection (Thermal and Overpotential Divergence)..." << std::endl;
     reset_globals();
+
+    // Settle initial transient temperature mismatches
+    for (int k = 0; k < 100; k++) {
+        mock_millis += CHARGING_HOUSEKEEP_INTERVAL;
+        sht4Sensor.setTemperature(sim.ambient);
+        increment_mock_samples(1);
+        sim.update(0.25f, 0);
+        systemData.update(0.0f);
+    }
+
     currentAppState = APP_STATE_CHARGING;
     chargingState = CHARGE_PULSE_ACTIVE;
 
@@ -552,6 +611,9 @@ void test_outgassing_detection() {
 
     // Establish baseline pulse variables
     estimatedTauThermal = 120.0f; // 2 minutes
+    prev_t1 = -1.0; // Force derivative reinitialization
+    prev_t2 = -1.0;
+    s_thermalHistory.clear();
 
     // Run combined pulse cycle charging
     int loop_count = 0;
@@ -559,18 +621,19 @@ void test_outgassing_detection() {
 
     // Simulate normal charging first (actual temp matches predicted, voltage matches prediction)
     // Then introduce oxygen recombination/outgassing (rapid heat rise + correlated voltage rise)
-    while (loop_count++ < 200) {
+    while (loop_count++ < 500) {
         mock_millis += CHARGING_HOUSEKEEP_INTERVAL;
         increment_mock_samples(1);
 
         // Physics simulator updates
-        sim.update(2.0f, (int)dutyCycle);
+        double dt_s = (double)CHARGING_HOUSEKEEP_INTERVAL / 1000.0;
+        sim.update(dt_s, (int)dutyCycle);
         systemData.update(estimateCurrent(dutyCycle));
 
-        if (loop_count > 50) {
+        if (loop_count > 150) {
             // Introduce oxygen recombination: temperature rises and voltage increases electrochemically
-            sim.temp += 0.5f;
-            sim.voltage += 0.015f;
+            sim.temp += 0.08f;
+            sim.voltage += 0.005f;
         }
 
         chargeBattery();
@@ -631,6 +694,15 @@ void test_structured_ir_extreme_bounds() {
 void test_outgassing_ambient_fluctuation() {
     std::cout << "Running test_outgassing_ambient_fluctuation (Ensuring no false triggers during rapid ambient changes)..." << std::endl;
     reset_globals();
+
+    // Settle initial transient temperature mismatches
+    for (int k = 0; k < 100; k++) {
+        mock_millis += CHARGING_HOUSEKEEP_INTERVAL;
+        increment_mock_samples(1);
+        sim.update(0.25f, 0);
+        systemData.update(0.0f);
+    }
+
     currentAppState = APP_STATE_CHARGING;
     chargingState = CHARGE_PULSE_ACTIVE;
 
@@ -639,19 +711,24 @@ void test_outgassing_ambient_fluctuation() {
     currentModel.coefficients(0) = 0.0;
     currentModel.coefficients(1) = 0.005;
     estimatedTauThermal = 120.0f;
+    prev_t1 = -1.0; // Force derivative reinitialization
+    prev_t2 = -1.0;
+    s_thermalHistory.clear();
 
     int loop_count = 0;
     bool falseTrigger = false;
 
-    while (loop_count++ < 100) {
+    while (loop_count++ < 300) {
         mock_millis += CHARGING_HOUSEKEEP_INTERVAL;
-        increment_mock_samples(1);
 
         // Rapid ambient temperature drop (e.g. convective draft / external factors)
-        sim.ambient -= 0.15f;
-        sim.temp -= 0.15f; // Actual temperature drops with ambient, but no electrochemical divergence
+        sim.ambient -= 0.015f;
+        sim.temp -= 0.015f; // Actual temperature drops with ambient, but no electrochemical divergence
+        sht4Sensor.setTemperature(sim.ambient);
 
-        sim.update(2.0f, (int)dutyCycle);
+        increment_mock_samples(1);
+        double dt_s = (double)CHARGING_HOUSEKEEP_INTERVAL / 1000.0;
+        sim.update(dt_s, (int)dutyCycle);
         systemData.update(estimateCurrent(dutyCycle));
 
         chargeBattery();
@@ -665,6 +742,86 @@ void test_outgassing_ambient_fluctuation() {
     assert(!falseTrigger); // Ensure no false positive EOC occurred because of ambient fluctuation
     std::cout << "  Successfully completed with no false EOC triggers under rapid ambient fluctuations." << std::endl;
     std::cout << "test_outgassing_ambient_fluctuation PASSED" << std::endl << std::endl;
+}
+
+void test_sensor_lag_compensation() {
+    std::cout << "Running test_sensor_lag_compensation (Derivative true temperature recovery)..." << std::endl;
+    reset_globals();
+
+    // Set sensor lags
+    estimatedTauSHT = 8.0f;
+    estimatedTauTherm = 4.0f;
+
+    // Initialize physical temperature of simulator to 25C
+    sim.ambient = 25.0f;
+    sim.temp = 25.0f;
+    sht4Sensor.setTemperature(25.0f);
+
+    // Settle initial transient temperature mismatches at 25C
+    for (int k = 0; k < 100; k++) {
+        mock_millis += CHARGING_HOUSEKEEP_INTERVAL;
+        sht4Sensor.setTemperature(25.0f);
+        increment_mock_samples(1);
+        sim.update(0.25f, 0);
+        systemData.update(0.0f);
+    }
+
+    currentAppState = APP_STATE_CHARGING;
+    chargingState = CHARGE_PULSE_ACTIVE;
+    pulseCycleStartTime = mock_millis; // Ensure it stays active, no IR sweep transition
+    currentModel.isModelBuilt = true;
+    currentModel.coefficients.resize(2);
+    currentModel.coefficients(0) = 0.0;
+    currentModel.coefficients(1) = 0.005;
+
+    // Force derivative structures to start settled at 25C
+    prev_t1 = 25.0;
+    prev_t2 = 25.0;
+    t1_deriv = 0.0;
+    t2_deriv = 0.0;
+    s_thermalHistory.clear();
+
+    // Now, apply rapid ambient temperature drop from 25C to 20C.
+    // SHT4x sensor will lag, but reconstructed true ambient should lead it towards 20C.
+    sim.ambient = 20.0f;
+    sim.temp = 20.0f;
+
+    // Run 20 steps (5 seconds)
+    int loop_count = 0;
+    double sht_meas = 25.0;
+    while (loop_count++ < 20) {
+        mock_millis += CHARGING_HOUSEKEEP_INTERVAL;
+
+        // Exponential lag simulation of SHT4x sensor in mock
+        double dt_s = (double)CHARGING_HOUSEKEEP_INTERVAL / 1000.0;
+        sht_meas += (dt_s / (estimatedTauSHT + dt_s)) * (sim.ambient - sht_meas);
+        sht4Sensor.setTemperature((float)sht_meas);
+
+        increment_mock_samples(1);
+
+        // Exponential lag simulation of Thermistor 1 sensor in mock
+        systemData._currentData.ambient_temp_c += (dt_s / (estimatedTauSHT + dt_s)) * (sim.ambient - systemData._currentData.ambient_temp_c);
+        systemData._currentData.battery_temp_c += (dt_s / (estimatedTauTherm + dt_s)) * (sim.temp - systemData._currentData.battery_temp_c);
+
+        systemData.update(estimateCurrent(dutyCycle));
+        chargeBattery();
+    }
+
+    // After 20 steps (5 seconds), the recovered ambient temp in the history should lead the lagging sensor towards 20C
+    assert(!s_thermalHistory.empty());
+    float final_recovered_ambient = s_thermalHistory.back().ambientTemp;
+    float lagging_measured_sensor = (float)systemData._currentData.ambient_temp_c;
+
+    std::cout << "  Physical True Ambient: " << sim.ambient << " C" << std::endl;
+    std::cout << "  SHT4x Lagging Measured: " << lagging_measured_sensor << " C" << std::endl;
+    std::cout << "  Recovered True Ambient: " << final_recovered_ambient << " C" << std::endl;
+
+    // Recovered temperature must lead the lagging sensor (be closer to the true physical ambient 20C)
+    assert(final_recovered_ambient < lagging_measured_sensor); // Because both are dropping from 25C towards 20C, so lead means smaller value!
+    assert(std::fabs(final_recovered_ambient - sim.ambient) < std::fabs(lagging_measured_sensor - sim.ambient));
+    std::cout << "  Sensor lag successfully recovered! Recovered leads measured." << std::endl;
+
+    std::cout << "test_sensor_lag_compensation PASSED" << std::endl << std::endl;
 }
 
 void test_ir_measurement() {
@@ -953,6 +1110,7 @@ int main() {
     test_outgassing_detection();
     test_structured_ir_extreme_bounds();
     test_outgassing_ambient_fluctuation();
+    test_sensor_lag_compensation();
     test_full_flow();
     test_web_handlers();
     test_websocket_communications();

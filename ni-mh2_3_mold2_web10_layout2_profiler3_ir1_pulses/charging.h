@@ -3,6 +3,27 @@
 
 #include "definitions.h"
 
+// Structured Thermal Replay History
+struct ThermalStepResponse {
+    uint32_t timestamp;
+    float current;
+    float voltage;
+    float ambientTemp;
+    float actualTemp;
+    float predictedTemp;
+    float predictedVoltage;
+    float overpotential;
+    float ir;
+};
+
+extern std::vector<ThermalStepResponse> s_thermalHistory;
+extern double prev_t1;
+extern double prev_t2;
+extern double t1_deriv;
+extern double t2_deriv;
+extern float predictedTempTrack;
+extern unsigned long pulseCycleStartTime;
+
 // =======================================================
 // Existing public charging interface
 // =======================================================

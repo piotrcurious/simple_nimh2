@@ -58,7 +58,7 @@
 #define TOTAL_TIMEOUT (20UL * 60 * 60 * 1000)
 #define PLOT_UPDATE_INTERVAL_MS 5000
 #define PLOT_DATA_UPDATE_INTERVAL 1000
-#define CHARGING_HOUSEKEEP_INTERVAL 2000
+#define CHARGING_HOUSEKEEP_INTERVAL 250
 #define MAIN_VCC_RATIO 2.0
 #define CURRENT_SHUNT_RESISTANCE 2.5f
 #define CURRENT_SHUNT_PIN_ZERO_OFFSET 75
@@ -316,6 +316,8 @@ extern volatile BuildModelPhase buildModelPhase;
 extern volatile IRState currentIRState;
 extern volatile float noiseFloorMv;
 extern volatile float estimatedTauThermal;
+extern volatile float estimatedTauSHT;
+extern volatile float estimatedTauTherm;
 extern DisplayState currentDisplayState;
 extern uint8_t overtemp_trip_counter;
 extern unsigned long chargePhaseStartTime;
