@@ -417,6 +417,8 @@ struct ThermalStepResponse {
     float ambientTemp;
     float actualTemp;
     float predictedTemp;
+    float predictedVoltage;
+    float overpotential;
     float ir;
 };
 static std::vector<ThermalStepResponse> s_thermalHistory;
@@ -539,6 +541,10 @@ bool chargeBattery() {
                 float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, s_irTest.calculatedIR, (float)t1, now, now - CHARGING_HOUSEKEEP_INTERVAL, predictedTempTrack, &unapplied);
                 predictedTempTrack = predictedDiff + (float)t1;
 
+                // Electrochemical voltage prediction: V_predicted = V_unloaded + I * R_int
+                float predictedV = s_irTest.unloadedVoltage + cur * s_irTest.calculatedIR;
+                float overpotential = v - predictedV;
+
                 // Store step response
                 ThermalStepResponse stepResp;
                 stepResp.timestamp = (uint32_t)now;
@@ -547,12 +553,14 @@ bool chargeBattery() {
                 stepResp.ambientTemp = (float)t1;
                 stepResp.actualTemp = (float)t2;
                 stepResp.predictedTemp = predictedTempTrack;
+                stepResp.predictedVoltage = predictedV;
+                stepResp.overpotential = overpotential;
                 stepResp.ir = s_irTest.calculatedIR;
                 s_thermalHistory.push_back(stepResp);
 
-                // Prune/cap the history size to prevent SRAM exhaustion (only keep last 120 elements, i.e. ~30 seconds)
-                if (s_thermalHistory.size() > 120) {
-                    s_thermalHistory.erase(s_thermalHistory.begin(), s_thermalHistory.end() - 120);
+                // Prune/cap the history size to prevent SRAM exhaustion (only keep last 60 elements)
+                if (s_thermalHistory.size() > 60) {
+                    s_thermalHistory.erase(s_thermalHistory.begin(), s_thermalHistory.end() - 60);
                 }
 
                 // Detect when cell outgassing changes thermal profile (diverts from theoretical model)
@@ -560,15 +568,57 @@ bool chargeBattery() {
                 float divergence = (float)t2 - predictedTempTrack;
                 float accumulatedDivergenceSum = 0.0f;
                 int countDivergences = 0;
-                // Look at the last 15 seconds of pulse history to verify divergence
-                for (auto it = s_thermalHistory.rbegin(); it != s_thermalHistory.rend() && (now - it->timestamp < 15000); ++it) {
-                    accumulatedDivergenceSum += (it->actualTemp - it->predictedTemp);
-                    countDivergences++;
-                }
-                float avgDivergence = (countDivergences > 0) ? (accumulatedDivergenceSum / countDivergences) : 0.0f;
 
-                // If divergence exceeds threshold, flag as end-of-charge confidence metric
-                bool outgassingDiverged = (avgDivergence > 0.4f);
+                // Track electrochemical overpotential trend to correlate with temperature rise.
+                // We'll calculate the covariance or correlation between temperature divergence and overpotential over the last 5 minutes.
+                // A positive correlation signifies that the electrochemically driven voltage rise is accompanied by outgassing heat divergence.
+                float accumulatedOverpotentialSum = 0.0f;
+                int countOverpotentials = 0;
+
+                // Look at the last 5 minutes (300 seconds) of pulse history to verify divergence and overpotential correlation
+                for (auto it = s_thermalHistory.rbegin(); it != s_thermalHistory.rend() && (now - it->timestamp < 300000); ++it) {
+                    accumulatedDivergenceSum += (it->actualTemp - it->predictedTemp);
+                    accumulatedOverpotentialSum += it->overpotential;
+                    countDivergences++;
+                    countOverpotentials++;
+                }
+
+                float avgDivergence = (countDivergences > 0) ? (accumulatedDivergenceSum / countDivergences) : 0.0f;
+                float avgOverpotential = (countOverpotentials > 0) ? (accumulatedOverpotentialSum / countOverpotentials) : 0.0f;
+
+                // Calculate Pearson-like covariance/correlation coefficient over the window
+                float covNumerator = 0.0f;
+                float varDivergence = 0.0f;
+                float varOverpotential = 0.0f;
+                for (auto it = s_thermalHistory.rbegin(); it != s_thermalHistory.rend() && (now - it->timestamp < 300000); ++it) {
+                    float devDiv = (it->actualTemp - it->predictedTemp) - avgDivergence;
+                    float devOver = it->overpotential - avgOverpotential;
+                    covNumerator += devDiv * devOver;
+                    varDivergence += devDiv * devDiv;
+                    varOverpotential += devOver * devOver;
+                }
+
+                float correlation = 0.0f;
+                if (varDivergence > 1e-6f && varOverpotential > 1e-6f) {
+                    correlation = covNumerator / std::sqrt(varDivergence * varOverpotential);
+                }
+
+                // If temperature divergence exceeds threshold AND is highly correlated with the rising electrochemical overpotential (correlation > 0.6), flag outgassing.
+                // This acts as a robust confirmation step.
+                bool outgassingDiverged = (avgDivergence > 0.4f) && (correlation > 0.6f);
+#ifdef MOCK_TEST
+                std::cout << "    [DEBUG PUSH] timestamp: " << stepResp.timestamp
+                          << ", actualTemp: " << stepResp.actualTemp
+                          << ", predictedTemp: " << stepResp.predictedTemp
+                          << ", overpotential: " << stepResp.overpotential
+                          << ", unloadedVoltage: " << s_irTest.unloadedVoltage
+                          << ", calculatedIR: " << s_irTest.calculatedIR
+                          << ", cur: " << cur << std::endl;
+                static int dbg_cnt = 0;
+                if (dbg_cnt++ % 10 == 0) {
+                    std::cout << "  [CHARGE_PULSE_ACTIVE] avgDivergence: " << avgDivergence << ", correlation: " << correlation << ", overpotential: " << overpotential << std::endl;
+                }
+#endif
 
                 // Every few seconds, push to standard ChargeLogData to update graph and web UI
                 static unsigned long lastLogTime = 0;
