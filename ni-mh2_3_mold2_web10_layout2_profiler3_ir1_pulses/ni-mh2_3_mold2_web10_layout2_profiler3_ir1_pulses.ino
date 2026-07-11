@@ -95,6 +95,8 @@ int calibrationCount = 0;
 uint32_t lastKnownSampleCount = 0;
 volatile float noiseFloorMv = 0;
 volatile float estimatedTauThermal = 45.0f; // Default thermal time constant in seconds
+volatile float estimatedTauSHT = 10.0f;    // SHT4x typical thermal response lag in seconds
+volatile float estimatedTauTherm = 5.0f;   // Thermistor 1 typical thermal response lag in seconds
 std::vector<float> dutyCycles;
 std::vector<float> currents;
 
@@ -440,44 +442,84 @@ void buildCurrentModelStep() {
             break;
         case BuildModelPhase::ThermalCharacterize:
             {
-                // To determine the battery thermal response/inertia, apply a safe load of MAX_DUTY_CYCLE / 2 (or a moderate high load)
-                // and observe the temperature rise in time (specifically, looking for how fast it heats up to compute a thermal time constant tau).
-                // Let's heat for 4 seconds, measuring start and end temps, then calculate estimatedTauThermal.
+                // Enhanced Thermal Characterization:
+                // 1. Heat the battery for 4 seconds under half-load to observe thermal inertia (estimatedTauThermal).
+                // 2. Shut off the load for 2 seconds to observe sensor thermal lag (overshoot / delay in peak reading).
                 static double tempStart = 0.0;
+                static double tempAtShutoff = 0.0;
                 static unsigned long startTime = 0;
+                static unsigned long shutoffTime = 0;
+                static double peakTempAfterShutoff = 0.0;
+                static unsigned long peakTimeAfterShutoff = 0;
+
                 if (tempStart == 0.0) {
                     double t1, t2, td; float tmv, v, c;
                     getThermistorReadings(t1, t2, td, tmv, v, c);
                     tempStart = t2;
                     startTime = now;
+                    shutoffTime = 0;
+                    peakTempAfterShutoff = 0.0;
+                    peakTimeAfterShutoff = 0;
                     applyDuty(MAX_DUTY_CYCLE / 2);
-                    Serial.printf("Thermal Characterize: applied half-load, initial temp: %.2f C\n", tempStart);
+                    Serial.printf("Thermal Characterize Phase 1 (Heating): applied half-load, initial temp: %.2f C\n", tempStart);
                 }
-                if (now - startTime >= 4000) {
+
+                if (shutoffTime == 0) {
+                    if (now - startTime >= 4000) {
+                        double t1, t2, td; float tmv, v, c;
+                        getThermistorReadings(t1, t2, td, tmv, v, c);
+                        tempAtShutoff = t2;
+                        peakTempAfterShutoff = t2;
+                        peakTimeAfterShutoff = now;
+                        shutoffTime = now;
+                        applyDuty(0); // Shutoff load to observe sensor lag
+                        Serial.printf("Thermal Characterize Phase 2 (Cooloff/Sensor Lag): shutoff load at temp: %.4f C\n", tempAtShutoff);
+                    }
+                } else {
                     double t1, t2, td; float tmv, v, c;
                     getThermistorReadings(t1, t2, td, tmv, v, c);
-                    double tempEnd = t2;
-                    double deltaT = tempEnd - tempStart;
-                    // Formula to approximate tau thermal:
-                    // Let's assume simple convective-conductive heating.
-                    // If deltaT is positive, use it. To avoid division-by-zero or extreme values, clamp.
-                    double computedTau = 45.0; // Default fallback
-                    if (deltaT > 0.005) {
-                        // tau = C_th / G_th. If dT is small, thermal inertia is high (large tau).
-                        // Let's scale tau based on deltaT. A typical dT of 0.1C over 4s under half load
-                        // might correspond to tau ~ 45s.
-                        computedTau = 4.0 / (deltaT * 10.0); // Simple proportional estimation
-                        if (computedTau < 10.0) computedTau = 10.0;
-                        if (computedTau > 180.0) computedTau = 180.0;
+                    if (t2 > peakTempAfterShutoff) {
+                        peakTempAfterShutoff = t2;
+                        peakTimeAfterShutoff = now;
                     }
-                    WEB_LOCK();
-                    estimatedTauThermal = (float)computedTau;
-                    WEB_UNLOCK();
-                    Serial.printf("Thermal Characterize: dT over 4s was %.4f C. Estimated Tau Thermal: %.2f s\n", deltaT, (float)estimatedTauThermal);
-                    tempStart = 0.0; // Reset static
-                    applyDuty(0);
-                    buildModelLastStepTime = now;
-                    setBuildModelPhase(BuildModelPhase::SetDuty);
+
+                    if (now - shutoffTime >= 2000) {
+                        // Calculate Battery Thermal Inertia (Tau Thermal)
+                        double deltaT = tempAtShutoff - tempStart;
+                        double computedTau = 45.0; // Default fallback
+                        if (deltaT > 0.005) {
+                            computedTau = 4.0 / (deltaT * 10.0);
+                            if (computedTau < 10.0) computedTau = 10.0;
+                            if (computedTau > 180.0) computedTau = 180.0;
+                        }
+
+                        // Calculate Thermistor lag (Tau Thermistor)
+                        // Time delay from shutoff to peak temperature is the thermistor thermal lag!
+                        unsigned long thermistorLagMs = peakTimeAfterShutoff - shutoffTime;
+                        double computedTauTherm = (double)thermistorLagMs / 1000.0;
+                        if (computedTauTherm < 1.0) computedTauTherm = 1.0;
+                        if (computedTauTherm > 15.0) computedTauTherm = 15.0;
+
+                        // SHT4x typical lag can be scaled similarly or kept at standard coupling
+                        double computedTauSHT = computedTauTherm * 2.0; // SHT4x package has slightly higher thermal mass/lag than bare thermistor bead
+                        if (computedTauSHT < 2.0) computedTauSHT = 2.0;
+                        if (computedTauSHT > 30.0) computedTauSHT = 30.0;
+
+                        WEB_LOCK();
+                        estimatedTauThermal = (float)computedTau;
+                        estimatedTauTherm = (float)computedTauTherm;
+                        estimatedTauSHT = (float)computedTauSHT;
+                        WEB_UNLOCK();
+
+                        Serial.printf("Thermal Characterize Complete:\n");
+                        Serial.printf("  Estimated Tau Thermal: %.2f s\n", (float)estimatedTauThermal);
+                        Serial.printf("  Estimated Tau Thermistor: %.2f s\n", (float)estimatedTauTherm);
+                        Serial.printf("  Estimated Tau SHT4x: %.2f s\n", (float)estimatedTauSHT);
+
+                        tempStart = 0.0; // Reset static
+                        buildModelLastStepTime = now;
+                        setBuildModelPhase(BuildModelPhase::SetDuty);
+                    }
                 }
             }
             break;

@@ -12,6 +12,14 @@ unsigned long lastChargeEvaluationTime = 0;
 float maximumCurrent = 0.150;
 float currentRampTarget = 0.0f;
 
+// Global thermal tracking and derivative variables
+double prev_t1 = -1.0;
+double prev_t2 = -1.0;
+double t1_deriv = 0.0;
+double t2_deriv = 0.0;
+float predictedTempTrack = 25.0f;
+unsigned long pulseCycleStartTime = 0;
+
 // Monitoring evaluation snapshots (persist across states)
 float eval_mAh_snapshot = 0.0f;       // mAh at start of monitor evaluation interval
 unsigned long eval_time_snapshot = 0; // ms at start of monitor evaluation interval
@@ -409,19 +417,7 @@ struct StructuredIRTest {
 };
 static StructuredIRTest s_irTest;
 
-// Structured Thermal Replay History
-struct ThermalStepResponse {
-    uint32_t timestamp;
-    float current;
-    float voltage;
-    float ambientTemp;
-    float actualTemp;
-    float predictedTemp;
-    float predictedVoltage;
-    float overpotential;
-    float ir;
-};
-static std::vector<ThermalStepResponse> s_thermalHistory;
+std::vector<ThermalStepResponse> s_thermalHistory;
 
 bool chargeBattery() {
     unsigned long now = millis();
@@ -434,10 +430,6 @@ bool chargeBattery() {
     if (pulseLengthS > 60.0f) pulseLengthS = 60.0f;
     unsigned long pulseLengthMs = (unsigned long)(pulseLengthS * 1000.0f);
 
-    // Ensure we run the pulse cycle periodically.
-    static unsigned long pulseCycleStartTime = 0;
-    static float predictedTempTrack = 25.0f;
-
     switch (chargingState) {
         case CHARGE_IDLE:
             chargingStartTime = now;
@@ -449,6 +441,10 @@ bool chargeBattery() {
             {
                 double t1, t2, td; float tmv, v, c; getThermistorReadings(t1, t2, td, tmv, v, c);
                 predictedTempTrack = (float)t2;
+                prev_t1 = t1;
+                prev_t2 = t2;
+                t1_deriv = 0.0;
+                t2_deriv = 0.0;
                 ChargeLogData s; s.timestamp = (uint32_t)now; s.current = c; s.voltage = v; s.ambientTemperature = (float)t1; s.batteryTemperature = (float)t2;
                 s.dutyCycle = 0; s.internalResistanceLoadedUnloaded = s_irTest.calculatedIR; s.internalResistancePairs = s_irTest.calculatedIR;
                 logChargeData(s); pushRecentChargeLog(s);
@@ -533,13 +529,34 @@ bool chargeBattery() {
                 double t1, t2, td; float tmv, v, cur; getThermistorReadings(t1, t2, td, tmv, v, cur);
                 unsigned long elapsedMs = now - pulseCycleStartTime;
 
-                // Complex thermal loss model evaluates loss at each time step (approx 1 step / CHARGING_HOUSEKEEP_INTERVAL)
-                // Predict temp change
+                if (prev_t1 < 0) {
+                    prev_t1 = t1;
+                    prev_t2 = t2;
+                    t1_deriv = 0.0;
+                    t2_deriv = 0.0;
+                }
+
                 float dt_s = (float)CHARGING_HOUSEKEEP_INTERVAL / 1000.0f;
+
+                // robust derivative with simple smoothing (alpha = 0.5)
+                double raw_t1_deriv = (t1 - prev_t1) / dt_s;
+                double raw_t2_deriv = (t2 - prev_t2) / dt_s;
+                t1_deriv = 0.5 * t1_deriv + 0.5 * raw_t1_deriv;
+                t2_deriv = 0.5 * t2_deriv + 0.5 * raw_t2_deriv;
+                prev_t1 = t1;
+                prev_t2 = t2;
+
+                // Recover true physical temperatures to compensate for sensor thermal inertia
+                float t1_true = (float)(t1 + estimatedTauSHT * t1_deriv);
+                float t2_true = (float)(t2 + estimatedTauTherm * t2_deriv);
+                float td_true = t2_true - t1_true;
+
+                // Complex thermal loss model evaluates loss at each time step (approx 1 step / CHARGING_HOUSEKEEP_INTERVAL)
+                // Predict temp change using recovered true ambient temperature (t1_true)
                 float unapplied = 0.0f;
                 // Run the standard non-linear estimateTempDiff model using predictedTempTrack
-                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, s_irTest.calculatedIR, (float)t1, now, now - CHARGING_HOUSEKEEP_INTERVAL, predictedTempTrack, &unapplied);
-                predictedTempTrack = predictedDiff + (float)t1;
+                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, s_irTest.calculatedIR, t1_true, now, now - CHARGING_HOUSEKEEP_INTERVAL, predictedTempTrack, &unapplied);
+                predictedTempTrack = predictedDiff + t1_true;
 
                 // Electrochemical voltage prediction: V_predicted = V_unloaded + I * R_int
                 float predictedV = s_irTest.unloadedVoltage + cur * s_irTest.calculatedIR;
@@ -550,8 +567,8 @@ bool chargeBattery() {
                 stepResp.timestamp = (uint32_t)now;
                 stepResp.current = cur;
                 stepResp.voltage = v;
-                stepResp.ambientTemp = (float)t1;
-                stepResp.actualTemp = (float)t2;
+                stepResp.ambientTemp = t1_true;
+                stepResp.actualTemp = t2_true;
                 stepResp.predictedTemp = predictedTempTrack;
                 stepResp.predictedVoltage = predictedV;
                 stepResp.overpotential = overpotential;
@@ -642,7 +659,7 @@ bool chargeBattery() {
                 WEB_UNLOCK();
 
                 // Safety and End of Charge checks
-                if (td > (MAX_DIFF_TEMP + 1.5f) || outgassingDiverged) {
+                if (td_true > (MAX_DIFF_TEMP + 1.5f) || outgassingDiverged) {
                     if (++overtemp_trip_counter >= OVERTEMP_TRIP_TRESHOLD || outgassingDiverged) {
                         overtemp_trip_counter = 0;
                         chargingState = CHARGE_STOPPED;

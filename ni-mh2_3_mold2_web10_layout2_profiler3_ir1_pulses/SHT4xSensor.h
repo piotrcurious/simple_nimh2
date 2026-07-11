@@ -19,6 +19,8 @@ public:
 
     float getTemperature() const { return _temperature; }
     float getHumidity() const { return _humidity; }
+    void setTemperature(float t) { _temperature = t; }
+    void setHumidity(float h) { _humidity = h; }
 
 private:
 #ifndef MOCK_TEST
