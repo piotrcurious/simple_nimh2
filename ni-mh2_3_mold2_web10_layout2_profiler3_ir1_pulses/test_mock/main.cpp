@@ -586,6 +586,87 @@ void test_outgassing_detection() {
     std::cout << "test_outgassing_detection PASSED" << std::endl << std::endl;
 }
 
+void test_structured_ir_extreme_bounds() {
+    std::cout << "Running test_structured_ir_extreme_bounds (Extremely high and low physical IR boundaries)..." << std::endl;
+
+    // Case 1: Extremely high resistance (e.g. 10 Ohms - should be clamped to valid boundary 5.0 Ohms or fallback)
+    reset_globals();
+    currentAppState = APP_STATE_CHARGING;
+    chargingState = CHARGE_PULSE_IR_TEST;
+    sim.internal_resistance = 10.0f;
+
+    int loop_count = 0;
+    while (loop_count++ < 20) {
+        mock_millis += 1000; // Step through the 1-second IR sweep increments
+        increment_mock_samples(1);
+        sim.update(1.0f, (int)dutyCycle);
+        systemData.update(estimateCurrent(dutyCycle));
+        chargeBattery();
+        if (chargingState == CHARGE_PULSE_ACTIVE) break;
+    }
+    std::cout << "  High physical resistance (10 Ohms) results in Calculated IR: " << regressedInternalResistancePairsIntercept << " Ohms" << std::endl;
+    assert(regressedInternalResistancePairsIntercept <= 5.0f); // Verify clamp/boundary holds
+
+    // Case 2: Extremely low resistance (e.g. 0.0001 Ohms - should be clamped to MIN_VALID_RESISTANCE or fallback)
+    reset_globals();
+    currentAppState = APP_STATE_CHARGING;
+    chargingState = CHARGE_PULSE_IR_TEST;
+    sim.internal_resistance = 0.0001f;
+
+    loop_count = 0;
+    while (loop_count++ < 20) {
+        mock_millis += 1000;
+        increment_mock_samples(1);
+        sim.update(1.0f, (int)dutyCycle);
+        systemData.update(estimateCurrent(dutyCycle));
+        chargeBattery();
+        if (chargingState == CHARGE_PULSE_ACTIVE) break;
+    }
+    std::cout << "  Low physical resistance (0.0001 Ohms) results in Calculated IR: " << regressedInternalResistancePairsIntercept << " Ohms" << std::endl;
+    assert(regressedInternalResistancePairsIntercept >= MIN_VALID_RESISTANCE);
+
+    std::cout << "test_structured_ir_extreme_bounds PASSED" << std::endl << std::endl;
+}
+
+void test_outgassing_ambient_fluctuation() {
+    std::cout << "Running test_outgassing_ambient_fluctuation (Ensuring no false triggers during rapid ambient changes)..." << std::endl;
+    reset_globals();
+    currentAppState = APP_STATE_CHARGING;
+    chargingState = CHARGE_PULSE_ACTIVE;
+
+    currentModel.isModelBuilt = true;
+    currentModel.coefficients.resize(2);
+    currentModel.coefficients(0) = 0.0;
+    currentModel.coefficients(1) = 0.005;
+    estimatedTauThermal = 120.0f;
+
+    int loop_count = 0;
+    bool falseTrigger = false;
+
+    while (loop_count++ < 100) {
+        mock_millis += CHARGING_HOUSEKEEP_INTERVAL;
+        increment_mock_samples(1);
+
+        // Rapid ambient temperature drop (e.g. convective draft / external factors)
+        sim.ambient -= 0.15f;
+        sim.temp -= 0.15f; // Actual temperature drops with ambient, but no electrochemical divergence
+
+        sim.update(2.0f, (int)dutyCycle);
+        systemData.update(estimateCurrent(dutyCycle));
+
+        chargeBattery();
+
+        if (chargingState == CHARGE_STOPPED) {
+            falseTrigger = true;
+            break;
+        }
+    }
+
+    assert(!falseTrigger); // Ensure no false positive EOC occurred because of ambient fluctuation
+    std::cout << "  Successfully completed with no false EOC triggers under rapid ambient fluctuations." << std::endl;
+    std::cout << "test_outgassing_ambient_fluctuation PASSED" << std::endl << std::endl;
+}
+
 void test_ir_measurement() {
     std::cout << "Running test_ir_measurement..." << std::endl;
     reset_globals();
@@ -870,6 +951,8 @@ int main() {
     test_ir_accuracy_with_offset();
     test_overtemp_shutdown();
     test_outgassing_detection();
+    test_structured_ir_extreme_bounds();
+    test_outgassing_ambient_fluctuation();
     test_full_flow();
     test_web_handlers();
     test_websocket_communications();
