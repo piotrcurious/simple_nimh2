@@ -177,32 +177,42 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
 
 // ADC DMA Stubs for SystemDataManager.cpp
 static uint32_t mock_sample_count = 0;
-void getAdcSnapshot(AdcChannelIndex idx, AdcSnapshot &snapshot) {
-    snapshot.count = mock_sample_count;
+static uint64_t mock_adc_sum[ADC_CH_COUNT] = {0};
+
+float getMockAdcMv(AdcChannelIndex idx);
+
+void increment_mock_samples(int count = 1) {
+    for (int i = 0; i < count; i++) {
+        mock_sample_count++;
+        for (int ch = 0; ch < ADC_CH_COUNT; ch++) {
+            AdcChannelIndex idx = (AdcChannelIndex)ch;
+            mock_adc_sum[idx] += (uint64_t)getMockAdcMv(idx);
+        }
+    }
+}
+
+float getMockAdcMv(AdcChannelIndex idx) {
     float val_mv = 0;
     if (idx == ADC_IDX_CURRENT) {
         val_mv = sim.getCurrent((int)dutyCycle) * CURRENT_SHUNT_RESISTANCE * 1000.0f + systemData.getCurrentZeroOffsetMv();
     } else if (idx == ADC_IDX_VOLTAGE) {
-        // Correct the voltage mapping to match SystemDataManager logic: batteryV = ((vcc_mv * MAIN_VCC_RATIO) - sampledMv) / 1000.0f
-        // So sampledMv = (vcc_mv * MAIN_VCC_RATIO) - (batteryV * 1000)
         float batteryV = (dutyCycle == 0 ? sim.unloaded_voltage : sim.voltage);
         val_mv = (3300.0f * MAIN_VCC_RATIO) - (batteryV * 1000.0f);
     } else if (idx == ADC_IDX_THERM1) {
-        // Correct thermistor mapping to match calculateBatteryTemp logic
-        // vRatio = averageAnalogValue / ((vcc_millivolts * MAIN_VCC_RATIO) - averageAnalogValue)
-        // We want battTemp = sim.temp
         double battK = sim.temp + 273.15;
         double ambK = sim.ambient + 273.15;
         double logVRatio = ( (1.0/battK) - (1.0/ambK) ) * BCOEFFICIENT;
         double vRatio = exp(logVRatio);
-        // vRatio = val_mv / ( (3300 * MAIN_VCC_RATIO) - val_mv )
-        // vRatio * (3300*R - val_mv) = val_mv
-        // vRatio * 3300 * R = val_mv * (1 + vRatio)
         val_mv = (vRatio * 3300.0f * MAIN_VCC_RATIO) / (1.0 + vRatio);
     } else if (idx == ADC_IDX_THERM_VCC) {
         val_mv = 3300.0f;
     }
-    snapshot.sum = (uint64_t)val_mv * snapshot.count;
+    return val_mv;
+}
+
+void getAdcSnapshot(AdcChannelIndex idx, AdcSnapshot &snapshot) {
+    snapshot.count = mock_sample_count;
+    snapshot.sum = mock_adc_sum[idx];
 }
 uint32_t calculateSnapshotAverage(const AdcSnapshot &old_s, const AdcSnapshot &new_s) {
     uint32_t d_count = new_s.count - old_s.count;
@@ -447,6 +457,7 @@ void reset_globals() {
     resistanceDataCount = 0;
     resistanceDataCountPairs = 0;
     mock_sample_count = 0;
+    memset(mock_adc_sum, 0, sizeof(mock_adc_sum));
     for (int i = 0; i < PLOT_WIDTH; i++) {
         temp1_values[i] = NAN;
         temp2_values[i] = NAN;
@@ -468,7 +479,7 @@ void test_model_accuracy() {
     int safety_counter = 0;
     while (safety_counter++ < 1000000) {
         mock_millis += 10;
-        mock_sample_count++;
+        increment_mock_samples(1);
         systemData.update(estimateCurrent(dutyCycle));
         if (currentAppState == APP_STATE_BUILDING_MODEL) {
             buildCurrentModelStep();
@@ -509,13 +520,13 @@ void test_overtemp_shutdown() {
     currentAppState = APP_STATE_CHARGING;
     chargingState = CHARGE_PULSE_ACTIVE;
 
-    // Simulate battery heating up rapidly
+    // Simulate battery heating up rapidly to trigger regular overtemp trip limit
     sim.temp = 100.0f;
 
     int loop_count = 0;
     while (loop_count++ < 10000) {
         mock_millis += CHARGING_HOUSEKEEP_INTERVAL;
-        mock_sample_count++;
+        increment_mock_samples(1);
         sim.update(0.25f, (int)dutyCycle);
         systemData.update(estimateCurrent(dutyCycle));
         chargeBattery();
@@ -525,6 +536,54 @@ void test_overtemp_shutdown() {
     assert(chargingState == CHARGE_STOPPED);
     std::cout << "  Shutdown triggered at millis: " << mock_millis << std::endl;
     std::cout << "test_overtemp_shutdown PASSED" << std::endl << std::endl;
+}
+
+void test_outgassing_detection() {
+    std::cout << "Running test_outgassing_detection (Thermal and Overpotential Divergence)..." << std::endl;
+    reset_globals();
+    currentAppState = APP_STATE_CHARGING;
+    chargingState = CHARGE_PULSE_ACTIVE;
+
+    // Let's populate mock model and initial IR
+    currentModel.isModelBuilt = true;
+    currentModel.coefficients.resize(2);
+    currentModel.coefficients(0) = 0.0;
+    currentModel.coefficients(1) = 0.005; // Safe dummy slope
+
+    // Establish baseline pulse variables
+    estimatedTauThermal = 120.0f; // 2 minutes
+
+    // Run combined pulse cycle charging
+    int loop_count = 0;
+    bool detectedOutgassing = false;
+
+    // Simulate normal charging first (actual temp matches predicted, voltage matches prediction)
+    // Then introduce oxygen recombination/outgassing (rapid heat rise + correlated voltage rise)
+    while (loop_count++ < 200) {
+        mock_millis += CHARGING_HOUSEKEEP_INTERVAL;
+        increment_mock_samples(1);
+
+        // Physics simulator updates
+        sim.update(2.0f, (int)dutyCycle);
+        systemData.update(estimateCurrent(dutyCycle));
+
+        if (loop_count > 50) {
+            // Introduce oxygen recombination: temperature rises and voltage increases electrochemically
+            sim.temp += 0.5f;
+            sim.voltage += 0.015f;
+        }
+
+        chargeBattery();
+
+        if (chargingState == CHARGE_STOPPED) {
+            detectedOutgassing = true;
+            break;
+        }
+    }
+
+    assert(detectedOutgassing);
+    std::cout << "  Outgassing & Electrochemical rise correlation successfully verified at " << mock_millis << " ms." << std::endl;
+    std::cout << "test_outgassing_detection PASSED" << std::endl << std::endl;
 }
 
 void test_ir_measurement() {
@@ -554,7 +613,7 @@ void test_ir_measurement() {
     int loop_count = 0;
     while (currentAppState != APP_STATE_IDLE && loop_count++ < 1000000) {
         mock_millis += 50;
-        mock_sample_count++;
+        increment_mock_samples(1);
         sim.update(0.05f, (int)dutyCycle);
         systemData.update(estimateCurrent(dutyCycle));
 
@@ -590,7 +649,7 @@ void test_ir_accuracy_with_offset() {
     buildModelPhase = BuildModelPhase::Idle;
     int safety = 0;
     while (currentAppState == APP_STATE_BUILDING_MODEL && safety++ < 100000) {
-        mock_millis += 10; mock_sample_count++;
+        mock_millis += 10; increment_mock_samples(1);
         systemData.update(estimateCurrent(dutyCycle));
         buildCurrentModelStep();
     }
@@ -607,7 +666,7 @@ void test_ir_accuracy_with_offset() {
 
     safety = 0;
     while (currentAppState == APP_STATE_MEASURING_IR && safety++ < 1000000) {
-        mock_millis += 50; mock_sample_count++;
+        mock_millis += 50; increment_mock_samples(1);
         sim.update(0.05f, (int)dutyCycle);
         systemData.update(estimateCurrent(dutyCycle));
         measureInternalResistanceStep();
@@ -632,7 +691,7 @@ void test_dead_region_detection() {
     int safety_counter = 0;
     while (safety_counter++ < 1000000) {
         mock_millis += 10;
-        mock_sample_count++;
+        increment_mock_samples(1);
         systemData.update(estimateCurrent(dutyCycle));
         if (currentAppState == APP_STATE_BUILDING_MODEL) {
             buildCurrentModelStep();
@@ -661,7 +720,7 @@ void test_full_flow() {
     int loop_count = 0;
     while (loop_count++ < 400000) {
         mock_millis += 100;
-        mock_sample_count++;
+        increment_mock_samples(1);
         sim.update(0.1f, (int)dutyCycle);
         systemData.update(estimateCurrent(dutyCycle));
 
@@ -778,7 +837,7 @@ void test_stress_web_requests() {
     // Simulate many rapid requests
     for (int i = 0; i < 100; i++) {
         mock_millis += 1;
-        mock_sample_count++;
+        increment_mock_samples(1);
         systemData.update(estimateCurrent(dutyCycle));
 
         // Simulate AJAX state request
@@ -810,6 +869,7 @@ int main() {
     test_ir_measurement();
     test_ir_accuracy_with_offset();
     test_overtemp_shutdown();
+    test_outgassing_detection();
     test_full_flow();
     test_web_handlers();
     test_websocket_communications();
