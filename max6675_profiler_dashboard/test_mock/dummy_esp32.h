@@ -217,9 +217,14 @@ struct AsyncWebServer {
 
 #define HTTP_GET 1
 
+extern int (*mock_digitalRead_cb)(int pin);
+
 inline void pinMode(int pin, int mode) {}
 inline void digitalWrite(int pin, int val) {}
-inline int digitalRead(int pin) { return 0; }
+inline int digitalRead(int pin) {
+    if (mock_digitalRead_cb) return mock_digitalRead_cb(pin);
+    return 0;
+}
 inline int analogRead(int pin) { return 0; }
 inline void analogWrite(int pin, int val) {}
 inline void analogWriteResolution(int pin, int res) {}
