@@ -53,7 +53,7 @@ struct String : std::string {
     void reserve(size_t n) { std::string::reserve(n); }
     String operator+(const String& other) const { return String((std::string)*this + (std::string)other); }
     String operator+(const char* other) const { return String((std::string)*this + std::string(other ? other : "")); }
-    String& operator+=(const String& other) { std::string::operator+=(other); return *this; }
+    String& operator+=(const String& other) { std::string::operator+=(other); return *this; return *this; }
     String& operator+=(const char* other) { std::string::operator+=(other ? other : ""); return *this; }
     const char* c_str() const { return std::string::c_str(); }
     int find(const char* s) const {
@@ -93,6 +93,63 @@ inline void digitalWrite(int pin, int val) {}
 inline int digitalRead(int pin) {
     if (pin == 0) return mock_button_pin_val;
     return 1;
+}
+
+// Websockets structures
+typedef enum {
+    WStype_ERROR,
+    WStype_DISCONNECTED,
+    WStype_CONNECTED,
+    WStype_TEXT,
+    WStype_BIN
+} WStype_t;
+
+// ArduinoJson dummy parsing
+struct DeserializationError {
+    operator bool() const { return false; }
+};
+
+struct StaticJsonDocumentHelper {
+    std::map<std::string, float> data;
+    struct Proxy {
+        float val;
+        Proxy(float v) : val(v) {}
+        operator float() const { return val; }
+        operator int() const { return (int)val; }
+        float operator|(float fallback) const { return val; }
+        int operator|(int fallback) const { return (int)val; }
+    };
+    Proxy operator[](const char* key) {
+        if (data.count(key)) return Proxy(data[key]);
+        return Proxy(0.0f);
+    }
+};
+
+template<size_t N>
+struct StaticJsonDocument : public StaticJsonDocumentHelper {};
+
+inline DeserializationError deserializeJson(StaticJsonDocumentHelper& doc, const uint8_t* payload, size_t len) {
+    std::string s((const char*)payload, len);
+    // Extremely lightweight JSON float extractor for our simulated payloads
+    auto extract = [&](const std::string& key) -> float {
+        size_t p = s.find("\"" + key + "\":");
+        if (p == std::string::npos) return 0.0f;
+        p += key.length() + 3;
+        size_t end = s.find_first_of(",}", p);
+        if (end == std::string::npos) return 0.0f;
+        return std::stof(s.substr(p, end - p));
+    };
+
+    doc.data["t1"] = extract("t1");
+    doc.data["t2"] = extract("t2");
+    doc.data["t3"] = extract("t3");
+    doc.data["t4"] = extract("t4");
+    doc.data["e1"] = extract("e1");
+    doc.data["e2"] = extract("e2");
+    doc.data["e3"] = extract("e3");
+    doc.data["e4"] = extract("e4");
+
+    return DeserializationError();
 }
 
 #endif

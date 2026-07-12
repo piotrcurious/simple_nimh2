@@ -58,7 +58,7 @@ int total_history_points = 0;
 #define COLOR_GRN     0x07E0
 
 // --- WebSocket Event Handler ---
-#ifndef MOCK_TEST
+// Compiles on both host mock and device for full interoperability unit testing
 void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
     if (type == WStype_TEXT) {
         // High optimization: Small static buffer on the stack to prevent heap fragmentation on ESP8266
@@ -87,7 +87,6 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
         }
     }
 }
-#endif
 
 // --- EEPROM Preferences Save / Restore ---
 void saveScreenMode(ScreenMode mode) {
