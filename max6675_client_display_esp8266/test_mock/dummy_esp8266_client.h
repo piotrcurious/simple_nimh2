@@ -1,0 +1,98 @@
+#ifndef DUMMY_ESP32_CLIENT_H
+#define DUMMY_ESP32_CLIENT_H
+
+#include <stdint.h>
+#include <string>
+#include <vector>
+#include <iostream>
+#include <stdarg.h>
+#include <cmath>
+#include <algorithm>
+#include <map>
+#include <cstring>
+#include <functional>
+
+// FreeRTOS dummies
+typedef void* TaskHandle_t;
+typedef void* SemaphoreHandle_t;
+typedef uint32_t TickType_t;
+#define pdMS_TO_TICKS(ms) (ms)
+#define xTaskCreate(a,b,c,d,e,f)
+#define xTaskCreatePinnedToCore(a,b,c,d,e,f,g)
+inline void vTaskDelay(uint32_t t) {}
+
+// Arduino dummies
+#define PROGMEM
+#define PSTR(s) s
+#define R(x) x
+#define F(x) x
+#define OUTPUT 0
+#define INPUT 1
+#define INPUT_PULLUP 2
+#define HIGH 1
+#define LOW 0
+
+struct String : std::string {
+    String() : std::string() {}
+    String(const char* s) : std::string(s ? s : "") {}
+    String(const std::string& s) : std::string(s) {}
+    String(int v) : std::string(std::to_string(v)) {}
+    String(unsigned int v) : std::string(std::to_string(v)) {}
+    String(long v) : std::string(std::to_string(v)) {}
+    String(unsigned long v) : std::string(std::to_string(v)) {}
+    String(float v, int p = 2) : std::string() {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.*f", p, (double)v);
+        this->assign(buf);
+    }
+    String(double v, int p = 2) : std::string() {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.*f", p, v);
+        this->assign(buf);
+    }
+    void reserve(size_t n) { std::string::reserve(n); }
+    String operator+(const String& other) const { return String((std::string)*this + (std::string)other); }
+    String operator+(const char* other) const { return String((std::string)*this + std::string(other ? other : "")); }
+    String& operator+=(const String& other) { std::string::operator+=(other); return *this; }
+    String& operator+=(const char* other) { std::string::operator+=(other ? other : ""); return *this; }
+    const char* c_str() const { return std::string::c_str(); }
+    int find(const char* s) const {
+        size_t pos = std::string::find(s);
+        return (pos == std::string::npos) ? -1 : (int)pos;
+    }
+};
+
+extern unsigned long mock_millis;
+inline unsigned long millis() { return mock_millis; }
+
+// Mock Serial with printf
+struct MockSerial {
+    void begin(uint32_t baud) {}
+    void println(const char* s) { std::cout << (s?s:"") << std::endl; }
+    void println(std::string s) { std::cout << s << std::endl; }
+    void println(double v) { std::cout << v << std::endl; }
+    void printf(const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        vprintf(fmt, args);
+        va_end(args);
+    }
+    void print(const char* s) { std::cout << (s?s:""); }
+    void print(double v) { std::cout << v; }
+};
+extern MockSerial Serial;
+
+// Mock EEPROM
+extern uint8_t mock_eeprom_cells[32];
+
+// Mock Button
+extern int mock_button_pin_val;
+
+inline void pinMode(int pin, int mode) {}
+inline void digitalWrite(int pin, int val) {}
+inline int digitalRead(int pin) {
+    if (pin == 0) return mock_button_pin_val;
+    return 1;
+}
+
+#endif
