@@ -87,6 +87,10 @@ void task_readMAX6675(void* parameter) {
     }
     digitalWrite(MAX6675_SCK_PIN, LOW);
 
+#ifdef MOCK_TEST
+    static float mockPhase = 0.0f;
+#endif
+
     while (true) {
         uint32_t frameRef = g_frameStartUs;
         uint32_t t0 = (uint32_t)(esp_timer_get_time() - frameRef);
@@ -100,14 +104,12 @@ void task_readMAX6675(void* parameter) {
 
 #ifdef MOCK_TEST
             // Simulated realistic temperature swings in the range of 200C - 800C
-            static float mockPhase = 0;
             temps[i] = 400.0f + 150.0f * sin(mockPhase + i * 0.4f) + 50.0f * cos(mockPhase * 0.3f) + (rand() % 150) / 10.0f;
             errs[i] = false;
 #endif
         }
 
 #ifdef MOCK_TEST
-        static float mockPhase = 0;
         mockPhase += 0.02f;
 #endif
 
