@@ -22,6 +22,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       --yel: #ffe86a;
       --red: #ff6c7a;
       --grn: #58ff98;
+      --blu: #38bdf8;
     }
 
     html, body {
@@ -47,11 +48,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       gap: 12px;
     }
 
+    /* Profiler wrap styling with absolute lane labels */
     #profiler-wrap {
       width: 100%;
-      height: 60px;
+      height: 70px;
       background: #0b0f14;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      border-bottom: 1px solid rgba(0, 255, 255, 0.15);
       position: relative;
       overflow: hidden;
     }
@@ -65,11 +67,89 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     #profiler-status {
       position: absolute;
       top: 2px;
-      right: 5px;
+      right: 8px;
       font-size: 9px;
       color: var(--muted);
       pointer-events: none;
       z-index: 10;
+    }
+
+    .lane-label {
+      position: absolute;
+      left: 6px;
+      font-size: 8px;
+      font-weight: bold;
+      color: rgba(138, 207, 216, 0.5);
+      text-transform: uppercase;
+      pointer-events: none;
+      z-index: 5;
+    }
+    #lane-label-0 { top: 12px; }
+    #lane-label-1 { top: 40px; }
+
+    /* Header & WebSocket Connection Status */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(0, 255, 255, 0.14);
+      padding-bottom: 8px;
+      margin-bottom: 4px;
+    }
+
+    .titleWrap {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .mainTitle {
+      font-size: 16px;
+      font-weight: bold;
+      color: var(--cyan);
+      text-shadow: 0 0 8px rgba(0, 255, 255, 0.3);
+      letter-spacing: 0.05em;
+    }
+
+    .subtitle {
+      font-size: 9px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .wsStatusWrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(2, 6, 11, 0.6);
+      border: 1px solid rgba(0, 255, 255, 0.15);
+      padding: 4px 8px;
+      border-radius: 6px;
+    }
+
+    .wsIndicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--red);
+      box-shadow: 0 0 8px var(--red);
+      transition: background 0.3s, box-shadow 0.3s;
+    }
+
+    .wsIndicator.connected {
+      background: var(--grn);
+      box-shadow: 0 0 10px var(--grn);
+      animation: pulse 1.8s infinite alternate;
+    }
+
+    @keyframes pulse {
+      0% { opacity: 0.6; box-shadow: 0 0 4px var(--grn); }
+      100% { opacity: 1; box-shadow: 0 0 12px var(--grn); }
+    }
+
+    .wsLabel {
+      font-size: 10px;
+      font-weight: bold;
+      text-transform: uppercase;
     }
 
     .card, .panel {
@@ -105,7 +185,9 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       display: flex;
       flex-direction: column;
       align-items: center;
+      justify-content: flex-end;
       width: 22%;
+      height: 100%;
     }
 
     .bar {
@@ -187,12 +269,37 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   </style>
 </head>
 <body>
+  <!-- System Profiler Panel with Realtime Overlays -->
   <div id="profiler-wrap">
+    <div id="lane-label-0" class="lane-label">Core 0</div>
+    <div id="lane-label-1" class="lane-label">Core 1</div>
     <div id="profiler-status">profiler idle</div>
     <canvas id="gl"></canvas>
   </div>
 
   <div class="wrap">
+    <!-- Header with WS connection info -->
+    <div class="header">
+      <div class="titleWrap">
+        <div class="mainTitle">MAX6675 Thermocouple Monitor</div>
+        <div class="subtitle">Real-time scheduled nonblocking telemetry system</div>
+      </div>
+      <div class="wsStatusWrap">
+        <div id="wsIndicator" class="wsIndicator"></div>
+        <div id="wsLabel" class="wsLabel">Disconnected</div>
+      </div>
+    </div>
+
+    <!-- Profiler Color Map Legend -->
+    <div class="card" style="padding: 8px 12px;">
+      <div class="legend" style="margin-top: 0;">
+        <span style="font-size: 9px; font-weight: bold; text-transform: uppercase; color: var(--muted);">Profiler Legend:</span>
+        <div class="legendItem"><div class="dot" style="background: rgb(94, 199, 255);"></div>Task 0: Main Loop Idle</div>
+        <div class="legendItem"><div class="dot" style="background: rgb(255, 181, 94);"></div>Task 1: ReadMAX6675 (Core 0)</div>
+        <div class="legendItem"><div class="dot" style="background: rgb(135, 255, 135);"></div>Task 2: WebServer / Telemetry (Core 1)</div>
+      </div>
+    </div>
+
     <div class="row">
       <!-- Auto-Scaled Relative Bars -->
       <div class="card">
@@ -284,6 +391,21 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     let t3_history = [];
     let t4_history = [];
 
+    // --- Update WS Connection UI Status ---
+    function updateWSStatus(connected, text) {
+      const indicator = document.getElementById('wsIndicator');
+      const label = document.getElementById('wsLabel');
+      if (connected) {
+        indicator.classList.add('connected');
+        label.innerText = text || 'Connected';
+        label.style.color = 'var(--grn)';
+      } else {
+        indicator.classList.remove('connected');
+        label.innerText = text || 'Disconnected';
+        label.style.color = 'var(--red)';
+      }
+    }
+
     // --- WebSocket Connection ---
     let ws = null;
     function connectWS() {
@@ -292,10 +414,20 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       ws = new WebSocket(url);
       ws.binaryType = 'arraybuffer';
 
-      ws.onopen = () => console.log('WS Connected');
+      ws.onopen = () => {
+        console.log('WS Connected');
+        updateWSStatus(true, 'Live');
+      };
+
       ws.onmessage = (e) => {
         if (e.data instanceof ArrayBuffer) {
-          decodeProfilerFrame(e.data);
+          const bytes = new Uint8Array(e.data);
+          // Strict Signature Validation: Binary frames must carry "TP" LE (0x50, 0x54) magic header
+          if (bytes.length >= 18 && bytes[0] === 0x50 && bytes[1] === 0x54) {
+            decodeProfilerFrame(e.data);
+          } else {
+            console.warn('Unknown binary frame signature');
+          }
         } else {
           try {
             const telemetry = JSON.parse(e.data);
@@ -308,7 +440,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
       ws.onclose = () => {
         console.log('WS Disconnected, retrying...');
+        updateWSStatus(false, 'Retry...');
         setTimeout(connectWS, 2000);
+      };
+
+      ws.onerror = () => {
+        updateWSStatus(false, 'Error');
       };
     }
 
@@ -465,10 +602,9 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     const profilerStatus = document.getElementById('profiler-status');
     let p_gl, p_program, p_buffer, p_aPos, p_aColor, p_uRes;
     const FRAME_US_DEFAULT = 100000;
-    const ROW_H = 30;
-    const LANE_H = 8;
-    const LANE_TOP = 4;
-    const LANE_GAP = 4;
+    const LANE_H = 10;
+    const LANE_TOP = 8;
+    const LANE_GAP = 14;
 
     function initProfilerGL() {
       p_gl = profilerCanvas.getContext('webgl', { antialias: false, alpha: false });
@@ -521,8 +657,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     function colorForTask(taskId) {
       const palette = [
-        [0.37, 0.78, 1.00, 0.9], [1.00, 0.71, 0.37, 0.9],
-        [0.53, 1.00, 0.53, 0.9], [1.00, 0.42, 0.62, 0.9]
+        [0.37, 0.78, 1.00, 0.9], // Task 0: Blue
+        [1.00, 0.71, 0.37, 0.9], // Task 1: Orange
+        [0.53, 1.00, 0.53, 0.9], // Task 2: Green
+        [1.00, 0.42, 0.62, 0.9]
       ];
       return palette[taskId % palette.length];
     }
