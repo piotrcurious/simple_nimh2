@@ -25,6 +25,7 @@ extern void broadcastLiveTelemetry();
 extern void sendFramePacket(bool timeoutFlag);
 extern void setup();
 extern void loop();
+extern float readMAX6675(int csPin, bool &error);
 
 #ifndef MOCK_TEST
 AsyncWebServer server(80);
@@ -32,8 +33,23 @@ AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 SemaphoreHandle_t webDataMutex = NULL;
 
+int (*mock_digitalRead_cb)(int pin) = nullptr;
+
 void AsyncWebServerRequest::send(int code, const char* type, String content) {}
 void AsyncWebServerRequest::send(AsyncWebServerResponse* response) { delete response; }
+
+// --- SPI bits streamer mock helper ---
+static uint16_t g_spi_mock_word = 0;
+static int g_spi_bit_index = 0;
+
+int mock_spi_digitalRead(int pin) {
+    if (pin == MAX6675_MISO_PIN) {
+        int bit = (g_spi_mock_word >> (15 - g_spi_bit_index)) & 1;
+        g_spi_bit_index = (g_spi_bit_index + 1) % 16;
+        return bit;
+    }
+    return 0;
+}
 
 void test_live_telemetry() {
     std::cout << "Testing live telemetry serialization..." << std::endl;
@@ -83,9 +99,62 @@ void test_profiling_timeline_stream() {
     std::cout << "test_profiling_timeline_stream PASSED" << std::endl << std::endl;
 }
 
+void test_max6675_decoding() {
+    std::cout << "Testing MAX6675 decoding logic with mock SPI stream..." << std::endl;
+
+    mock_digitalRead_cb = mock_spi_digitalRead;
+
+    // 1. Let's test a successful decoding of 350.5°C
+    // raw temperature = 350.5 / 0.25 = 1402
+    // MAX6675 format: bit 15: dummy, bit 14-3: raw temperature, bit 2: thermocouple input open, bit 1: device ID, bit 0: state
+    // Let's form the word:
+    // Raw temp in bits 14-3 = 1402 << 3
+    uint16_t raw_temp = 1402;
+    g_spi_mock_word = (raw_temp << 3) & 0x7FF8;
+    g_spi_bit_index = 0;
+
+    bool error = false;
+    float temp = readMAX6675(MAX6675_CS1_PIN, error);
+
+    std::cout << "  Decoded Temp: " << temp << " °C, Error: " << (error ? "TRUE" : "FALSE") << std::endl;
+    assert(!error);
+    assert(std::abs(temp - 350.50f) < 0.01f);
+
+    std::cout << "test_max6675_decoding PASSED" << std::endl << std::endl;
+}
+
+void test_sensor_errors() {
+    std::cout << "Testing MAX6675 open thermocouple input error detection..." << std::endl;
+
+    mock_digitalRead_cb = mock_spi_digitalRead;
+
+    // Set bit 2 to 1 (Thermocouple open error)
+    g_spi_mock_word = (1 << 2);
+    g_spi_bit_index = 0;
+
+    bool error = false;
+    float temp = readMAX6675(MAX6675_CS1_PIN, error);
+
+    std::cout << "  Decoded Temp: " << temp << " °C, Error: " << (error ? "TRUE" : "FALSE") << std::endl;
+    assert(error);
+    assert(temp == 0.0f);
+
+    // Feed to live telemetry and broadcast
+    g_temps[0] = 0.0f;
+    g_sensorError[0] = true;
+    broadcastLiveTelemetry();
+
+    std::cout << "  Telemetry with Error: " << ws.lastTextAll << std::endl;
+    assert(ws.lastTextAll.find("\"e1\":1") != std::string::npos);
+
+    std::cout << "test_sensor_errors PASSED" << std::endl << std::endl;
+}
+
 int main() {
     test_live_telemetry();
     test_profiling_timeline_stream();
-    std::cout << "All local MAX6675 simulation tests PASSED successfully!" << std::endl;
+    test_max6675_decoding();
+    test_sensor_errors();
+    std::cout << "All extended MAX6675 feature tests PASSED successfully!" << std::endl;
     return 0;
 }
