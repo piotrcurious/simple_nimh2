@@ -4,7 +4,6 @@
 
 // Define the global chargeLog vector here
 std::vector<ChargeLogData> chargeLog;
-const size_t MAX_CHARGE_LOG_SIZE = 3000;
 
 void logChargeData(const ChargeLogData& data) {
     WEB_LOCK();
