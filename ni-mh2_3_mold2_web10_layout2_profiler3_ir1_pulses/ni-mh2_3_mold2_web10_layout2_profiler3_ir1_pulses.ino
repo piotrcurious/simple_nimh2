@@ -714,7 +714,6 @@ void setup() {
     homeScreen.begin();
     systemData.begin();
     setupAdcDma();
-    chargeLog.reserve(MAX_CHARGE_LOG_SIZE);
 
     xTaskCreatePinnedToCore(task_readSHT4x, "SHT4", 4096, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(task_processAdcDma, "ADC_DMA", 4096, NULL, 1, NULL, 0);
