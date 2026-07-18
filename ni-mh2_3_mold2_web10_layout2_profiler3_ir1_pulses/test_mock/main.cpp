@@ -361,7 +361,7 @@ void buildCurrentModelStep() {
                 }
 
                 if (shutoffTime == 0) {
-                    if (now - startTime >= 4000) {
+                    if (now - startTime >= 15000) {
                         double t1, t2, td; float tmv, v, c;
                         getThermistorReadings(t1, t2, td, tmv, v, c);
                         tempAtShutoff = t2;
@@ -378,23 +378,26 @@ void buildCurrentModelStep() {
                         peakTimeAfterShutoff = now;
                     }
 
-                    if (now - shutoffTime >= 2000) {
+                    bool tempDeclined = (t2 < peakTempAfterShutoff - 0.005);
+                    bool timeout = (now - shutoffTime >= 8000);
+
+                    if (tempDeclined || timeout) {
                         double deltaT = tempAtShutoff - tempStart;
-                        double computedTau = 45.0;
+                        double computedTau = 300.0;
                         if (deltaT > 0.005) {
-                            computedTau = 4.0 / (deltaT * 10.0);
-                            if (computedTau < 10.0) computedTau = 10.0;
-                            if (computedTau > 180.0) computedTau = 180.0;
+                            computedTau = 15.0 / (deltaT * 1.5);
+                            if (computedTau < 45.0) computedTau = 45.0;
+                            if (computedTau > 450.0) computedTau = 450.0;
                         }
 
                         unsigned long thermistorLagMs = peakTimeAfterShutoff - shutoffTime;
                         double computedTauTherm = (double)thermistorLagMs / 1000.0;
                         if (computedTauTherm < 1.0) computedTauTherm = 1.0;
-                        if (computedTauTherm > 15.0) computedTauTherm = 15.0;
+                        if (computedTauTherm > 8.0) computedTauTherm = 8.0;
 
                         double computedTauSHT = computedTauTherm * 2.0;
                         if (computedTauSHT < 2.0) computedTauSHT = 2.0;
-                        if (computedTauSHT > 30.0) computedTauSHT = 30.0;
+                        if (computedTauSHT > 16.0) computedTauSHT = 16.0;
 
                         estimatedTauThermal = (float)computedTau;
                         estimatedTauTherm = (float)computedTauTherm;

@@ -485,8 +485,17 @@ bool chargeBattery() {
                             s_irTest.stepStartTime = now;
                             applyDuty(s_irTest.duties[s_irTest.step - 1]);
                         } else {
-                            // Compute structured IR from the sweep points using simple linear regression
+                            // Compute structured IR from 5 sweep points (0, V_unloaded) plus the 4 loaded points
+                            // using simple linear regression. This anchors the regression at zero current!
                             float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+
+                            // Point 0: Unloaded (0, V_unloaded)
+                            sumX += 0.0f;
+                            sumY += s_irTest.unloadedVoltage;
+                            sumXY += 0.0f;
+                            sumX2 += 0.0f;
+
+                            // Points 1-4: Loaded
                             for (int k = 0; k < 4; k++) {
                                 float I = s_irTest.currents[k];
                                 float V = s_irTest.voltages[k];
@@ -495,9 +504,9 @@ bool chargeBattery() {
                                 sumXY += I * V;
                                 sumX2 += I * I;
                             }
-                            float denom = (4 * sumX2 - sumX * sumX);
+                            float denom = (5 * sumX2 - sumX * sumX);
                             if (std::abs(denom) > 1e-6f) {
-                                float slope = (4 * sumXY - sumX * sumY) / denom;
+                                float slope = (5 * sumXY - sumX * sumY) / denom;
                                 s_irTest.calculatedIR = std::fabs(slope);
                             }
                             if (s_irTest.calculatedIR < MIN_VALID_RESISTANCE || s_irTest.calculatedIR > 5.0f) {

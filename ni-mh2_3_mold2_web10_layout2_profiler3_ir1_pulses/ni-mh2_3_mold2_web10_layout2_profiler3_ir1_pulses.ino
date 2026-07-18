@@ -442,9 +442,9 @@ void buildCurrentModelStep() {
             break;
         case BuildModelPhase::ThermalCharacterize:
             {
-                // Enhanced Thermal Characterization:
-                // 1. Heat the battery for 4 seconds under half-load to observe thermal inertia (estimatedTauThermal).
-                // 2. Shut off the load for 2 seconds to observe sensor thermal lag (overshoot / delay in peak reading).
+                // Dynamic Thermal and Sensor Lag Characterization:
+                // 1. Heat the battery for 15 seconds under half-load to observe actual battery thermal inertia (estimatedTauThermal).
+                // 2. Shut off the load and monitor for up to 8 seconds to detect the exact temperature peak (thermistor thermal lag).
                 static double tempStart = 0.0;
                 static double tempAtShutoff = 0.0;
                 static unsigned long startTime = 0;
@@ -461,19 +461,19 @@ void buildCurrentModelStep() {
                     peakTempAfterShutoff = 0.0;
                     peakTimeAfterShutoff = 0;
                     applyDuty(MAX_DUTY_CYCLE / 2);
-                    Serial.printf("Thermal Characterize Phase 1 (Heating): applied half-load, initial temp: %.2f C\n", tempStart);
+                    Serial.printf("Thermal Characterize Phase 1 (Heating, 15s): applied half-load, initial temp: %.2f C\n", tempStart);
                 }
 
                 if (shutoffTime == 0) {
-                    if (now - startTime >= 4000) {
+                    if (now - startTime >= 15000) {
                         double t1, t2, td; float tmv, v, c;
                         getThermistorReadings(t1, t2, td, tmv, v, c);
                         tempAtShutoff = t2;
                         peakTempAfterShutoff = t2;
                         peakTimeAfterShutoff = now;
                         shutoffTime = now;
-                        applyDuty(0); // Shutoff load to observe sensor lag
-                        Serial.printf("Thermal Characterize Phase 2 (Cooloff/Sensor Lag): shutoff load at temp: %.4f C\n", tempAtShutoff);
+                        applyDuty(0); // Shutoff load to observe sensor lag peak
+                        Serial.printf("Thermal Characterize Phase 2 (Cooloff/Overshoot, up to 8s): shutoff load at temp: %.4f C\n", tempAtShutoff);
                     }
                 } else {
                     double t1, t2, td; float tmv, v, c;
@@ -483,14 +483,20 @@ void buildCurrentModelStep() {
                         peakTimeAfterShutoff = now;
                     }
 
-                    if (now - shutoffTime >= 2000) {
+                    // Done when either temperature starts declining (cooloff confirmed) or we timeout after 8 seconds
+                    bool tempDeclined = (t2 < peakTempAfterShutoff - 0.005);
+                    bool timeout = (now - shutoffTime >= 8000);
+
+                    if (tempDeclined || timeout) {
                         // Calculate Battery Thermal Inertia (Tau Thermal)
+                        // Battery thermal inertia has over 5 minutes (300s) time constant.
+                        // Scale Delta T over 15 seconds.
                         double deltaT = tempAtShutoff - tempStart;
-                        double computedTau = 45.0; // Default fallback
+                        double computedTau = 300.0; // Default fallback for 5 minutes
                         if (deltaT > 0.005) {
-                            computedTau = 4.0 / (deltaT * 10.0);
-                            if (computedTau < 10.0) computedTau = 10.0;
-                            if (computedTau > 180.0) computedTau = 180.0;
+                            computedTau = 15.0 / (deltaT * 1.5); // Refined proportional scaling
+                            if (computedTau < 45.0) computedTau = 45.0;
+                            if (computedTau > 450.0) computedTau = 450.0;
                         }
 
                         // Calculate Thermistor lag (Tau Thermistor)
@@ -498,12 +504,12 @@ void buildCurrentModelStep() {
                         unsigned long thermistorLagMs = peakTimeAfterShutoff - shutoffTime;
                         double computedTauTherm = (double)thermistorLagMs / 1000.0;
                         if (computedTauTherm < 1.0) computedTauTherm = 1.0;
-                        if (computedTauTherm > 15.0) computedTauTherm = 15.0;
+                        if (computedTauTherm > 8.0) computedTauTherm = 8.0;
 
                         // SHT4x typical lag can be scaled similarly or kept at standard coupling
                         double computedTauSHT = computedTauTherm * 2.0; // SHT4x package has slightly higher thermal mass/lag than bare thermistor bead
                         if (computedTauSHT < 2.0) computedTauSHT = 2.0;
-                        if (computedTauSHT > 30.0) computedTauSHT = 30.0;
+                        if (computedTauSHT > 16.0) computedTauSHT = 16.0;
 
                         WEB_LOCK();
                         estimatedTauThermal = (float)computedTau;
@@ -511,7 +517,7 @@ void buildCurrentModelStep() {
                         estimatedTauSHT = (float)computedTauSHT;
                         WEB_UNLOCK();
 
-                        Serial.printf("Thermal Characterize Complete:\n");
+                        Serial.printf("Thermal Characterize Complete (via Peak Detection):\n");
                         Serial.printf("  Estimated Tau Thermal: %.2f s\n", (float)estimatedTauThermal);
                         Serial.printf("  Estimated Tau Thermistor: %.2f s\n", (float)estimatedTauTherm);
                         Serial.printf("  Estimated Tau SHT4x: %.2f s\n", (float)estimatedTauSHT);
