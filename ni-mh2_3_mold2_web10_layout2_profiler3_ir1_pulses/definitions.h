@@ -118,7 +118,7 @@ enum AppState {
     APP_STATE_CHARGING
 };
 
-enum class BuildModelPhase { Idle = 0, Settle, Calibrate, DetectDeadRegion, ThermalCharacterize, SetDuty, WaitMeasurement, Finish };
+enum class BuildModelPhase { Idle = 0, Settle, Calibrate, DetectDeadRegion, ThermalCharacterize, ThermalCooldown, SetDuty, WaitMeasurement, Finish };
 
 enum IRState {
     IR_STATE_IDLE,
