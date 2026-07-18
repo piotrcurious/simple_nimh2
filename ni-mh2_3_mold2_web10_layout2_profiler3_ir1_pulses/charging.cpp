@@ -517,6 +517,8 @@ bool chargeBattery() {
                             // Transition to charging pulse
                             chargingState = CHARGE_PULSE_ACTIVE;
                             pulseCycleStartTime = now;
+                            prev_t1 = -1.0; // Reset derivative trackers to prevent spikes across state boundary
+                            prev_t2 = -1.0;
                             // Set constant current charging pulse duty cycle
                             int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                             applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
