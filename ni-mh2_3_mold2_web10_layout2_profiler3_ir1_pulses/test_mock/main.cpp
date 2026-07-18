@@ -373,12 +373,19 @@ void buildCurrentModelStep() {
                 } else {
                     double t1, t2, td; float tmv, v, c;
                     getThermistorReadings(t1, t2, td, tmv, v, c);
-                    if (t2 > peakTempAfterShutoff) {
+                    static int consecutiveDeclineCount = 0;
+
+                    if (t2 > peakTempAfterShutoff + 0.001) {
                         peakTempAfterShutoff = t2;
                         peakTimeAfterShutoff = now;
+                        consecutiveDeclineCount = 0;
+                    } else if (t2 < peakTempAfterShutoff - 0.001) {
+                        consecutiveDeclineCount++;
+                    } else {
+                        consecutiveDeclineCount = 0;
                     }
 
-                    bool tempDeclined = (t2 < peakTempAfterShutoff - 0.005);
+                    bool tempDeclined = (consecutiveDeclineCount >= 4);
                     bool timeout = (now - shutoffTime >= 8000);
 
                     if (tempDeclined || timeout) {
@@ -404,6 +411,7 @@ void buildCurrentModelStep() {
                         estimatedTauSHT = (float)computedTauSHT;
 
                         tempStart = 0.0;
+                        consecutiveDeclineCount = 0;
                         buildModelLastStepTime = now;
                         buildModelPhase = BuildModelPhase::SetDuty;
                         std::cout << "  Phase ThermalCharacterize -> SetDuty at " << now

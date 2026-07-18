@@ -478,13 +478,20 @@ void buildCurrentModelStep() {
                 } else {
                     double t1, t2, td; float tmv, v, c;
                     getThermistorReadings(t1, t2, td, tmv, v, c);
-                    if (t2 > peakTempAfterShutoff) {
+                    static int consecutiveDeclineCount = 0;
+
+                    if (t2 > peakTempAfterShutoff + 0.001) {
                         peakTempAfterShutoff = t2;
                         peakTimeAfterShutoff = now;
+                        consecutiveDeclineCount = 0;
+                    } else if (t2 < peakTempAfterShutoff - 0.001) {
+                        consecutiveDeclineCount++;
+                    } else {
+                        consecutiveDeclineCount = 0;
                     }
 
-                    // Done when either temperature starts declining (cooloff confirmed) or we timeout after 8 seconds
-                    bool tempDeclined = (t2 < peakTempAfterShutoff - 0.005);
+                    // Done when either temperature consistently declines (4 consecutive steps) or we timeout after 8 seconds
+                    bool tempDeclined = (consecutiveDeclineCount >= 4);
                     bool timeout = (now - shutoffTime >= 8000);
 
                     if (tempDeclined || timeout) {
@@ -523,6 +530,7 @@ void buildCurrentModelStep() {
                         Serial.printf("  Estimated Tau SHT4x: %.2f s\n", (float)estimatedTauSHT);
 
                         tempStart = 0.0; // Reset static
+                        consecutiveDeclineCount = 0;
                         buildModelLastStepTime = now;
                         setBuildModelPhase(BuildModelPhase::SetDuty);
                     }

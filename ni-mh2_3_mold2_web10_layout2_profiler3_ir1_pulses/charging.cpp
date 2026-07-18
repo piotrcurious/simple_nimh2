@@ -403,7 +403,13 @@ float estimateTempDiff(float vL, float vN, float cur, float Rp, float ambC, uint
   float E_total = E_gen + E_rel;
   if (G <= 1e-12f || Cth <= 1e-12f) return theta0 + E_total / std::max(1e-12f, Cth);
   float theta_ss = (E_total / dt_s) / G;
-  return theta_ss + (theta0 - theta_ss) * expf(-dt_s / (Cth / G));
+
+  // Fit the thermal prediction model using the dynamically characterized estimatedTauThermal constant
+  float tau = estimatedTauThermal;
+  if (tau < 5.0f || !std::isfinite(tau)) {
+      tau = Cth / G; // Fallback to theoretical if not characterized
+  }
+  return theta_ss + (theta0 - theta_ss) * expf(-dt_s / tau);
 }
 
 // Structured, smaller resolution IR test variables
