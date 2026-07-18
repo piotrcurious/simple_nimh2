@@ -23,6 +23,7 @@ extern double t1_deriv;
 extern double t2_deriv;
 extern float predictedTempTrack;
 extern unsigned long pulseCycleStartTime;
+extern unsigned long lastLogTime;
 
 // =======================================================
 // Existing public charging interface

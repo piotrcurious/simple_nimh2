@@ -19,6 +19,7 @@ double t1_deriv = 0.0;
 double t2_deriv = 0.0;
 float predictedTempTrack = 25.0f;
 unsigned long pulseCycleStartTime = 0;
+unsigned long lastLogTime = 0;
 
 // Monitoring evaluation snapshots (persist across states)
 float eval_mAh_snapshot = 0.0f;       // mAh at start of monitor evaluation interval
@@ -438,6 +439,7 @@ bool chargeBattery() {
             eval_time_snapshot = now;
             overtemp_trip_counter = 0;
             s_thermalHistory.clear();
+            lastLogTime = 0;
             {
                 double t1, t2, td; float tmv, v, c; getThermistorReadings(t1, t2, td, tmv, v, c);
                 predictedTempTrack = (float)t2;
@@ -637,9 +639,8 @@ bool chargeBattery() {
                 }
 #endif
 
-                // Every few seconds, push to standard ChargeLogData to update graph and web UI
-                static unsigned long lastLogTime = 0;
-                if (now - lastLogTime >= PLOT_DATA_UPDATE_INTERVAL) {
+                // Log historical data at robust sparse intervals (HIST_LOG_INTERVAL_MS) to prevent memory crash
+                if (lastLogTime == 0 || now - lastLogTime >= HIST_LOG_INTERVAL_MS) {
                     lastLogTime = now;
                     ChargeLogData e;
                     e.timestamp = (uint32_t)now;

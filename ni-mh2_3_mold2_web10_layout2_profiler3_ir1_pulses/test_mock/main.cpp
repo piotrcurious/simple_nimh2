@@ -494,6 +494,7 @@ void reset_globals() {
     t2_deriv = 0.0;
     predictedTempTrack = 25.0f;
     pulseCycleStartTime = 0;
+    lastLogTime = 0;
     sht4Sensor.setTemperature(22.0f);
     mock_millis = 0; voltage_mv = 1000.0f; current_ma = 0.0f; mAh_charged = 0.0;
     dutyCycle = 0; chargingState = CHARGE_IDLE; chargeLog.clear();
