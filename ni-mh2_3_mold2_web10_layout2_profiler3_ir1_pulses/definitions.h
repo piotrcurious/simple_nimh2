@@ -173,6 +173,7 @@ struct MHElectrodeData {
 enum ChargingState {
     CHARGE_IDLE = 0,
     CHARGE_PULSE_IR_TEST,
+    CHARGE_PULSE_IR_REMEASURE,
     CHARGE_PULSE_ACTIVE,
     CHARGE_STOPPED
 };
