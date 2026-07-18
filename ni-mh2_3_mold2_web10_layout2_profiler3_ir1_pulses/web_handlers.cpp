@@ -248,18 +248,15 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
     currentRParam = regressedInternalResistancePairsIntercept;
     WEB_UNLOCK();
 
-    const size_t batchSize = 10;
+    // Large batch size to send log in very few, quick steps, eliminating the need to yield/vTaskDelay.
+    const size_t batchSize = 100;
     uint32_t lastTimestamp = 0;
 
     for (size_t i = 0; i < total; i += batchSize) {
-        vTaskDelay(1); // Small yield
-
-        // If the queue fills up while we are sending batches, stop sending.
-        // Better to have an incomplete log than a disconnected socket.
-        if (client->queueLen() > 2) {
-            vTaskDelay(100 / portTICK_PERIOD_MS);
-            if (client->queueLen() > 16) vTaskDelay(200 / portTICK_PERIOD_MS); //very busy - spin longer
-            //if (client->queueLen() > 20) break;
+        // If the outbound queue becomes backed up, abort to avoid blocking or memory growth.
+        if (client->queueLen() > 8) {
+            Serial.printf("Aborting CBOR log stream for client %u due to backed up queue.\n", client->id());
+            break;
         }
 
         CborWriter w;

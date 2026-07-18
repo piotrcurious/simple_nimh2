@@ -342,12 +342,18 @@ void buildCurrentModelStep() {
             break;
         case BuildModelPhase::ThermalCharacterize:
             {
+                // Dynamic Thermal and Sensor Lag Characterization (3-phase tracking):
+                // 1. Heating (15s): Apply half-load. Observe initial heat rise.
+                // 2. Overshoot & Peak detection: Shut off load. Find exact peak timestamp to estimate sensor lags.
+                // 3. Dedicated Cool-off (30s): Let temperature decay under zero load to fit battery thermal inertia (Tau Thermal) accurately.
                 static double tempStart = 0.0;
                 static double tempAtShutoff = 0.0;
                 static unsigned long startTime = 0;
                 static unsigned long shutoffTime = 0;
                 static double peakTempAfterShutoff = 0.0;
                 static unsigned long peakTimeAfterShutoff = 0;
+                static int characPhase = 0; // 0: Heating, 1: Peak detection, 2: Cool-off
+                static unsigned long cooloffStartTime = 0;
 
                 if (tempStart == 0.0) {
                     double t1, t2, td; float tmv, v, c;
@@ -357,10 +363,12 @@ void buildCurrentModelStep() {
                     shutoffTime = 0;
                     peakTempAfterShutoff = 0.0;
                     peakTimeAfterShutoff = 0;
+                    characPhase = 0;
+                    cooloffStartTime = 0;
                     applyDuty(MAX_DUTY_CYCLE / 2);
                 }
 
-                if (shutoffTime == 0) {
+                if (characPhase == 0) {
                     if (now - startTime >= 15000) {
                         double t1, t2, td; float tmv, v, c;
                         getThermistorReadings(t1, t2, td, tmv, v, c);
@@ -368,9 +376,10 @@ void buildCurrentModelStep() {
                         peakTempAfterShutoff = t2;
                         peakTimeAfterShutoff = now;
                         shutoffTime = now;
-                        applyDuty(0);
+                        applyDuty(0); // Shutoff load to observe sensor lag peak
+                        characPhase = 1;
                     }
-                } else {
+                } else if (characPhase == 1) {
                     double t1, t2, td; float tmv, v, c;
                     getThermistorReadings(t1, t2, td, tmv, v, c);
                     static int consecutiveDeclineCount = 0;
@@ -385,23 +394,44 @@ void buildCurrentModelStep() {
                         consecutiveDeclineCount = 0;
                     }
 
+                    // Proceed to dedicated cool-off phase when temperature consistently declines (4 consecutive steps) or we timeout (8s)
                     bool tempDeclined = (consecutiveDeclineCount >= 4);
                     bool timeout = (now - shutoffTime >= 8000);
 
                     if (tempDeclined || timeout) {
-                        double deltaT = tempAtShutoff - tempStart;
-                        double computedTau = 300.0;
-                        if (deltaT > 0.005) {
-                            computedTau = 15.0 / (deltaT * 1.5);
+                        characPhase = 2;
+                        cooloffStartTime = now;
+                        consecutiveDeclineCount = 0;
+                    }
+                } else if (characPhase == 2) {
+                    // Let temperature decay for 30 seconds to fit battery thermal inertia (estimatedTauThermal) cleanly
+                    applyDuty(0); // Guarantee zero load
+                    if (now - cooloffStartTime >= 30000) {
+                        double t1, t2, td; float tmv, v, c;
+                        getThermistorReadings(t1, t2, td, tmv, v, c);
+                        double tempEnd = t2;
+
+                        // Fit battery thermal time constant (estimatedTauThermal) analytically:
+                        // theta_end = theta_peak * exp(-dt / tau_thermal)
+                        // tau_thermal = dt / ln(theta_peak / theta_end)
+                        double theta_peak = peakTempAfterShutoff - t1;
+                        double theta_end = tempEnd - t1;
+                        double computedTau = 300.0; // Default 5 minutes fallback
+
+                        if (theta_peak > 0.01 && theta_end > 0.005 && theta_peak > theta_end) {
+                            double ratio = theta_peak / theta_end;
+                            computedTau = 30.0 / log(ratio);
                             if (computedTau < 45.0) computedTau = 45.0;
                             if (computedTau > 450.0) computedTau = 450.0;
                         }
 
+                        // Calculate Thermistor lag (Tau Thermistor)
                         unsigned long thermistorLagMs = peakTimeAfterShutoff - shutoffTime;
                         double computedTauTherm = (double)thermistorLagMs / 1000.0;
                         if (computedTauTherm < 1.0) computedTauTherm = 1.0;
                         if (computedTauTherm > 8.0) computedTauTherm = 8.0;
 
+                        // SHT4x typical lag can be scaled similarly or kept at standard coupling
                         double computedTauSHT = computedTauTherm * 2.0;
                         if (computedTauSHT < 2.0) computedTauSHT = 2.0;
                         if (computedTauSHT > 16.0) computedTauSHT = 16.0;
@@ -411,7 +441,7 @@ void buildCurrentModelStep() {
                         estimatedTauSHT = (float)computedTauSHT;
 
                         tempStart = 0.0;
-                        consecutiveDeclineCount = 0;
+                        characPhase = 0;
                         buildModelLastStepTime = now;
                         buildModelPhase = BuildModelPhase::SetDuty;
                         std::cout << "  Phase ThermalCharacterize -> SetDuty at " << now
