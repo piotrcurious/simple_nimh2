@@ -439,6 +439,7 @@ struct PulseIRRemeasure {
     int subStep = 0; // 0: wait unloaded, 1: wait loaded
     unsigned long stepStartTime = 0;
     float unloadedVoltage = 0.0f;
+    float unloadedCurrent = 0.0f;
     std::vector<RePoint> points;
 };
 static PulseIRRemeasure s_reMeasure;
@@ -631,7 +632,17 @@ bool chargeBattery() {
                                 s_reMeasure.index = 0;
                                 s_reMeasure.subStep = 0;
                                 s_reMeasure.stepStartTime = now;
-                                applyDuty(0);
+
+                                extern int minimalDutyCycle;
+                                int minDC = minimalDutyCycle;
+                                if (minDC < MIN_DUTY_CYCLE_START) {
+                                    minDC = estimateDutyCycleForCurrent(MEASURABLE_CURRENT_THRESHOLD);
+                                }
+                                if (minDC < MIN_DUTY_CYCLE_START) {
+                                    minDC = MIN_DUTY_CYCLE_START;
+                                }
+                                const RePoint& firstPt = s_reMeasure.points[0];
+                                applyDuty(firstPt.isPair ? minDC : 0);
                             } else {
                                 // Transition directly to charging pulse
                                 chargingState = CHARGE_PULSE_ACTIVE;
@@ -668,6 +679,7 @@ bool chargeBattery() {
                     // Unloaded step: wait for stabilization
                     if (stepElapsed >= 1000) {
                         s_reMeasure.unloadedVoltage = v;
+                        s_reMeasure.unloadedCurrent = cur;
                         s_reMeasure.subStep = 1;
                         s_reMeasure.stepStartTime = now;
                         applyDuty(pt.duty);
@@ -675,9 +687,10 @@ bool chargeBattery() {
                 } else if (s_reMeasure.subStep == 1) {
                     // Loaded step: measure and calculate IR
                     if (stepElapsed >= 1000) {
+                        float currentDiff = std::fabs(cur - s_reMeasure.unloadedCurrent);
                         float measuredIR = 0.15f;
-                        if (cur > 0.005f) {
-                            measuredIR = std::fabs(v - s_reMeasure.unloadedVoltage) / cur;
+                        if (currentDiff > 0.005f) {
+                            measuredIR = std::fabs(v - s_reMeasure.unloadedVoltage) / currentDiff;
                         }
                         if (measuredIR < MIN_VALID_RESISTANCE || measuredIR > 5.0f) {
                             measuredIR = s_irTest.calculatedIR; // Fallback to sweep test if out of bounds
@@ -696,7 +709,22 @@ bool chargeBattery() {
                         s_reMeasure.index++;
                         s_reMeasure.subStep = 0;
                         s_reMeasure.stepStartTime = now;
-                        applyDuty(0);
+
+                        if (s_reMeasure.index < (int)s_reMeasure.points.size()) {
+                            // Apply low load or zero load for the next point
+                            const RePoint& nextPt = s_reMeasure.points[s_reMeasure.index];
+                            extern int minimalDutyCycle;
+                            int minDC = minimalDutyCycle;
+                            if (minDC < MIN_DUTY_CYCLE_START) {
+                                minDC = estimateDutyCycleForCurrent(MEASURABLE_CURRENT_THRESHOLD);
+                            }
+                            if (minDC < MIN_DUTY_CYCLE_START) {
+                                minDC = MIN_DUTY_CYCLE_START;
+                            }
+                            applyDuty(nextPt.isPair ? minDC : 0);
+                        } else {
+                            applyDuty(0);
+                        }
 
                         if (s_reMeasure.index >= (int)s_reMeasure.points.size()) {
                             // Finished all re-measurements. Re-perform regressions to fit internal resistance slope and intercept!
