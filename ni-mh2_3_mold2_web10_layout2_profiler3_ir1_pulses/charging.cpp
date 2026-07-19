@@ -729,6 +729,19 @@ bool chargeBattery() {
                         if (s_reMeasure.index >= (int)s_reMeasure.points.size()) {
                             // Finished all re-measurements. Re-perform regressions to fit internal resistance slope and intercept!
                             WEB_LOCK();
+                            bubbleSort(internalResistanceData, resistanceDataCount);
+                            bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
+
+                            auto compute_spacing_threshold = [](float data[][2], int n) -> float {
+                                if (n < 2) return 0.05f;
+                                float minX = data[0][0], maxX = data[n-1][0];
+                                float avgSpacing = (maxX - minX) / std::max(1, n-1);
+                                return std::max(0.02f, avgSpacing * 1.5f);
+                            };
+
+                            distribute_error(internalResistanceData, resistanceDataCount, compute_spacing_threshold(internalResistanceData, resistanceDataCount), 1.5f);
+                            distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, compute_spacing_threshold(internalResistanceDataPairs, resistanceDataCountPairs), 1.5f);
+
                             if (resistanceDataCount >= 2) performLinearRegression(internalResistanceData, resistanceDataCount, regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
                             if (resistanceDataCountPairs >= 2) performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
                             WEB_UNLOCK();
