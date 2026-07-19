@@ -197,6 +197,11 @@ static void sendFramePacket(bool timeoutFlag) {
 
 */
 
+#ifndef MOCK_TEST
+static inline AsyncWebSocketClient* resolve_client(AsyncWebSocketClient* client) { return client; }
+static inline AsyncWebSocketClient* resolve_client(AsyncWebSocketClient &client) { return &client; }
+#endif
+
 static void sendFramePacket(bool timeoutFlag) {
 #ifndef MOCK_TEST
     if (ws.count() == 0) return;
@@ -250,7 +255,8 @@ static void sendFramePacket(bool timeoutFlag) {
     }
 
     // 6. Selective Broadcast (The Fix for the Disconnects)
-    for (auto & client : ws.getClients()) {
+    for (auto & c : ws.getClients()) {
+        AsyncWebSocketClient* client = resolve_client(c);
         if (client->status() == WS_CONNECTED) {
             // Only send if the queue is not backed up.
             // 16 is a safe threshold for a 32-slot queue.
@@ -597,23 +603,9 @@ void buildCurrentModelStep() {
                             characIteration = 0;
                             characPhase = 0;
                             buildModelLastStepTime = now;
-                            setBuildModelPhase(BuildModelPhase::ThermalCooldown);
+                            setBuildModelPhase(BuildModelPhase::SetDuty);
                         }
                     }
-                }
-            }
-            break;
-        case BuildModelPhase::ThermalCooldown:
-            {
-                applyDuty(0);
-                double t1, t2, td; float tmv, v, c;
-                getThermistorReadings(t1, t2, td, tmv, v, c);
-                unsigned long elapsed = now - buildModelLastStepTime;
-                // Wait for battery to cool down close to ambient (<= 0.2 C diff) or timeout after 60 seconds
-                if (td <= 0.2 || elapsed >= 60000) {
-                    Serial.printf("Thermal Cooldown Complete: td = %.2f C, elapsed: %lu ms. Proceeding to SetDuty.\n", td, elapsed);
-                    buildModelLastStepTime = now;
-                    setBuildModelPhase(BuildModelPhase::SetDuty);
                 }
             }
             break;
