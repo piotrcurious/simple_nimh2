@@ -426,6 +426,94 @@ static StructuredIRTest s_irTest;
 
 std::vector<ThermalStepResponse> s_thermalHistory;
 
+// Structured IR Re-measurement Subsystem Structures
+struct RePoint {
+    float current;
+    int duty;
+    bool isPair; // true: from internalResistanceDataPairs, false: from internalResistanceData
+};
+
+struct PulseIRRemeasure {
+    bool active = false;
+    int index = 0;
+    int subStep = 0; // 0: wait unloaded, 1: wait loaded
+    unsigned long stepStartTime = 0;
+    float unloadedVoltage = 0.0f;
+    std::vector<RePoint> points;
+};
+static PulseIRRemeasure s_reMeasure;
+
+void selectRandomRePoints() {
+    s_reMeasure.points.clear();
+    s_reMeasure.index = 0;
+    s_reMeasure.subStep = 0;
+    s_reMeasure.active = false;
+
+    // 1. Select up to 10 points randomly from internalResistanceDataPairs
+    WEB_LOCK();
+    int totalPairs = resistanceDataCountPairs;
+    std::vector<int> pairIndices(totalPairs);
+    for (int i = 0; i < totalPairs; i++) pairIndices[i] = i;
+    WEB_UNLOCK();
+
+    // Custom platform-safe shuffle
+    for (int i = 0; i < totalPairs; i++) {
+        int j = i + rand() % (totalPairs - i);
+        std::swap(pairIndices[i], pairIndices[j]);
+    }
+
+    int selectedPairs = std::min(10, totalPairs);
+    float topCurrent = estimateCurrent(MAX_DUTY_CYCLE);
+
+    for (int k = 0; k < selectedPairs; k++) {
+        int idx = pairIndices[k];
+        WEB_LOCK();
+        float I = internalResistanceDataPairs[idx][0];
+        WEB_UNLOCK();
+
+        // Trim/truncate currents not reachable by re-measurement
+        if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
+            RePoint p;
+            p.current = I;
+            p.duty = estimateDutyCycleForCurrent(I);
+            p.isPair = true;
+            s_reMeasure.points.push_back(p);
+        }
+    }
+
+    // 2. Select up to 4 points randomly from internalResistanceData (loaded/unloaded)
+    WEB_LOCK();
+    int totalLU = resistanceDataCount;
+    std::vector<int> luIndices(totalLU);
+    for (int i = 0; i < totalLU; i++) luIndices[i] = i;
+    WEB_UNLOCK();
+
+    for (int i = 0; i < totalLU; i++) {
+        int j = i + rand() % (totalLU - i);
+        std::swap(luIndices[i], luIndices[j]);
+    }
+
+    int selectedLU = std::min(4, totalLU);
+    for (int k = 0; k < selectedLU; k++) {
+        int idx = luIndices[k];
+        WEB_LOCK();
+        float I = internalResistanceData[idx][0];
+        WEB_UNLOCK();
+
+        if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
+            RePoint p;
+            p.current = I;
+            p.duty = estimateDutyCycleForCurrent(I);
+            p.isPair = false;
+            s_reMeasure.points.push_back(p);
+        }
+    }
+
+    if (!s_reMeasure.points.empty()) {
+        s_reMeasure.active = true;
+    }
+}
+
 bool chargeBattery() {
     unsigned long now = millis();
     if (chargingState != CHARGE_IDLE && chargingState != CHARGE_STOPPED && (now - chargingStartTime >= TOTAL_TIMEOUT)) chargingState = CHARGE_STOPPED;
@@ -529,12 +617,94 @@ bool chargeBattery() {
 
                             Serial.printf("Structured IR Pulse Test Complete: IR = %.4f Ohms\n", s_irTest.calculatedIR);
 
-                            // Transition to charging pulse
+                            // Check if we should execute alike original system IR re-measurement
+                            selectRandomRePoints();
+                            if (s_reMeasure.active) {
+                                Serial.printf("Transitioning to Pulse IR Re-measurement of %d points...\n", (int)s_reMeasure.points.size());
+                                chargingState = CHARGE_PULSE_IR_REMEASURE;
+                                s_reMeasure.index = 0;
+                                s_reMeasure.subStep = 0;
+                                s_reMeasure.stepStartTime = now;
+                                applyDuty(0);
+                            } else {
+                                // Transition directly to charging pulse
+                                chargingState = CHARGE_PULSE_ACTIVE;
+                                pulseCycleStartTime = now;
+                                prev_t1 = -1.0; // Reset derivative trackers to prevent spikes across state boundary
+                                prev_t2 = -1.0;
+                                // Set constant current charging pulse duty cycle
+                                int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
+                                applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+
+        case CHARGE_PULSE_IR_REMEASURE:
+            {
+                if (!s_reMeasure.active || s_reMeasure.index >= (int)s_reMeasure.points.size()) {
+                    chargingState = CHARGE_PULSE_ACTIVE;
+                    pulseCycleStartTime = now;
+                    prev_t1 = -1.0;
+                    prev_t2 = -1.0;
+                    int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
+                    applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
+                    break;
+                }
+
+                unsigned long stepElapsed = now - s_reMeasure.stepStartTime;
+                double t1, t2, td; float tmv, v, cur; getThermistorReadings(t1, t2, td, tmv, v, cur);
+                const RePoint& pt = s_reMeasure.points[s_reMeasure.index];
+
+                if (s_reMeasure.subStep == 0) {
+                    // Unloaded step: wait for stabilization
+                    if (stepElapsed >= 1000) {
+                        s_reMeasure.unloadedVoltage = v;
+                        s_reMeasure.subStep = 1;
+                        s_reMeasure.stepStartTime = now;
+                        applyDuty(pt.duty);
+                    }
+                } else if (s_reMeasure.subStep == 1) {
+                    // Loaded step: measure and calculate IR
+                    if (stepElapsed >= 1000) {
+                        float measuredIR = 0.15f;
+                        if (cur > 0.005f) {
+                            measuredIR = (s_reMeasure.unloadedVoltage - v) / cur;
+                        }
+                        if (measuredIR < MIN_VALID_RESISTANCE || measuredIR > 5.0f) {
+                            measuredIR = s_irTest.calculatedIR; // Fallback to sweep test if out of bounds
+                        }
+
+                        WEB_LOCK();
+                        storeOrAverageResistanceData(cur, std::fabs(measuredIR),
+                                                     pt.isPair ? internalResistanceDataPairs : internalResistanceData,
+                                                     pt.isPair ? resistanceDataCountPairs : resistanceDataCount);
+                        WEB_UNLOCK();
+
+                        Serial.printf("  Re-measured point %d/%d (%s): I=%.3fA, V_unloaded=%.3fV, V_loaded=%.3fV -> IR=%.4f Ohms\n",
+                                      s_reMeasure.index + 1, (int)s_reMeasure.points.size(), pt.isPair ? "PAIR" : "L/UL",
+                                      cur, s_reMeasure.unloadedVoltage, v, measuredIR);
+
+                        s_reMeasure.index++;
+                        s_reMeasure.subStep = 0;
+                        s_reMeasure.stepStartTime = now;
+                        applyDuty(0);
+
+                        if (s_reMeasure.index >= (int)s_reMeasure.points.size()) {
+                            // Finished all re-measurements. Re-perform regressions to fit internal resistance slope and intercept!
+                            WEB_LOCK();
+                            if (resistanceDataCount >= 2) performLinearRegression(internalResistanceData, resistanceDataCount, regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
+                            if (resistanceDataCountPairs >= 2) performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
+                            WEB_UNLOCK();
+
+                            Serial.println("Pulse IR Re-measurement Complete. Fitted new linear regression lines.");
+
                             chargingState = CHARGE_PULSE_ACTIVE;
                             pulseCycleStartTime = now;
-                            prev_t1 = -1.0; // Reset derivative trackers to prevent spikes across state boundary
+                            prev_t1 = -1.0;
                             prev_t2 = -1.0;
-                            // Set constant current charging pulse duty cycle
                             int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                             applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
                         }
@@ -547,6 +717,19 @@ bool chargeBattery() {
             {
                 double t1, t2, td; float tmv, v, cur; getThermistorReadings(t1, t2, td, tmv, v, cur);
                 unsigned long elapsedMs = now - pulseCycleStartTime;
+
+                // Dynamic Constant-Current Closed-Loop Regulator:
+                // Adjust duty cycle dynamically to compensate for changing IR and electrochemical state,
+                // clamping the current precisely to maximumCurrent.
+                if (cur > maximumCurrent + 0.003f) {
+                    if (dutyCycle > MIN_CHARGE_DUTY_CYCLE) {
+                        applyDuty(dutyCycle - 1);
+                    }
+                } else if (cur < maximumCurrent - 0.003f) {
+                    if (dutyCycle < MAX_CHARGE_DUTY_CYCLE) {
+                        applyDuty(dutyCycle + 1);
+                    }
+                }
 
                 if (prev_t1 < 0) {
                     prev_t1 = t1;
