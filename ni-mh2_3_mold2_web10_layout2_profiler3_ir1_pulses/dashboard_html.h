@@ -1255,8 +1255,11 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       const sI = autoScale(arrI);
       const sV = autoScale(arrV);
       const sD = autoScale(arrD);
-      const sTH = autoScale(arrTH);
-      sTH[1] = sTH[1] + 1.0; // Add 1C upper margin for headroom
+
+      // Th auto-scaled: minimum is dT minimum, maximum is Th maximum + 1C headroom
+      const minDT = Math.min(...arrTD);
+      const maxTH = Math.max(...arrTH);
+      const sTH = [Number.isFinite(minDT) ? minDT : 0, (Number.isFinite(maxTH) ? maxTH : 0) + 1.0];
 
       // Tie dT scale directly to Th scale
       const sTD = [sTH[0], sTH[1]];
