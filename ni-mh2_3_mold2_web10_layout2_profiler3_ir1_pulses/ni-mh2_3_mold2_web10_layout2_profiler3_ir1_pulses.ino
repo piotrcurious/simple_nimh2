@@ -251,14 +251,14 @@ static void sendFramePacket(bool timeoutFlag) {
 
     // 6. Selective Broadcast (The Fix for the Disconnects)
     for (auto & client : ws.getClients()) {
-        if (client.status() == WS_CONNECTED) {
+        if (client->status() == WS_CONNECTED) {
             // Only send if the queue is not backed up.
             // 16 is a safe threshold for a 32-slot queue.
-            if (client.queueLen() < 4) {
-                client.binary(packet, p);
+            if (client->queueLen() < 4) {
+                client->binary(packet, p);
             } else {
                 // Optional:
-                Serial.printf("Skipping frame for client %u (Queue full)\n", client.id());
+                Serial.printf("Skipping frame for client %u (Queue full)\n", client->id());
             }
         }
     }

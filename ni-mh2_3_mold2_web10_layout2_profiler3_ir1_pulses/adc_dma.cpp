@@ -63,7 +63,11 @@ static adc_digi_pattern_config_t patterns[SCAN_CH_COUNT];
 
 static esp_adc_cal_characteristics_t adc_chars[ADC_CH_COUNT];
 #endif
+#ifdef MOCK_TEST
+static bool cal_initialized[ADC_CH_COUNT] = {true, true, true, true};
+#else
 static bool cal_initialized[ADC_CH_COUNT] = {false};
+#endif
 
 static SemaphoreHandle_t data_mutex = nullptr;
 
