@@ -1255,8 +1255,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       const sI = autoScale(arrI);
       const sV = autoScale(arrV);
       const sD = autoScale(arrD);
-      const sTD = autoScale(arrTD);
       const sTH = autoScale(arrTH);
+      sTH[1] = sTH[1] + 1.0; // Add 1C upper margin for headroom
+
+      // Tie dT scale directly to Th scale
+      const sTD = [sTH[0], sTH[1]];
+
       const sIRLU = autoScale(arrIRLU);
       const sIRP = autoScale(arrIRP);
 
@@ -1307,8 +1311,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         renderIR(data);
       }
       else if (data.batch !== undefined) {
-        // Chargelog batch
-        if (chargeLogBuffer.length >= data.total) chargeLogBuffer = [];
+        // Chargelog batch: clear buffer on first packet of new stream
+        if (data.offset === 0) {
+          chargeLogBuffer = [];
+        }
         chargeLogBuffer.push(...data.batch);
         renderCharge(chargeLogBuffer);
       }

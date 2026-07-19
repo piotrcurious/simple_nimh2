@@ -262,7 +262,8 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
         CborWriter w;
         w.reserve(batchSize * 150 + 64);
         size_t itemsInBatch = std::min(batchSize, total - i);
-        w.startMap(2);
+        w.startMap(3);
+        w.addText("offset"); w.addUInt(i);
         w.addText("batch"); w.startArray(itemsInBatch);
 
         for (size_t j = 0; j < itemsInBatch; j++) {
