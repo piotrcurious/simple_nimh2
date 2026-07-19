@@ -233,6 +233,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     canvas.gauge {
       width: 100%;
+      height: 120px; /* Constrain the height explicitly on desktop and all devices to prevent size growth feedback loop! */
       flex-grow: 1;
       display: block;
       border-radius: 7px;
@@ -432,6 +433,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     let lastIRFetch = 0;
     let lastChargeFetch = 0;
     let lastLiveDT = NaN;
+
+    // Caching for resize/orientation redraws
+    let cachedState = null;
+    let cachedHistory = null;
+    let cachedAmbient = null;
+    let cachedIR = null;
+    let cachedProfilerFrame = null;
 
     const appStates = ['IDLE', 'BUILDING_MODEL', 'MEASURING_IR', 'CHARGING'];
     const modelPhases = ['Idle', 'Settle', 'Calibrate', 'DetectDeadRegion', 'SetDuty', 'WaitMeasurement', 'Finish'];
@@ -722,9 +730,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           off += 6;
         }
       }
-      const frame = { framePeriodUs, lanes };
+      const frame = { framePeriodUs, lanes, frameId: dv.getUint32(4, true), c0, c1 };
+      cachedProfilerFrame = frame; // Cache profiler frame!
       drawProfilerFrame(frame);
-      profilerStatus.textContent = `frame ${dv.getUint32(4, true)} | C0:${c0} C1:${c1}`;
+      profilerStatus.textContent = `frame ${frame.frameId} | C0:${frame.c0} C1:${frame.c1}`;
     }
 
     function fitProfiler() {
@@ -779,28 +788,39 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     }
 
-    function drawGlowText(ctx, text, x, y, color, align = 'left', size = 11, weight = 'bold') {
+    function getScaledMargin(margin, dpr) {
+      return {
+        top: Math.round(margin.top * dpr),
+        right: Math.round(margin.right * dpr),
+        bottom: Math.round(margin.bottom * dpr),
+        left: Math.round(margin.left * dpr)
+      };
+    }
+
+    function drawGlowText(ctx, text, x, y, color, align = 'left', size = 11, weight = 'bold', dpr = 1) {
       ctx.save();
-      ctx.font = `${weight} ${size}px Consolas, monospace`;
+      const scaledSize = Math.round(size * dpr);
+      ctx.font = `${weight} ${scaledSize}px Consolas, monospace`;
       ctx.textAlign = align;
       ctx.fillStyle = color;
       ctx.shadowColor = color;
-      ctx.shadowBlur = 8;
+      ctx.shadowBlur = 8 * dpr;
       ctx.fillText(text, x, y);
       ctx.restore();
     }
 
-    function drawAxes(ctx, margin, xMin, xMax, xLabel, yMin, yMax, yLabel) {
+    function drawAxes(ctx, margin, xMin, xMax, xLabel, yMin, yMax, yLabel, dpr = 1) {
       const w = ctx.canvas.width;
       const h = ctx.canvas.height;
       const plotW = w - margin.left - margin.right;
       const plotH = h - margin.top - margin.bottom;
 
       ctx.save();
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 * dpr;
       ctx.strokeStyle = 'rgba(120,255,255,0.18)';
       ctx.fillStyle = 'rgba(200,255,255,0.72)';
-      ctx.font = '10px Consolas, monospace';
+      const scaledFontSize = Math.round(10 * dpr);
+      ctx.font = `${scaledFontSize}px Consolas, monospace`;
 
       ctx.beginPath();
       ctx.moveTo(margin.left, h - margin.bottom);
@@ -812,33 +832,36 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       ctx.lineTo(margin.left, h - margin.bottom);
       ctx.stroke();
 
+      const tickLen = 4 * dpr;
+      const labelOffset = 13 * dpr;
+
       for (let i = 0; i <= 5; i++) {
         const x = margin.left + (i / 5) * plotW;
         const val = xMin + (i / 5) * (xMax - xMin);
         ctx.beginPath();
         ctx.moveTo(x, h - margin.bottom);
-        ctx.lineTo(x, h - margin.bottom + 4);
+        ctx.lineTo(x, h - margin.bottom + tickLen);
         ctx.stroke();
         ctx.textAlign = 'center';
-        ctx.fillText(val.toFixed((xMax - xMin) < 2 ? 2 : 0), x, h - margin.bottom + 13);
+        ctx.fillText(val.toFixed((xMax - xMin) < 2 ? 2 : 0), x, h - margin.bottom + labelOffset);
       }
 
       for (let i = 0; i <= 5; i++) {
         const y = h - margin.bottom - (i / 5) * plotH;
         const val = yMin + (i / 5) * (yMax - yMin);
         ctx.beginPath();
-        ctx.moveTo(margin.left - 4, y);
+        ctx.moveTo(margin.left - tickLen, y);
         ctx.lineTo(margin.left, y);
         ctx.stroke();
         ctx.textAlign = 'right';
-        ctx.fillText(val.toFixed((yMax - yMin) < 2 ? 2 : 0), margin.left - 6, y + 3);
+        ctx.fillText(val.toFixed((yMax - yMin) < 2 ? 2 : 0), margin.left - (tickLen + 2), y + Math.round(3 * dpr));
       }
 
       ctx.textAlign = 'center';
-      ctx.fillText(xLabel, margin.left + plotW / 2, h - 2);
+      ctx.fillText(xLabel, margin.left + plotW / 2, h - Math.round(2 * dpr));
 
       ctx.save();
-      ctx.translate(11, margin.top + plotH / 2);
+      ctx.translate(Math.round(11 * dpr), margin.top + plotH / 2);
       ctx.rotate(-Math.PI / 2);
       ctx.fillText(yLabel, 0, 0);
       ctx.restore();
@@ -846,13 +869,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     }
 
     // LABEL COLLISION RESOLVER
-    function renderLabels(ctx, labelsList, margin, h) {
+    function renderLabels(ctx, labelsList, margin, h, dpr = 1) {
       if (!labelsList || !labelsList.length) return;
 
       // Sort labels top-to-bottom
       labelsList.sort((a, b) => a.targetY - b.targetY);
 
-      const LABEL_H = 12; // Minimum vertical space per label
+      const LABEL_H = Math.round(12 * dpr); // Scale minimum vertical space per label by dpr!
 
       // Pass 1: Push overlapping labels downwards
       for (let i = 1; i < labelsList.length; i++) {
@@ -862,7 +885,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       }
 
       // Pass 2: Push labels back upwards if they overflow the bottom margin
-      const maxBottom = h - margin.bottom - 4;
+      const maxBottom = h - margin.bottom - Math.round(4 * dpr);
       if (labelsList[labelsList.length - 1].targetY > maxBottom) {
         labelsList[labelsList.length - 1].targetY = maxBottom;
         for (let i = labelsList.length - 2; i >= 0; i--) {
@@ -875,25 +898,26 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       // Draw Labels and Connection Lines
       labelsList.forEach(lbl => {
         ctx.fillStyle = lbl.color;
-        ctx.font = 'bold 10px Consolas, monospace';
+        const scaledFontSize = Math.round(10 * dpr);
+        ctx.font = `bold ${scaledFontSize}px Consolas, monospace`;
         ctx.textAlign = 'left';
 
         // Draw a tiny angled connecting line if we shifted the label vertically
-        if (Math.abs(lbl.targetY - lbl.originalY) > 2) {
+        if (Math.abs(lbl.targetY - lbl.originalY) > Math.round(2 * dpr)) {
           ctx.beginPath();
           ctx.strokeStyle = lbl.color;
           ctx.globalAlpha = 0.5;
           ctx.moveTo(lbl.x, lbl.originalY);
-          ctx.lineTo(lbl.x + 4, lbl.targetY - 3);
+          ctx.lineTo(lbl.x + Math.round(4 * dpr), lbl.targetY - Math.round(3 * dpr));
           ctx.stroke();
           ctx.globalAlpha = 1.0;
         }
 
-        ctx.fillText(lbl.text, lbl.x + 6, lbl.targetY);
+        ctx.fillText(lbl.text, lbl.x + Math.round(6 * dpr), lbl.targetY);
       });
     }
 
-    function drawSeries(ctx, arr, color, min, max, margin, label = '', lineWidth = 1, labelsList = null) {
+    function drawSeries(ctx, arr, color, min, max, margin, label = '', lineWidth = 1, labelsList = null, dpr = 1) {
       if (!arr || !arr.length) return;
 
       const w = ctx.canvas.width;
@@ -926,19 +950,19 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       });
 
       ctx.shadowColor = color;
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 10 * dpr;
       ctx.strokeStyle = color;
       ctx.globalAlpha = 0.22;
-      ctx.lineWidth = lineWidth + 2;
+      ctx.lineWidth = (lineWidth + 2) * dpr;
       ctx.stroke();
 
       ctx.shadowBlur = 0;
       ctx.globalAlpha = 1.0;
-      ctx.lineWidth = lineWidth;
+      ctx.lineWidth = lineWidth * dpr;
       ctx.stroke();
 
       if (label && Number.isFinite(lastY)) {
-        const yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
+        const yPos = clamp(lastY, margin.top + Math.round(10 * dpr), h - margin.bottom - Math.round(2 * dpr));
         if (labelsList) {
           // Push to collection array instead of drawing immediately
           labelsList.push({
@@ -951,16 +975,17 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         } else {
           // Fallback if no array passed
           ctx.fillStyle = color;
-          ctx.font = 'bold 10px Consolas, monospace';
+          const scaledFontSize = Math.round(10 * dpr);
+          ctx.font = `bold ${scaledFontSize}px Consolas, monospace`;
           ctx.textAlign = 'left';
-          ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
+          ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + Math.round(5 * dpr), yPos);
         }
       }
 
       ctx.restore();
     }
 
-    function drawXY(ctx, points, color, xMin, xMax, yMin, yMax, margin, label = '', labelsList = null) {
+    function drawXY(ctx, points, color, xMin, xMax, yMin, yMax, margin, label = '', labelsList = null, dpr = 1) {
       if (!points || !points.length) return;
 
       const w = ctx.canvas.width;
@@ -996,19 +1021,19 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       });
 
       ctx.shadowColor = color;
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 10 * dpr;
       ctx.strokeStyle = color;
       ctx.globalAlpha = 0.22;
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 * dpr;
       ctx.stroke();
 
       ctx.shadowBlur = 0;
       ctx.globalAlpha = 1.0;
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 * dpr;
       ctx.stroke();
 
       if (label && Number.isFinite(lastY)) {
-        const yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
+        const yPos = clamp(lastY, margin.top + Math.round(10 * dpr), h - margin.bottom - Math.round(2 * dpr));
         if (labelsList) {
           labelsList.push({
             text: `${label}:${lastVal.toFixed(2)}`,
@@ -1019,9 +1044,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           });
         } else {
           ctx.fillStyle = color;
-          ctx.font = 'bold 10px Consolas, monospace';
+          const scaledFontSize = Math.round(10 * dpr);
+          ctx.font = `bold ${scaledFontSize}px Consolas, monospace`;
           ctx.textAlign = 'left';
-          ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
+          ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + Math.round(5 * dpr), yPos);
         }
       }
 
@@ -1070,7 +1096,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     function drawGauge(canvas, value, min, max, color, label, line1 = '', line2 = '') {
       const ctx = canvas.getContext('2d');
-      const { w, h } = fitCanvas(canvas);
+      const { w, h, dpr } = fitCanvas(canvas);
       ctx.clearRect(0, 0, w, h);
 
       const cx = w / 2;
@@ -1084,7 +1110,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
       ctx.beginPath();
       ctx.strokeStyle = 'rgba(0,255,255,0.14)';
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3 * dpr;
       ctx.arc(cx, cy, r, start, end);
       ctx.stroke();
 
@@ -1093,24 +1119,24 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
       ctx.beginPath();
       ctx.shadowColor = color;
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 10 * dpr;
       ctx.strokeStyle = color;
       ctx.globalAlpha = 0.18;
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 4 * dpr;
       ctx.arc(cx, cy, r, start, a);
       ctx.stroke();
 
       ctx.beginPath();
       ctx.shadowBlur = 0;
       ctx.globalAlpha = 1;
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 * dpr;
       ctx.arc(cx, cy, r, start, a);
       ctx.stroke();
 
-      drawGlowText(ctx, label, cx, h * 0.16, 'rgba(190,255,255,0.90)', 'center', 9, 'bold');
-      drawGlowText(ctx, fmt(value, 2), cx, h * 0.44, color, 'center', 13, 'bold');
-      if (line1) drawGlowText(ctx, line1, cx, h * 0.61, 'rgba(180,255,255,0.88)', 'center', 8, 'normal');
-      if (line2) drawGlowText(ctx, line2, cx, h * 0.75, 'rgba(180,255,255,0.88)', 'center', 8, 'normal');
+      drawGlowText(ctx, label, cx, h * 0.16, 'rgba(190,255,255,0.90)', 'center', 9, 'bold', dpr);
+      drawGlowText(ctx, fmt(value, 2), cx, h * 0.44, color, 'center', 13, 'bold', dpr);
+      if (line1) drawGlowText(ctx, line1, cx, h * 0.61, 'rgba(180,255,255,0.88)', 'center', 8, 'normal', dpr);
+      if (line2) drawGlowText(ctx, line2, cx, h * 0.75, 'rgba(180,255,255,0.88)', 'center', 8, 'normal', dpr);
 
       ctx.restore();
     }
@@ -1152,59 +1178,64 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     function renderMain(data) {
       const canvas = document.getElementById('mainGraph');
       const ctx = canvas.getContext('2d');
-      // Increased right margin slightly to ensure label values fit completely
-      const margin = { top: 12, right: 55, bottom: 16, left: 30 };
-      fitCanvas(canvas);
+      const { w, h, dpr } = fitCanvas(canvas);
       clearCanvas(ctx);
 
-      drawAxes(ctx, margin, 0, 320, 'Time', 0, 40, 'Value');
+      const baseMargin = { top: 12, right: 55, bottom: 16, left: 30 };
+      const margin = getScaledMargin(baseMargin, dpr);
+
+      drawAxes(ctx, margin, 0, 320, 'Time', 0, 40, 'Value', dpr);
 
       const labels = [];
-      drawSeries(ctx, data.v, '#ffe86a', 1.0, 2.0, margin, 'V', 1, labels);
-      drawSeries(ctx, data.i, '#ff4dff', 0.0, 0.5, margin, 'I', 1, labels);
-      drawSeries(ctx, data.t1, '#ff6c7a', 15, 40, margin, 'T1', 1, labels);
-      drawSeries(ctx, data.t2, '#58ff98', 15, 40, margin, 'T2', 1, labels);
-      drawSeries(ctx, data.td, '#58a8ff', -0.5, maxDT, margin, 'dT', 1, labels);
+      drawSeries(ctx, data.v, '#ffe86a', 1.0, 2.0, margin, 'V', 1, labels, dpr);
+      drawSeries(ctx, data.i, '#ff4dff', 0.0, 0.5, margin, 'I', 1, labels, dpr);
+      drawSeries(ctx, data.t1, '#ff6c7a', 15, 40, margin, 'T1', 1, labels, dpr);
+      drawSeries(ctx, data.t2, '#58ff98', 15, 40, margin, 'T2', 1, labels, dpr);
+      drawSeries(ctx, data.td, '#58a8ff', -0.5, maxDT, margin, 'dT', 1, labels, dpr);
 
-      renderLabels(ctx, labels, margin, canvas.height);
+      renderLabels(ctx, labels, margin, h, dpr);
     }
 
     function renderAmbient(data) {
       const canvas = document.getElementById('ambientGraph');
       const ctx = canvas.getContext('2d');
-      const margin = { top: 12, right: 55, bottom: 16, left: 30 };
-      fitCanvas(canvas);
+      const { w, h, dpr } = fitCanvas(canvas);
       clearCanvas(ctx);
 
-      drawAxes(ctx, margin, 0, 320, 'Time', 0, 100, 'T / H');
+      const baseMargin = { top: 12, right: 55, bottom: 16, left: 30 };
+      const margin = getScaledMargin(baseMargin, dpr);
+
+      drawAxes(ctx, margin, 0, 320, 'Time', 0, 100, 'T / H', dpr);
 
       const labels = [];
-      drawSeries(ctx, data.t, '#ff6c7a', 10, 40, margin, 'T', 1, labels);
-      drawSeries(ctx, data.d, '#58ff98', 10, 40, margin, 'Dew', 1, labels);
-      drawSeries(ctx, data.h, '#58a8ff', 0, 100, margin, 'H', 1, labels);
+      drawSeries(ctx, data.t, '#ff6c7a', 10, 40, margin, 'T', 1, labels, dpr);
+      drawSeries(ctx, data.d, '#58ff98', 10, 40, margin, 'Dew', 1, labels, dpr);
+      drawSeries(ctx, data.h, '#58a8ff', 0, 100, margin, 'H', 1, labels, dpr);
 
-      const y = canvas.height - margin.bottom - (65 / 100) * (canvas.height - margin.top - margin.bottom);
+      const y = h - margin.bottom - (65 / 100) * (h - margin.top - margin.bottom);
       ctx.save();
       ctx.strokeStyle = 'rgba(255,176,90,0.72)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([5, 5]);
+      ctx.lineWidth = 1 * dpr;
+      ctx.setLineDash([Math.round(5 * dpr), Math.round(5 * dpr)]);
       ctx.shadowColor = 'rgba(255,176,90,0.55)';
-      ctx.shadowBlur = 6;
+      ctx.shadowBlur = Math.round(6 * dpr);
       ctx.beginPath();
       ctx.moveTo(margin.left, y);
-      ctx.lineTo(canvas.width - margin.right, y);
+      ctx.lineTo(w - margin.right, y);
       ctx.stroke();
       ctx.restore();
 
-      renderLabels(ctx, labels, margin, canvas.height);
+      renderLabels(ctx, labels, margin, h, dpr);
     }
 
     function renderIR(data) {
       const canvas = document.getElementById('irGraph');
       const ctx = canvas.getContext('2d');
-      const margin = { top: 12, right: 55, bottom: 16, left: 30 };
-      fitCanvas(canvas);
+      const { w, h, dpr } = fitCanvas(canvas);
       clearCanvas(ctx);
+
+      const baseMargin = { top: 12, right: 55, bottom: 16, left: 30 };
+      const margin = getScaledMargin(baseMargin, dpr);
 
       const all = (data.lu || []).concat(data.pairs || []);
       let xMin = 0, xMax = 0.5, yMin = 0, yMax = 0.5;
@@ -1222,24 +1253,26 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         yMax = yMax + yr * 0.1;
       }
 
-      drawAxes(ctx, margin, xMin, xMax, 'Current (A)', yMin, yMax, 'Resistance (Ω)');
+      drawAxes(ctx, margin, xMin, xMax, 'Current (A)', yMin, yMax, 'Resistance (\u03a9)', dpr);
 
       const labels = [];
-      drawXY(ctx, data.lu, '#f6ffff', xMin, xMax, yMin, yMax, margin, 'LU', labels);
-      drawXY(ctx, data.pairs, '#58fff3', xMin, xMax, yMin, yMax, margin, 'Pairs', labels);
+      drawXY(ctx, data.lu, '#f6ffff', xMin, xMax, yMin, yMax, margin, 'LU', labels, dpr);
+      drawXY(ctx, data.pairs, '#58fff3', xMin, xMax, yMin, yMax, margin, 'Pairs', labels, dpr);
 
-      renderLabels(ctx, labels, margin, canvas.height);
+      renderLabels(ctx, labels, margin, h, dpr);
     }
 
     function renderCharge(data) {
       const canvas = document.getElementById('chargeGraph');
       const ctx = canvas.getContext('2d');
-      const margin = { top: 12, right: 65, bottom: 16, left: 30 };
-      fitCanvas(canvas);
+      const { w, h, dpr } = fitCanvas(canvas);
       clearCanvas(ctx);
 
+      const baseMargin = { top: 12, right: 65, bottom: 16, left: 30 };
+      const margin = getScaledMargin(baseMargin, dpr);
+
       if (!data || !data.length) {
-        drawAxes(ctx, margin, 0, 100, 'Index', 0, 1, 'Value');
+        drawAxes(ctx, margin, 0, 100, 'Index', 0, 1, 'Value', dpr);
         dom.chargeLegend.textContent = '';
         return;
       }
@@ -1274,19 +1307,19 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       const yMin = Math.min(sI[0], sV[0], sD[0], sTD[0], sTH[0], sIRLU[0], sIRP[0]);
       const yMax = Math.max(sI[1], sV[1], sD[1], sTD[1], sTH[1], sIRLU[1], sIRP[1]);
 
-      drawAxes(ctx, margin, 0, data.length - 1, 'Index', yMin, yMax, 'Auto-scaled');
+      drawAxes(ctx, margin, 0, data.length - 1, 'Index', yMin, yMax, 'Auto-scaled', dpr);
       drawRegion(ctx, arrTD, arrTH, 'rgba(255,108,122,0.20)', Math.min(sTD[0], sTH[0]), Math.max(sTD[1], sTH[1]), margin);
 
       const labels = [];
-      drawSeries(ctx, arrI, '#ff4dff', sI[0], sI[1], margin, 'I', 1, labels);
-      drawSeries(ctx, arrV, '#ffe86a', sV[0], sV[1], margin, 'V', 1, labels);
-      drawSeries(ctx, arrD, '#a9a9a9', sD[0], sD[1], margin, 'Duty', 1, labels);
-      drawSeries(ctx, arrTD, '#58a8ff', sTD[0], sTD[1], margin, 'dT', 1, labels);
-      drawSeries(ctx, arrTH, '#ff6c7a', sTH[0], sTH[1], margin, 'Th', 1, labels);
-      drawSeries(ctx, arrIRLU, '#ffb05a', sIRLU[0], sIRLU[1], margin, 'RiLU', 1, labels);
-      drawSeries(ctx, arrIRP, '#58fff3', sIRP[0], sIRP[1], margin, 'RiP', 1, labels);
+      drawSeries(ctx, arrI, '#ff4dff', sI[0], sI[1], margin, 'I', 1, labels, dpr);
+      drawSeries(ctx, arrV, '#ffe86a', sV[0], sV[1], margin, 'V', 1, labels, dpr);
+      drawSeries(ctx, arrD, '#a9a9a9', sD[0], sD[1], margin, 'Duty', 1, labels, dpr);
+      drawSeries(ctx, arrTD, '#58a8ff', sTD[0], sTD[1], margin, 'dT', 1, labels, dpr);
+      drawSeries(ctx, arrTH, '#ff6c7a', sTH[0], sTH[1], margin, 'Th', 1, labels, dpr);
+      drawSeries(ctx, arrIRLU, '#ffb05a', sIRLU[0], sIRLU[1], margin, 'RiLU', 1, labels, dpr);
+      drawSeries(ctx, arrIRP, '#58fff3', sIRP[0], sIRP[1], margin, 'RiP', 1, labels, dpr);
 
-      renderLabels(ctx, labels, margin, canvas.height);
+      renderLabels(ctx, labels, margin, h, dpr);
 
       const last = data[data.length - 1];
       dom.chargeLegend.textContent =
@@ -1303,18 +1336,25 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
       // Route based on structure
       if (data.app !== undefined) {
+        cachedState = data; // Cache state!
         maxDT = Number.isFinite(data.max_dt) ? data.max_dt : 1.5;
         updateMetricText(data);
         drawAllGauges(data);
       }
       else if (data.t1 !== undefined) {
+        cachedHistory = data; // Cache history!
         lastLiveDT = lastFinite(data.td);
         renderMain(data);
+        if (cachedState) {
+          drawAllGauges(cachedState);
+        }
       }
       else if (data.t !== undefined) {
+        cachedAmbient = data; // Cache ambient!
         renderAmbient(data);
       }
       else if (data.lu !== undefined) {
+        cachedIR = data; // Cache IR!
         renderIR(data);
       }
       else if (data.batch !== undefined) {
@@ -1354,14 +1394,41 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     }
 
 
-    function resizeAll() {
-      document.querySelectorAll('canvas').forEach(canvas => fitCanvas(canvas));
+    function redrawAll() {
+      if (cachedState) {
+        updateMetricText(cachedState);
+        drawAllGauges(cachedState);
+      }
+      if (cachedHistory) {
+        renderMain(cachedHistory);
+      }
+      if (cachedAmbient) {
+        renderAmbient(cachedAmbient);
+      }
+      if (cachedIR) {
+        renderIR(cachedIR);
+      }
+      if (chargeLogBuffer && chargeLogBuffer.length > 0) {
+        renderCharge(chargeLogBuffer);
+      }
+      if (cachedProfilerFrame) {
+        drawProfilerFrame(cachedProfilerFrame);
+      }
     }
 
-    window.addEventListener('resize', () => { resizeAll(); fitProfiler(); });
-    window.addEventListener('orientationchange', () => { resizeAll(); fitProfiler(); });
-    resizeAll();
-    fitProfiler();
+    function resizeAndRedraw() {
+      fitProfiler();
+      document.querySelectorAll('canvas').forEach(canvas => {
+        if (canvas.id !== 'gl') {
+          fitCanvas(canvas);
+        }
+      });
+      redrawAll();
+    }
+
+    window.addEventListener('resize', resizeAndRedraw);
+    window.addEventListener('orientationchange', resizeAndRedraw);
+    resizeAndRedraw();
     initProfilerGL();
     connectWS();
     loopData(); // start the loop
