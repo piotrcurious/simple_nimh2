@@ -449,63 +449,69 @@ void selectRandomRePoints() {
     s_reMeasure.subStep = 0;
     s_reMeasure.active = false;
 
-    // 1. Select up to 10 points randomly from internalResistanceDataPairs
-    WEB_LOCK();
-    int totalPairs = resistanceDataCountPairs;
-    std::vector<int> pairIndices(totalPairs);
-    for (int i = 0; i < totalPairs; i++) pairIndices[i] = i;
-    WEB_UNLOCK();
-
-    // Custom platform-safe shuffle
-    for (int i = 0; i < totalPairs; i++) {
-        int j = i + rand() % (totalPairs - i);
-        std::swap(pairIndices[i], pairIndices[j]);
-    }
-
-    int selectedPairs = std::min(10, totalPairs);
     float topCurrent = estimateCurrent(MAX_DUTY_CYCLE);
 
-    for (int k = 0; k < selectedPairs; k++) {
-        int idx = pairIndices[k];
-        WEB_LOCK();
-        float I = internalResistanceDataPairs[idx][0];
-        WEB_UNLOCK();
+    // 1. Select up to 10 points using Stratified Random Sampling from internalResistanceDataPairs.
+    // This divides the sorted history into 10 equal segments and picks one point randomly from each,
+    // guaranteeing maximum current variation across the operating spectrum!
+    WEB_LOCK();
+    int totalPairs = resistanceDataCountPairs;
+    WEB_UNLOCK();
 
-        // Trim/truncate currents not reachable by re-measurement
-        if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
-            RePoint p;
-            p.current = I;
-            p.duty = estimateDutyCycleForCurrent(I);
-            p.isPair = true;
-            s_reMeasure.points.push_back(p);
+    if (totalPairs > 0) {
+        int numSegments = std::min(10, totalPairs);
+        float segmentSize = (float)totalPairs / (float)numSegments;
+
+        for (int k = 0; k < numSegments; k++) {
+            int startIdx = (int)(k * segmentSize);
+            int endIdx = (int)((k + 1) * segmentSize);
+            if (endIdx > totalPairs) endIdx = totalPairs;
+            if (endIdx <= startIdx) endIdx = startIdx + 1;
+
+            int idx = startIdx + rand() % (endIdx - startIdx);
+            WEB_LOCK();
+            float I = internalResistanceDataPairs[idx][0];
+            WEB_UNLOCK();
+
+            // Trim/truncate currents not reachable by re-measurement
+            if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
+                RePoint p;
+                p.current = I;
+                p.duty = estimateDutyCycleForCurrent(I);
+                p.isPair = true;
+                s_reMeasure.points.push_back(p);
+            }
         }
     }
 
-    // 2. Select up to 4 points randomly from internalResistanceData (loaded/unloaded)
+    // 2. Select up to 4 points using Stratified Random Sampling from internalResistanceData (loaded/unloaded).
+    // Divides the sorted history into 4 equal segments and picks one point randomly from each.
     WEB_LOCK();
     int totalLU = resistanceDataCount;
-    std::vector<int> luIndices(totalLU);
-    for (int i = 0; i < totalLU; i++) luIndices[i] = i;
     WEB_UNLOCK();
 
-    for (int i = 0; i < totalLU; i++) {
-        int j = i + rand() % (totalLU - i);
-        std::swap(luIndices[i], luIndices[j]);
-    }
+    if (totalLU > 0) {
+        int numSegments = std::min(4, totalLU);
+        float segmentSize = (float)totalLU / (float)numSegments;
 
-    int selectedLU = std::min(4, totalLU);
-    for (int k = 0; k < selectedLU; k++) {
-        int idx = luIndices[k];
-        WEB_LOCK();
-        float I = internalResistanceData[idx][0];
-        WEB_UNLOCK();
+        for (int k = 0; k < numSegments; k++) {
+            int startIdx = (int)(k * segmentSize);
+            int endIdx = (int)((k + 1) * segmentSize);
+            if (endIdx > totalLU) endIdx = totalLU;
+            if (endIdx <= startIdx) endIdx = startIdx + 1;
 
-        if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
-            RePoint p;
-            p.current = I;
-            p.duty = estimateDutyCycleForCurrent(I);
-            p.isPair = false;
-            s_reMeasure.points.push_back(p);
+            int idx = startIdx + rand() % (endIdx - startIdx);
+            WEB_LOCK();
+            float I = internalResistanceData[idx][0];
+            WEB_UNLOCK();
+
+            if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
+                RePoint p;
+                p.current = I;
+                p.duty = estimateDutyCycleForCurrent(I);
+                p.isPair = false;
+                s_reMeasure.points.push_back(p);
+            }
         }
     }
 
