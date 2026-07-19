@@ -570,11 +570,12 @@ bool chargeBattery() {
                         s_irTest.unloadedVoltage = v;
                         s_irTest.step = 1;
                         s_irTest.stepStartTime = now;
-                        // Determine 4 duties to sweep
-                        s_irTest.duties[0] = MIN_CHARGE_DUTY_CYCLE + 10;
-                        s_irTest.duties[1] = MIN_CHARGE_DUTY_CYCLE + 40;
-                        s_irTest.duties[2] = MIN_CHARGE_DUTY_CYCLE + 80;
-                        s_irTest.duties[3] = MAX_CHARGE_DUTY_CYCLE / 2;
+                        // Determine 4 duties to sweep based on the built current model up to maximumCurrent
+                        for (int k = 0; k < 4; k++) {
+                            float targetI = ((k + 1) * 0.25f) * maximumCurrent;
+                            int dc = estimateDutyCycleForCurrent(targetI);
+                            s_irTest.duties[k] = std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, dc));
+                        }
                         applyDuty(s_irTest.duties[0]);
                     }
                 } else if (s_irTest.step >= 1 && s_irTest.step <= 4) {

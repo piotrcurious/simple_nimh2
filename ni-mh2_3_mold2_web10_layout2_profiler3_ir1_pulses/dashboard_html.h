@@ -1256,10 +1256,14 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       const sV = autoScale(arrV);
       const sD = autoScale(arrD);
 
+      // Filter out non-finite or null/undefined values from arrTD and arrTH
+      const validTDs = arrTD.filter(v => v != null && Number.isFinite(v));
+      const validTHs = arrTH.filter(v => v != null && Number.isFinite(v));
+
       // Th auto-scaled: minimum is dT minimum, maximum is Th maximum + 1C headroom
-      const minDT = Math.min(...arrTD);
-      const maxTH = Math.max(...arrTH);
-      const sTH = [Number.isFinite(minDT) ? minDT : 0, (Number.isFinite(maxTH) ? maxTH : 0) + 1.0];
+      const minDT = validTDs.length ? Math.min(...validTDs) : 0;
+      const maxTH = validTHs.length ? Math.max(...validTHs) : 1;
+      const sTH = [minDT, maxTH + 1.0];
 
       // Tie dT scale directly to Th scale
       const sTD = [sTH[0], sTH[1]];
