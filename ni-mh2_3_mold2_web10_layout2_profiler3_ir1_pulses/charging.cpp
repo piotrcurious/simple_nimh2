@@ -548,7 +548,7 @@ bool chargeBattery() {
                 t1_deriv = 0.0;
                 t2_deriv = 0.0;
                 ChargeLogData s; s.timestamp = (uint32_t)now; s.current = c; s.voltage = v; s.ambientTemperature = (float)t1; s.batteryTemperature = (float)t2;
-                s.dutyCycle = 0; s.internalResistanceLoadedUnloaded = s_irTest.calculatedIR; s.internalResistancePairs = s_irTest.calculatedIR;
+                s.dutyCycle = 0; s.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept; s.internalResistancePairs = regressedInternalResistancePairsIntercept;
                 logChargeData(s); pushRecentChargeLog(s);
             }
             chargingState = CHARGE_PULSE_IR_TEST;
@@ -677,14 +677,14 @@ bool chargeBattery() {
                     if (stepElapsed >= 1000) {
                         float measuredIR = 0.15f;
                         if (cur > 0.005f) {
-                            measuredIR = (s_reMeasure.unloadedVoltage - v) / cur;
+                            measuredIR = std::fabs(v - s_reMeasure.unloadedVoltage) / cur;
                         }
                         if (measuredIR < MIN_VALID_RESISTANCE || measuredIR > 5.0f) {
                             measuredIR = s_irTest.calculatedIR; // Fallback to sweep test if out of bounds
                         }
 
                         WEB_LOCK();
-                        storeOrAverageResistanceData(cur, std::fabs(measuredIR),
+                        storeOrAverageResistanceData(cur, measuredIR,
                                                      pt.isPair ? internalResistanceDataPairs : internalResistanceData,
                                                      pt.isPair ? resistanceDataCountPairs : resistanceDataCount);
                         WEB_UNLOCK();
@@ -763,11 +763,11 @@ bool chargeBattery() {
                 // Predict temp change using recovered true ambient temperature (t1_true)
                 float unapplied = 0.0f;
                 // Run the standard non-linear estimateTempDiff model using predictedTempTrack
-                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, s_irTest.calculatedIR, t1_true, now, now - CHARGING_HOUSEKEEP_INTERVAL, predictedTempTrack, &unapplied);
+                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, regressedInternalResistancePairsIntercept, t1_true, now, now - CHARGING_HOUSEKEEP_INTERVAL, predictedTempTrack, &unapplied);
                 predictedTempTrack = predictedDiff + t1_true;
 
                 // Electrochemical voltage prediction: V_predicted = V_unloaded + I * R_int
-                float predictedV = s_irTest.unloadedVoltage + cur * s_irTest.calculatedIR;
+                float predictedV = s_irTest.unloadedVoltage + cur * regressedInternalResistancePairsIntercept;
                 float overpotential = v - predictedV;
 
                 // Store step response
@@ -780,7 +780,7 @@ bool chargeBattery() {
                 stepResp.predictedTemp = predictedTempTrack;
                 stepResp.predictedVoltage = predictedV;
                 stepResp.overpotential = overpotential;
-                stepResp.ir = s_irTest.calculatedIR;
+                stepResp.ir = regressedInternalResistancePairsIntercept;
                 s_thermalHistory.push_back(stepResp);
 
                 // Prune/cap the history size to prevent SRAM exhaustion (only keep last 60 elements)
@@ -837,7 +837,7 @@ bool chargeBattery() {
                           << ", predictedTemp: " << stepResp.predictedTemp
                           << ", overpotential: " << stepResp.overpotential
                           << ", unloadedVoltage: " << s_irTest.unloadedVoltage
-                          << ", calculatedIR: " << s_irTest.calculatedIR
+                          << ", calculatedIR: " << regressedInternalResistancePairsIntercept
                           << ", cur: " << cur << std::endl;
                 static int dbg_cnt = 0;
                 if (dbg_cnt++ % 10 == 0) {
@@ -855,8 +855,8 @@ bool chargeBattery() {
                     e.ambientTemperature = (float)t1;
                     e.batteryTemperature = (float)t2;
                     e.dutyCycle = (uint8_t)dutyCycle;
-                    e.internalResistanceLoadedUnloaded = s_irTest.calculatedIR;
-                    e.internalResistancePairs = s_irTest.calculatedIR;
+                    e.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
+                    e.internalResistancePairs = regressedInternalResistancePairsIntercept;
                     logChargeData(e);
                     pushRecentChargeLog(e);
                 }
