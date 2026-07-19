@@ -158,15 +158,11 @@ void processAdcDma() {
         while (sample_read_idx != sample_write_idx) {
             const SampleEntry &e = sample_ring[sample_read_idx];
 
-            // Use variance/outlier rejection: reject spikes greater than ~400mV (500 LSB)
-            uint32_t prev_raw = channel_data[e.idx].latest_raw_avg;
-            if (prev_raw == 0 || std::abs((int)e.raw - (int)prev_raw) < 500) {
-                channel_data[e.idx].sum_batch += e.raw;
-                channel_data[e.idx].count_batch++;
+            channel_data[e.idx].sum_batch += e.raw;
+            channel_data[e.idx].count_batch++;
 
-                channel_data[e.idx].sum_total += e.raw;
-                channel_data[e.idx].count_total++;
-            }
+            channel_data[e.idx].sum_total += e.raw;
+            channel_data[e.idx].count_total++;
 
             sample_read_idx = (sample_read_idx + 1) & SAMPLE_RING_MASK;
         }
