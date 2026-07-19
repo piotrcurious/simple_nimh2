@@ -431,6 +431,8 @@ struct RePoint {
     float current;
     int duty;
     bool isPair; // true: from internalResistanceDataPairs, false: from internalResistanceData
+    bool isOutlier = false;
+    int originalIndex = -1;
 };
 
 struct PulseIRRemeasure {
@@ -451,57 +453,131 @@ void selectRandomRePoints() {
 
     float topCurrent = estimateCurrent(MAX_DUTY_CYCLE);
 
-    // 1. Select up to 10 points using Stratified Random Sampling from internalResistanceDataPairs.
-    // This divides the sorted history into 10 equal segments and picks one point randomly from each,
-    // guaranteeing maximum current variation across the operating spectrum!
+    // Track outlier indices to skip them in regular stratified random sampling
     WEB_LOCK();
-    int totalPairs = resistanceDataCountPairs;
+    std::vector<bool> pairIsOutlier(resistanceDataCountPairs, false);
+    std::vector<bool> luIsOutlier(resistanceDataCount, false);
     WEB_UNLOCK();
 
-    if (totalPairs > 0) {
-        int numSegments = std::min(10, totalPairs);
-        float segmentSize = (float)totalPairs / (float)numSegments;
+    // 1. Rich Outlier Detection on Pairs (Corrective)
+    WEB_LOCK();
+    if (resistanceDataCountPairs >= 5) {
+        float mean = 0.0f, std_dev = 0.0f;
+        for (int i = 0; i < resistanceDataCountPairs; ++i) {
+            mean += internalResistanceDataPairs[i][1];
+        }
+        mean /= resistanceDataCountPairs;
+        for (int i = 0; i < resistanceDataCountPairs; ++i) {
+            std_dev += (internalResistanceDataPairs[i][1] - mean) * (internalResistanceDataPairs[i][1] - mean);
+        }
+        std_dev = std::sqrt(std_dev / resistanceDataCountPairs);
+        for (int i = 0; i < resistanceDataCountPairs; ++i) {
+            if (std::fabs(internalResistanceDataPairs[i][1] - mean) > 2.0f * std_dev) {
+                float I = internalResistanceDataPairs[i][0];
+                if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
+                    RePoint p;
+                    p.current = I;
+                    p.duty = estimateDutyCycleForCurrent(I);
+                    p.isPair = true;
+                    p.isOutlier = true;
+                    p.originalIndex = i;
+                    s_reMeasure.points.push_back(p);
+                    pairIsOutlier[i] = true;
+                }
+            }
+        }
+    }
+    WEB_UNLOCK();
+
+    // 2. Rich Outlier Detection on Loaded/Unloaded (Corrective)
+    WEB_LOCK();
+    if (resistanceDataCount >= 5) {
+        float mean = 0.0f, std_dev = 0.0f;
+        for (int i = 0; i < resistanceDataCount; ++i) {
+            mean += internalResistanceData[i][1];
+        }
+        mean /= resistanceDataCount;
+        for (int i = 0; i < resistanceDataCount; ++i) {
+            std_dev += (internalResistanceData[i][1] - mean) * (internalResistanceData[i][1] - mean);
+        }
+        std_dev = std::sqrt(std_dev / resistanceDataCount);
+        for (int i = 0; i < resistanceDataCount; ++i) {
+            if (std::fabs(internalResistanceData[i][1] - mean) > 2.0f * std_dev) {
+                float I = internalResistanceData[i][0];
+                if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
+                    RePoint p;
+                    p.current = I;
+                    p.duty = estimateDutyCycleForCurrent(I);
+                    p.isPair = false;
+                    p.isOutlier = true;
+                    p.originalIndex = i;
+                    s_reMeasure.points.push_back(p);
+                    luIsOutlier[i] = true;
+                }
+            }
+        }
+    }
+    WEB_UNLOCK();
+
+    // 3. Stratified Random Sampling from non-outlier Pairs
+    WEB_LOCK();
+    std::vector<int> validPairIndices;
+    for (int i = 0; i < resistanceDataCountPairs; ++i) {
+        if (!pairIsOutlier[i]) validPairIndices.push_back(i);
+    }
+    int totalPairsValid = validPairIndices.size();
+    WEB_UNLOCK();
+
+    if (totalPairsValid > 0) {
+        int numSegments = std::min(10, totalPairsValid);
+        float segmentSize = (float)totalPairsValid / (float)numSegments;
 
         for (int k = 0; k < numSegments; k++) {
             int startIdx = (int)(k * segmentSize);
             int endIdx = (int)((k + 1) * segmentSize);
-            if (endIdx > totalPairs) endIdx = totalPairs;
+            if (endIdx > totalPairsValid) endIdx = totalPairsValid;
             if (endIdx <= startIdx) endIdx = startIdx + 1;
 
-            int idx = startIdx + rand() % (endIdx - startIdx);
+            int localIdx = startIdx + rand() % (endIdx - startIdx);
             WEB_LOCK();
+            int idx = validPairIndices[localIdx];
             float I = internalResistanceDataPairs[idx][0];
             WEB_UNLOCK();
 
-            // Trim/truncate currents not reachable by re-measurement
             if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
                 RePoint p;
                 p.current = I;
                 p.duty = estimateDutyCycleForCurrent(I);
                 p.isPair = true;
+                p.isOutlier = false;
+                p.originalIndex = -1;
                 s_reMeasure.points.push_back(p);
             }
         }
     }
 
-    // 2. Select up to 4 points using Stratified Random Sampling from internalResistanceData (loaded/unloaded).
-    // Divides the sorted history into 4 equal segments and picks one point randomly from each.
+    // 4. Stratified Random Sampling from non-outlier LU points
     WEB_LOCK();
-    int totalLU = resistanceDataCount;
+    std::vector<int> validLuIndices;
+    for (int i = 0; i < resistanceDataCount; ++i) {
+        if (!luIsOutlier[i]) validLuIndices.push_back(i);
+    }
+    int totalLuValid = validLuIndices.size();
     WEB_UNLOCK();
 
-    if (totalLU > 0) {
-        int numSegments = std::min(4, totalLU);
-        float segmentSize = (float)totalLU / (float)numSegments;
+    if (totalLuValid > 0) {
+        int numSegments = std::min(4, totalLuValid);
+        float segmentSize = (float)totalLuValid / (float)numSegments;
 
         for (int k = 0; k < numSegments; k++) {
             int startIdx = (int)(k * segmentSize);
             int endIdx = (int)((k + 1) * segmentSize);
-            if (endIdx > totalLU) endIdx = totalLU;
+            if (endIdx > totalLuValid) endIdx = totalLuValid;
             if (endIdx <= startIdx) endIdx = startIdx + 1;
 
-            int idx = startIdx + rand() % (endIdx - startIdx);
+            int localIdx = startIdx + rand() % (endIdx - startIdx);
             WEB_LOCK();
+            int idx = validLuIndices[localIdx];
             float I = internalResistanceData[idx][0];
             WEB_UNLOCK();
 
@@ -510,8 +586,25 @@ void selectRandomRePoints() {
                 p.current = I;
                 p.duty = estimateDutyCycleForCurrent(I);
                 p.isPair = false;
+                p.isOutlier = false;
+                p.originalIndex = -1;
                 s_reMeasure.points.push_back(p);
             }
+        }
+    }
+
+    // 5. Exploratory Measurements (optimal target currents around maximumCurrent)
+    float exploratoryCurrents[2] = { maximumCurrent - 0.1f, maximumCurrent + 0.1f };
+    for (int k = 0; k < 2; k++) {
+        float I = exploratoryCurrents[k];
+        if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
+            RePoint p;
+            p.current = I;
+            p.duty = estimateDutyCycleForCurrent(I);
+            p.isPair = (k == 0); // Alternate for balance
+            p.isOutlier = false;
+            p.originalIndex = -1;
+            s_reMeasure.points.push_back(p);
         }
     }
 
@@ -684,14 +777,37 @@ bool chargeBattery() {
                             measuredIR = s_irTest.calculatedIR; // Fallback to sweep test if out of bounds
                         }
 
+                        // For corrective outlier measurement: delete the old outlier point before inserting the new one!
+                        if (pt.isOutlier && pt.originalIndex >= 0) {
+                            WEB_LOCK();
+                            if (pt.isPair) {
+                                if (pt.originalIndex < resistanceDataCountPairs) {
+                                    for (int i = pt.originalIndex; i < resistanceDataCountPairs - 1; ++i) {
+                                        internalResistanceDataPairs[i][0] = internalResistanceDataPairs[i + 1][0];
+                                        internalResistanceDataPairs[i][1] = internalResistanceDataPairs[i + 1][1];
+                                    }
+                                    resistanceDataCountPairs--;
+                                }
+                            } else {
+                                if (pt.originalIndex < resistanceDataCount) {
+                                    for (int i = pt.originalIndex; i < resistanceDataCount - 1; ++i) {
+                                        internalResistanceData[i][0] = internalResistanceData[i + 1][0];
+                                        internalResistanceData[i][1] = internalResistanceData[i + 1][1];
+                                    }
+                                    resistanceDataCount--;
+                                }
+                            }
+                            WEB_UNLOCK();
+                        }
+
                         WEB_LOCK();
                         storeOrAverageResistanceData(cur, std::fabs(measuredIR),
                                                      pt.isPair ? internalResistanceDataPairs : internalResistanceData,
                                                      pt.isPair ? resistanceDataCountPairs : resistanceDataCount);
                         WEB_UNLOCK();
 
-                        Serial.printf("  Re-measured point %d/%d (%s): I=%.3fA, V_unloaded=%.3fV, V_loaded=%.3fV -> IR=%.4f Ohms\n",
-                                      s_reMeasure.index + 1, (int)s_reMeasure.points.size(), pt.isPair ? "PAIR" : "L/UL",
+                        Serial.printf("  Re-measured point %d/%d (%s, Outlier=%s): I=%.3fA, V_unloaded=%.3fV, V_loaded=%.3fV -> IR=%.4f Ohms\n",
+                                      s_reMeasure.index + 1, (int)s_reMeasure.points.size(), pt.isPair ? "PAIR" : "L/UL", pt.isOutlier ? "YES" : "NO",
                                       cur, s_reMeasure.unloadedVoltage, v, measuredIR);
 
                         s_reMeasure.index++;
@@ -700,13 +816,15 @@ bool chargeBattery() {
                         applyDuty(0);
 
                         if (s_reMeasure.index >= (int)s_reMeasure.points.size()) {
-                            // Finished all re-measurements. Re-perform regressions to fit internal resistance slope and intercept!
+                            // Finished all re-measurements. Apply distribute_error and perform linear regressions!
                             WEB_LOCK();
+                            distribute_error(internalResistanceData, resistanceDataCount, 0.05f, 1.05f);
+                            distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, 0.05f, 1.05f);
                             if (resistanceDataCount >= 2) performLinearRegression(internalResistanceData, resistanceDataCount, regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
                             if (resistanceDataCountPairs >= 2) performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
                             WEB_UNLOCK();
 
-                            Serial.println("Pulse IR Re-measurement Complete. Fitted new linear regression lines.");
+                            Serial.println("Pulse IR Re-measurement Complete. Fitted new linear regression lines with distribute_error.");
 
                             chargingState = CHARGE_PULSE_ACTIVE;
                             pulseCycleStartTime = now;
