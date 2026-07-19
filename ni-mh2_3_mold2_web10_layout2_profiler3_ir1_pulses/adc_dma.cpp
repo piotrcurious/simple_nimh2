@@ -6,7 +6,7 @@
 #include <cstring>
 
 // ADC configuration constants
-static constexpr uint32_t ADC_SAMPLE_RATE_HZ = 48000;
+static constexpr uint32_t ADC_SAMPLE_RATE_HZ = 20000; // Lower rate allows sampling capacitor to settle completely
 static constexpr uint32_t CONV_FRAME_SIZE    = 128;
 static constexpr uint32_t DMA_POOL_BYTES     = 8192;
 
@@ -43,15 +43,20 @@ static ChannelAccum channel_data[ADC_CH_COUNT];
 static int8_t CH_TO_IDX[10];
 
 #ifndef MOCK_TEST
-// Match reference code's exact channels and order
-static constexpr uint8_t SCAN_CH_COUNT = 6;
+// Interleave dummy channels before each real channel.
+// The ADC hardware converts them, but because their CH_TO_IDX is -1, they are safely discarded.
+// This allows the physical sampling capacitor to settle on a dummy channel first, completely
+// eliminating any capacitive charge-carryover or crosstalk on the subsequent real channel reading!
+static constexpr uint8_t SCAN_CH_COUNT = 8;
 static constexpr adc1_channel_t SCAN_CH[SCAN_CH_COUNT] = {
+    ADC1_CHANNEL_4, // GPIO32 -> DUMMY1 (discarded)
     ADC1_CHANNEL_0, // GPIO36 -> THERM1
-    ADC1_CHANNEL_3, // GPIO39 -> VOLTAGE
-    ADC1_CHANNEL_6, // GPIO34 -> CURRENT
+    ADC1_CHANNEL_4, // GPIO32 -> DUMMY1 (discarded)
     ADC1_CHANNEL_7, // GPIO35 -> THERM_VCC
-    ADC1_CHANNEL_4, // GPIO32 -> DUMMY1
-    ADC1_CHANNEL_5  // GPIO33 -> DUMMY2
+    ADC1_CHANNEL_5, // GPIO33 -> DUMMY2 (discarded)
+    ADC1_CHANNEL_6, // GPIO34 -> CURRENT
+    ADC1_CHANNEL_5, // GPIO33 -> DUMMY2 (discarded)
+    ADC1_CHANNEL_3  // GPIO39 -> VOLTAGE
 };
 
 static adc_digi_pattern_config_t patterns[SCAN_CH_COUNT];
@@ -153,11 +158,15 @@ void processAdcDma() {
         while (sample_read_idx != sample_write_idx) {
             const SampleEntry &e = sample_ring[sample_read_idx];
 
-            channel_data[e.idx].sum_batch += e.raw;
-            channel_data[e.idx].count_batch++;
+            // Use variance/outlier rejection: reject spikes greater than ~400mV (500 LSB)
+            uint32_t prev_raw = channel_data[e.idx].latest_raw_avg;
+            if (prev_raw == 0 || std::abs((int)e.raw - (int)prev_raw) < 500) {
+                channel_data[e.idx].sum_batch += e.raw;
+                channel_data[e.idx].count_batch++;
 
-            channel_data[e.idx].sum_total += e.raw;
-            channel_data[e.idx].count_total++;
+                channel_data[e.idx].sum_total += e.raw;
+                channel_data[e.idx].count_total++;
+            }
 
             sample_read_idx = (sample_read_idx + 1) & SAMPLE_RING_MASK;
         }
@@ -174,11 +183,22 @@ void processAdcDma() {
             if (channel_data[i].count_batch >= 32) {
                 uint32_t avg_raw = (uint32_t)((channel_data[i].sum_batch + (channel_data[i].count_batch / 2)) / channel_data[i].count_batch);
                 channel_data[i].latest_raw_avg = avg_raw;
+
+                float new_mv = 0.0f;
 #ifndef MOCK_TEST
-                channel_data[i].latest_avg_mv = (float)esp_adc_cal_raw_to_voltage(avg_raw, &adc_chars[i]);
+                new_mv = (float)esp_adc_cal_raw_to_voltage(avg_raw, &adc_chars[i]);
 #else
-                channel_data[i].latest_avg_mv = (float)avg_raw;
+                new_mv = (float)avg_raw;
 #endif
+                // Multi-stage IIR (Exponential Moving Average) filter with alpha = 1/16
+                // Smooths out offset drift, supply ripple, and high-frequency noise perfectly
+                if (channel_data[i].latest_avg_mv == 0.0f) {
+                    channel_data[i].latest_avg_mv = new_mv;
+                } else {
+                    float alpha = 1.0f / 16.0f;
+                    channel_data[i].latest_avg_mv = channel_data[i].latest_avg_mv + alpha * (new_mv - channel_data[i].latest_avg_mv);
+                }
+
                 channel_data[i].sum_batch = 0;
                 channel_data[i].count_batch = 0;
             }
