@@ -443,12 +443,24 @@ void buildCurrentModelStep() {
                         tempStart = 0.0;
                         characPhase = 0;
                         buildModelLastStepTime = now;
-                        buildModelPhase = BuildModelPhase::SetDuty;
-                        std::cout << "  Phase ThermalCharacterize -> SetDuty at " << now
+                        buildModelPhase = BuildModelPhase::ThermalCooldown;
+                        std::cout << "  Phase ThermalCharacterize -> ThermalCooldown at " << now
                                   << " (TauThermal: " << estimatedTauThermal
                                   << ", TauThermistor: " << estimatedTauTherm
                                   << ", TauSHT4x: " << estimatedTauSHT << ")" << std::endl;
                     }
+                }
+            }
+            break;
+        case BuildModelPhase::ThermalCooldown:
+            {
+                applyDuty(0);
+                unsigned long elapsed = now - buildModelLastStepTime;
+                // Wait for battery to cool down or 2-second timeout in simulator
+                if (elapsed >= 2000) {
+                    std::cout << "  Phase ThermalCooldown -> SetDuty at " << now << std::endl;
+                    buildModelLastStepTime = now;
+                    buildModelPhase = BuildModelPhase::SetDuty;
                 }
             }
             break;

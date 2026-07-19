@@ -597,9 +597,23 @@ void buildCurrentModelStep() {
                             characIteration = 0;
                             characPhase = 0;
                             buildModelLastStepTime = now;
-                            setBuildModelPhase(BuildModelPhase::SetDuty);
+                            setBuildModelPhase(BuildModelPhase::ThermalCooldown);
                         }
                     }
+                }
+            }
+            break;
+        case BuildModelPhase::ThermalCooldown:
+            {
+                applyDuty(0);
+                double t1, t2, td; float tmv, v, c;
+                getThermistorReadings(t1, t2, td, tmv, v, c);
+                unsigned long elapsed = now - buildModelLastStepTime;
+                // Wait for battery to cool down close to ambient (<= 0.2 C diff) or timeout after 60 seconds
+                if (td <= 0.2 || elapsed >= 60000) {
+                    Serial.printf("Thermal Cooldown Complete: td = %.2f C, elapsed: %lu ms. Proceeding to SetDuty.\n", td, elapsed);
+                    buildModelLastStepTime = now;
+                    setBuildModelPhase(BuildModelPhase::SetDuty);
                 }
             }
             break;
