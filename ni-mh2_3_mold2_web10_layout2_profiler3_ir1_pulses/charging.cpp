@@ -718,6 +718,19 @@ bool chargeBattery() {
                 double t1, t2, td; float tmv, v, cur; getThermistorReadings(t1, t2, td, tmv, v, cur);
                 unsigned long elapsedMs = now - pulseCycleStartTime;
 
+                // Dynamic Constant-Current Closed-Loop Regulator:
+                // Adjust duty cycle dynamically to compensate for changing IR and electrochemical state,
+                // clamping the current precisely to maximumCurrent.
+                if (cur > maximumCurrent + 0.003f) {
+                    if (dutyCycle > MIN_CHARGE_DUTY_CYCLE) {
+                        applyDuty(dutyCycle - 1);
+                    }
+                } else if (cur < maximumCurrent - 0.003f) {
+                    if (dutyCycle < MAX_CHARGE_DUTY_CYCLE) {
+                        applyDuty(dutyCycle + 1);
+                    }
+                }
+
                 if (prev_t1 < 0) {
                     prev_t1 = t1;
                     prev_t2 = t2;
