@@ -640,18 +640,21 @@ void handleWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, 
         sendCborAmbient(client);
     } else if (type == WS_EVT_DISCONNECT) {
         //Serial.printf("WS Client disconnected [%u]\n", client->id());
-        // This pointer cast reveals why the library closed the socket
-        uint16_t reason = (arg != NULL) ? *((uint16_t*)(arg)) : 0;
+        // Use memcpy to safely retrieve the 2-byte reason code and avoid alignment/crash issues
+        uint16_t reason = 0;
+        if (arg != nullptr) {
+            memcpy(&reason, arg, sizeof(reason));
+        }
         Serial.printf("WS Disconnect [%u] Reason: %u\n", client->id(), reason);
     } else if (type == WS_EVT_DATA) {
         AwsFrameInfo *info = (AwsFrameInfo*)arg;
         if (info->final && info->index == 0 && info->len == len) {
             if (info->opcode == WS_TEXT) {
-                char* buf = (char*)malloc(len + 1);
-                memcpy(buf, data, len);
-                buf[len] = 0;
-                String cmd = buf;
-                free(buf);
+                // Use std::string to safely extract the command buffer.
+                // This eliminates manual malloc/free, prevents potential heap exhaustion crashes,
+                // and avoids memory leak vulnerabilities.
+                std::string s((const char*)data, len);
+                String cmd = s;
                 Serial.printf("WS Command received: %s\n", cmd.c_str());
                 processCommand(cmd, client);
             }

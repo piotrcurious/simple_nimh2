@@ -151,13 +151,21 @@ double SystemDataManager::calculateBatteryTemp(double ambientTemp, float therm1M
     double averageAnalogValue = (double)therm1Mv - _therm1Offset;
     double vcc_millivolts = (double)vccMv;
 
-    double vRatio = averageAnalogValue / ((vcc_millivolts * MAIN_VCC_RATIO) - averageAnalogValue);
-    if (vRatio <= 0) return ambientTemp; // Avoid log of non-positive
+    // Math Safety Guards: Avoid division by zero when denominator approaches zero
+    double denominator = (vcc_millivolts * MAIN_VCC_RATIO) - averageAnalogValue;
+    if (std::abs(denominator) < 1e-6) return ambientTemp;
+
+    double vRatio = averageAnalogValue / denominator;
+    if (vRatio <= 0) return ambientTemp; // Avoid log of non-positive or zero
 
     double logVRatio = log(vRatio);
     double ambientKelvin = ambientTemp + 273.15;
 
     double invBattKelvin = (1.0 / ambientKelvin) + (logVRatio / BCOEFFICIENT);
+
+    // Math Safety Guards: Avoid division by zero in reciprocal Kelvin calculation
+    if (std::abs(invBattKelvin) < 1e-12) return ambientTemp;
+
     double battKelvin = 1.0 / invBattKelvin;
     return battKelvin - 273.15;
 }
