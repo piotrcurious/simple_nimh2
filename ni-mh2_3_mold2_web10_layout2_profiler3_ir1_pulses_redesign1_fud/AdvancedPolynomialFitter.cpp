@@ -13,6 +13,10 @@ std::vector<float> AdvancedPolynomialFitter::fitPolynomial(const std::vector<flo
             for (size_t k = 0; k < m; ++k) ATA[j][k] += xi_powers[j] * xi_powers[k];
         }
     }
+    // Tikhonov (Ridge) regularization to ensure positive-definiteness and invertibility of ATA
+    for (size_t j = 0; j < m; ++j) {
+        ATA[j][j] += 1e-6;
+    }
     std::vector<double> coeffs = solveLinearSystem(ATA, ATy);
     return std::vector<float>(coeffs.begin(), coeffs.end());
 }
@@ -50,17 +54,23 @@ std::vector<float> AdvancedPolynomialFitter::fitPolynomialLebesgue(const std::ve
             for (size_t k = 0; k < m; ++k) ATA[j][k] += weight * xi_powers[j] * xi_powers[k];
         }
     }
+    // Tikhonov (Ridge) regularization to ensure positive-definiteness and invertibility of ATA
+    for (size_t j = 0; j < m; ++j) {
+        ATA[j][j] += 1e-6;
+    }
     std::vector<double> coeffs = solveLinearSystem(ATA, ATy);
     return std::vector<float>(coeffs.begin(), coeffs.end());
 }
 
 std::vector<double> AdvancedPolynomialFitter::solveLinearSystem(std::vector<std::vector<double>>& A, std::vector<double>& b) {
     size_t n = A.size();
+    // Safety Thresholds: Use a safe, stable pivot threshold for single/double precision matrix math
+    const double PIVOT_EPSILON = 1e-12;
     for (size_t k = 0; k < n; ++k) {
         size_t max_row = k;
         for (size_t i = k + 1; i < n; ++i) if (std::abs(A[i][k]) > std::abs(A[max_row][k])) max_row = i;
         std::swap(A[k], A[max_row]); std::swap(b[k], b[max_row]);
-        if (std::abs(A[k][k]) < 1e-18) continue;
+        if (std::abs(A[k][k]) < PIVOT_EPSILON) continue;
         for (size_t i = k + 1; i < n; ++i) {
             double factor = A[i][k] / A[k][k];
             for (size_t j = k; j < n; ++j) A[i][j] -= factor * A[k][j];
@@ -71,7 +81,7 @@ std::vector<double> AdvancedPolynomialFitter::solveLinearSystem(std::vector<std:
     for (int i = n - 1; i >= 0; --i) {
         double sum = 0;
         for (size_t j = i + 1; j < n; ++j) sum += A[i][j] * x[j];
-        if (std::abs(A[i][i]) > 1e-18) x[i] = (b[i] - sum) / A[i][i];
+        if (std::abs(A[i][i]) > PIVOT_EPSILON) x[i] = (b[i] - sum) / A[i][i];
     }
     return x;
 }

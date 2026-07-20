@@ -389,6 +389,10 @@ float estimateTempDiff(float vL, float vN, float cur, float Rp, float ambC, uint
   uint32_t dt_ms = now - last;
   float dt_s = (float)dt_ms * 0.001f;
   if (dt_s <= 0.0f) return bC - ambC;
+
+  // Numerical Stability Clamping: Guard against extremely tiny positive dt_s causing division blow-ups
+  if (dt_s < 1e-4f) dt_s = 1e-4f;
+
   float P = computeDissipatedPower(vL, vN, cur, Rp);
   float G = thermalConductance_W_per_K(area, convH, emiss, ambC + 273.15f);
   float Cth = mass * spec;
@@ -409,6 +413,10 @@ float estimateTempDiff(float vL, float vN, float cur, float Rp, float ambC, uint
   if (tau < 5.0f || !std::isfinite(tau)) {
       tau = Cth / G; // Fallback to theoretical if not characterized
   }
+
+  // Numerical Stability Clamping: Guard against extremely large or near-infinite tau causing exponential division issues
+  if (tau > 10000.0f) tau = 10000.0f;
+
   return theta_ss + (theta0 - theta_ss) * expf(-dt_s / tau);
 }
 
