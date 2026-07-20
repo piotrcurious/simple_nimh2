@@ -1157,12 +1157,16 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       else if (data.lu !== undefined) {
         renderIR(data);
       }
+
       else if (data.batch !== undefined) {
-        // Chargelog batch
-        if (chargeLogBuffer.length >= data.total) chargeLogBuffer = [];
-        chargeLogBuffer.push(...data.batch);
-        renderCharge(chargeLogBuffer);
+      // Chargelog batch: clear buffer on first packet of new stream
+        if (data.offset === 0) {
+         chargeLogBuffer = [];
+        }
+      chargeLogBuffer.push(...data.batch);
+      renderCharge(chargeLogBuffer);
       }
+      
     }
 
     function loopData() {
