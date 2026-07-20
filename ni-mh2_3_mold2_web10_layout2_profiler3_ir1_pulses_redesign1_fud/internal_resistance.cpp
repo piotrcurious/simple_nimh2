@@ -314,14 +314,14 @@ void completeResistanceMeasurement() {
     bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
 
     auto compute_spacing_threshold = [](float data[][2], int n) -> float {
-        if (n < 2) return 0.05f;
+        if (n < 2) return DISTRIBUTE_ERROR_DEFAULT_SPACING;
         float minX = data[0][0], maxX = data[n-1][0];
         float avgSpacing = (maxX - minX) / std::max(1, n-1);
-        return std::max(0.02f, avgSpacing * 1.5f);
+        return std::max(DISTRIBUTE_ERROR_MIN_SPACING, avgSpacing * DISTRIBUTE_ERROR_SPACING_MULTIPLIER);
     };
 
-    distribute_error(internalResistanceData, resistanceDataCount, compute_spacing_threshold(internalResistanceData, resistanceDataCount), 1.5f);
-    distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, compute_spacing_threshold(internalResistanceDataPairs, resistanceDataCountPairs), 1.5f);
+    distribute_error(internalResistanceData, resistanceDataCount, compute_spacing_threshold(internalResistanceData, resistanceDataCount), DISTRIBUTE_ERROR_SD_MULTIPLIER);
+    distribute_error(internalResistanceDataPairs, resistanceDataCountPairs, compute_spacing_threshold(internalResistanceDataPairs, resistanceDataCountPairs), DISTRIBUTE_ERROR_SD_MULTIPLIER);
 
     if (resistanceDataCount >= 2) {
         performLinearRegression(internalResistanceData, resistanceDataCount, regressedInternalResistanceSlope, regressedInternalResistanceIntercept);
@@ -434,19 +434,19 @@ float computeMedian(std::vector<float>& v) {
 }
 
 void distribute_error(float data[][2], int count, float spacing_threshold, float error_threshold_multiplier) {
-    if (count < 4) return;
+    if (count < DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE) return;
     static std::vector<float> res;
     res.reserve(MAX_RESISTANCE_POINTS);
-    for (int i = 0; i <= count - 4; ++i) {
-        for (int j = i + 3; j < count; ++j) {
+    for (int i = 0; i <= count - DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE; ++i) {
+        for (int j = i + (DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE - 1); j < count; ++j) {
             if (data[j][0] - data[i][0] <= spacing_threshold) {
                 res.clear();
                 for (int k = i; k <= j; ++k) res.push_back(data[k][1]);
-                if (res.size() >= 4) {
+                if ((int)res.size() >= DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE) {
                     float median = computeMedian(res), sumSq = 0.0f;
                     for (float r : res) { float d = r - median; sumSq += d * d; }
                     float stdDev = std::sqrt(sumSq / res.size()), errorThreshold = error_threshold_multiplier * stdDev;
-                    const float alpha = 0.6f;
+                    const float alpha = DISTRIBUTE_ERROR_SMOOTHING_ALPHA;
                     for (int k = i; k <= j; ++k) {
                         if (std::fabs(data[k][1] - median) > errorThreshold && stdDev > 1e-9f) {
                             data[k][1] = alpha * median + (1.0f - alpha) * data[k][1];

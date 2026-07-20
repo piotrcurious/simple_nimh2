@@ -133,7 +133,6 @@ static inline void putU32LE(uint8_t *buf, size_t &off, uint32_t v) {
 
 
 /*
-static void sendFramePacket(bool timeoutFlag) {
 #ifndef MOCK_TEST
     if (ws.count() == 0) return;
 
@@ -197,6 +196,14 @@ static void sendFramePacket(bool timeoutFlag) {
 
 */
 
+#ifndef MOCK_TEST
+// API Compatibility Helper: Overloaded functions to resolve different return types
+// of ws.getClients() across varying ESPAsyncWebServer library versions (either pointers
+// or object references) to a standard pointer before accessing client methods.
+inline AsyncWebSocketClient* resolve_client(AsyncWebSocketClient* c) { return c; }
+inline AsyncWebSocketClient* resolve_client(AsyncWebSocketClient& c) { return &c; }
+#endif
+
 static void sendFramePacket(bool timeoutFlag) {
 #ifndef MOCK_TEST
     if (ws.count() == 0) return;
@@ -250,15 +257,16 @@ static void sendFramePacket(bool timeoutFlag) {
     }
 
     // 6. Selective Broadcast (The Fix for the Disconnects)
-    for (auto & client : ws.getClients()) {
-        if (client.status() == WS_CONNECTED) {
+    for (auto & c : ws.getClients()) {
+        AsyncWebSocketClient* client = resolve_client(c);
+        if (client->status() == WS_CONNECTED) {
             // Only send if the queue is not backed up.
             // 16 is a safe threshold for a 32-slot queue.
-            if (client.queueLen() < 4) {
-                client.binary(packet, p);
+            if (client->queueLen() < 4) {
+                client->binary(packet, p);
             } else {
                 // Optional:
-                Serial.printf("Skipping frame for client %u (Queue full)\n", client.id());
+                Serial.printf("Skipping frame for client %u (Queue full)\n", client->id());
             }
         }
     }

@@ -452,15 +452,15 @@ void selectRandomRePoints() {
 
     float topCurrent = estimateCurrent(MAX_DUTY_CYCLE);
 
-    // 1. Select up to 10 points using Stratified Random Sampling from internalResistanceDataPairs.
-    // This divides the sorted history into 10 equal segments and picks one point randomly from each,
+    // 1. Select up to STRATIFIED_PAIRS_SEGMENTS points using Stratified Random Sampling from internalResistanceDataPairs.
+    // This divides the sorted history into STRATIFIED_PAIRS_SEGMENTS equal segments and picks one point randomly from each,
     // guaranteeing maximum current variation across the operating spectrum!
     WEB_LOCK();
     int totalPairs = resistanceDataCountPairs;
     WEB_UNLOCK();
 
     if (totalPairs > 0) {
-        int numSegments = std::min(10, totalPairs);
+        int numSegments = std::min(STRATIFIED_PAIRS_SEGMENTS, totalPairs);
         float segmentSize = (float)totalPairs / (float)numSegments;
 
         for (int k = 0; k < numSegments; k++) {
@@ -485,14 +485,14 @@ void selectRandomRePoints() {
         }
     }
 
-    // 2. Select up to 4 points using Stratified Random Sampling from internalResistanceData (loaded/unloaded).
-    // Divides the sorted history into 4 equal segments and picks one point randomly from each.
+    // 2. Select up to STRATIFIED_LU_SEGMENTS points using Stratified Random Sampling from internalResistanceData (loaded/unloaded).
+    // Divides the sorted history into STRATIFIED_LU_SEGMENTS equal segments and picks one point randomly from each.
     WEB_LOCK();
     int totalLU = resistanceDataCount;
     WEB_UNLOCK();
 
     if (totalLU > 0) {
-        int numSegments = std::min(4, totalLU);
+        int numSegments = std::min(STRATIFIED_LU_SEGMENTS, totalLU);
         float segmentSize = (float)totalLU / (float)numSegments;
 
         for (int k = 0; k < numSegments; k++) {
@@ -528,8 +528,8 @@ bool chargeBattery() {
     // Determine the pulse length based on estimated thermal time constant.
     // Let's target a combined pulse length equal to estimatedTauThermal / 2.0 (clamped).
     float pulseLengthS = estimatedTauThermal / 2.0f;
-    if (pulseLengthS < 10.0f) pulseLengthS = 10.0f;
-    if (pulseLengthS > 60.0f) pulseLengthS = 60.0f;
+    if (pulseLengthS < MIN_PULSE_CYCLE_LENGTH_S) pulseLengthS = MIN_PULSE_CYCLE_LENGTH_S;
+    if (pulseLengthS > MAX_PULSE_CYCLE_LENGTH_S) pulseLengthS = MAX_PULSE_CYCLE_LENGTH_S;
     unsigned long pulseLengthMs = (unsigned long)(pulseLengthS * 1000.0f);
 
     switch (chargingState) {
@@ -610,8 +610,8 @@ bool chargeBattery() {
                                 float slope = (5 * sumXY - sumX * sumY) / denom;
                                 s_irTest.calculatedIR = std::fabs(slope);
                             }
-                            if (s_irTest.calculatedIR < MIN_VALID_RESISTANCE || s_irTest.calculatedIR > 10.0f) {
-                                s_irTest.calculatedIR = 0.25f; // Reasonable default
+                            if (s_irTest.calculatedIR < MIN_VALID_RESISTANCE || s_irTest.calculatedIR > STRUCTURED_IR_SWEEP_MAX_LIMIT) {
+                                s_irTest.calculatedIR = STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK; // Reasonable default
                             }
 
                             WEB_LOCK();
@@ -677,7 +677,7 @@ bool chargeBattery() {
 
                 if (s_reMeasure.subStep == 0) {
                     // Unloaded step: wait for stabilization
-                    if (stepElapsed >= 1000) {
+                    if (stepElapsed >= PULSE_IR_REMEASURE_STABILIZATION_MS) {
                         s_reMeasure.unloadedVoltage = v;
                         s_reMeasure.unloadedCurrent = cur;
                         s_reMeasure.subStep = 1;
@@ -686,13 +686,13 @@ bool chargeBattery() {
                     }
                 } else if (s_reMeasure.subStep == 1) {
                     // Loaded step: measure and calculate IR
-                    if (stepElapsed >= 1000) {
+                    if (stepElapsed >= PULSE_IR_REMEASURE_STABILIZATION_MS) {
                         float currentDiff = std::fabs(cur - s_reMeasure.unloadedCurrent);
-                        float measuredIR = 0.15f;
-                        if (currentDiff > 0.005f) {
+                        float measuredIR = REMEASURE_DEFAULT_IR_FALLBACK;
+                        if (currentDiff > REMEASURE_MIN_CURRENT_DIFF) {
                             measuredIR = std::fabs(v - s_reMeasure.unloadedVoltage) / currentDiff;
                         }
-                        if (measuredIR < MIN_VALID_RESISTANCE || measuredIR > 5.0f) {
+                        if (measuredIR < MIN_VALID_RESISTANCE || measuredIR > REMEASURE_MAX_VALID_IR) {
                             measuredIR = s_irTest.calculatedIR; // Fallback to sweep test if out of bounds
                         }
 
@@ -768,11 +768,11 @@ bool chargeBattery() {
                 // Dynamic Constant-Current Closed-Loop Regulator:
                 // Adjust duty cycle dynamically to compensate for changing IR and electrochemical state,
                 // clamping the current precisely to maximumCurrent.
-                if (cur > maximumCurrent + 0.003f) {
+                if (cur > maximumCurrent + DYNAMIC_REGULATOR_CURRENT_MARGIN) {
                     if (dutyCycle > MIN_CHARGE_DUTY_CYCLE) {
                         applyDuty(dutyCycle - 1);
                     }
-                } else if (cur < maximumCurrent - 0.003f) {
+                } else if (cur < maximumCurrent - DYNAMIC_REGULATOR_CURRENT_MARGIN) {
                     if (dutyCycle < MAX_CHARGE_DUTY_CYCLE) {
                         applyDuty(dutyCycle + 1);
                     }
@@ -790,8 +790,8 @@ bool chargeBattery() {
                 // robust derivative with simple smoothing (alpha = 0.5)
                 double raw_t1_deriv = (t1 - prev_t1) / dt_s;
                 double raw_t2_deriv = (t2 - prev_t2) / dt_s;
-                t1_deriv = 0.5 * t1_deriv + 0.5 * raw_t1_deriv;
-                t2_deriv = 0.5 * t2_deriv + 0.5 * raw_t2_deriv;
+                t1_deriv = (1.0 - TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA) * t1_deriv + TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA * raw_t1_deriv;
+                t2_deriv = (1.0 - TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA) * t2_deriv + TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA * raw_t2_deriv;
                 prev_t1 = t1;
                 prev_t2 = t2;
 
