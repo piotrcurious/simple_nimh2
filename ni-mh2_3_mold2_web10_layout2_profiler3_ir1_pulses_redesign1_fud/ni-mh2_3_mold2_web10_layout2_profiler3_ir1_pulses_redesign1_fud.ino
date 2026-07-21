@@ -714,7 +714,7 @@ void task_readSHT4x(void* parameter) {
         uint32_t t0 = (uint32_t)(esp_timer_get_time() - frameRef);
         sht4Sensor.read();
         uint32_t t1 = (uint32_t)(esp_timer_get_time() - frameRef);
-        recordEvent(0, 1, (uint16_t)t0, (uint16_t)(t1 - t0));
+        recordEvent(0, 1, (uint16_t)t0, (uint16_t)(t1 - t0), 0);
 
         vTaskDelay(pdMS_TO_TICKS(TASK_DELAY_SHT4_MS));
     }
@@ -726,7 +726,7 @@ void task_processAdcDma(void* parameter) {
         uint32_t t0 = (uint32_t)(esp_timer_get_time() - frameRef);
         processAdcDma();
         uint32_t t1 = (uint32_t)(esp_timer_get_time() - frameRef);
-        recordEvent(0, 2, (uint16_t)t0, (uint16_t)(t1 - t0));
+        recordEvent(0, 2, (uint16_t)t0, (uint16_t)(t1 - t0), 0);
 
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -750,7 +750,7 @@ void task_updateSystemData(void* parameter) {
         mAh_charged = d.mah_charged;
         WEB_UNLOCK();
         uint32_t t1 = (uint32_t)(esp_timer_get_time() - frameRef);
-        recordEvent(1, 3, (uint16_t)t0, (uint16_t)(t1 - t0));
+        recordEvent(1, 3, (uint16_t)t0, (uint16_t)(t1 - t0), 0);
 
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -766,7 +766,7 @@ void task_webServer(void* parameter) {
         broadcastLiveTelemetry();
 #endif
         uint32_t t1 = (uint32_t)(esp_timer_get_time() - frameRef);
-        recordEvent(1, 4, (uint16_t)t0, (uint16_t)(t1 - t0));
+        recordEvent(1, 4, (uint16_t)t0, (uint16_t)(t1 - t0), 0);
 
         vTaskDelay(pdMS_TO_TICKS(500));
     }
@@ -863,7 +863,7 @@ void loop() {
 
     // Give other tasks time to run
     uint32_t t1 = (uint32_t)(esp_timer_get_time() - frameRef);
-    recordEvent(1, 0, (uint16_t)t0, (uint16_t)(t1 - t0));
+    recordEvent(1, 0, (uint16_t)t0, (uint16_t)(t1 - t0), 0);
 
     vTaskDelay(pdMS_TO_TICKS(10));
 }

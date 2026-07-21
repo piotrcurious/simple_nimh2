@@ -1090,9 +1090,9 @@ void test_profiling_logic() {
     mock_esp_timer_now = 1000000;
 
     // Core 0 event
-    recordEvent(0, 1, 100, 200);
+    recordEvent(0, 1, 100, 200, 0);
     // Core 1 event
-    recordEvent(1, 2, 500, 300);
+    recordEvent(1, 2, 500, 300, 0);
 
     sendFramePacket(false);
 
