@@ -101,21 +101,21 @@ const int MAX_RESISTANCE_POINTS = 100;
 
 // --- Charging and Remeasurement Constants ---
 const unsigned long PULSE_IR_REMEASURE_STABILIZATION_MS = 1000; // Duration of each sub-step during pulse IR re-measurement
-const float REMEASURE_MIN_CURRENT_DIFF = 0.005f;                 // Minimum current delta required to calculate local IR (A)
+const float REMEASURE_MIN_CURRENT_DIFF = 0.008f;                 // Minimum current delta required to calculate local IR (A)
 const float REMEASURE_DEFAULT_IR_FALLBACK = 0.15f;              // Default fallback internal resistance if delta cur is too low (Ohms)
-const float REMEASURE_MAX_VALID_IR = 5.0f;                      // Maximum physically plausible IR before falling back to sweep test (Ohms)
+const float REMEASURE_MAX_VALID_IR = 15.0f;                      // Maximum physically plausible IR before falling back to sweep test (Ohms)
 const float DYNAMIC_REGULATOR_CURRENT_MARGIN = 0.003f;         // Deadband current offset for the dynamic CC closed-loop PWM regulator (A)
-const float MIN_PULSE_CYCLE_LENGTH_S = 10.0f;                  // Minimum clamped duration for the combined charge pulse cycle (s)
-const float MAX_PULSE_CYCLE_LENGTH_S = 60.0f;                  // Maximum clamped duration for the combined charge pulse cycle (s)
+const float MIN_PULSE_CYCLE_LENGTH_S = 20.0f;                  // Minimum clamped duration for the combined charge pulse cycle (s)
+const float MAX_PULSE_CYCLE_LENGTH_S = 80.0f;                  // Maximum clamped duration for the combined charge pulse cycle (s)
 const float STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK = 0.25f;       // Default IR fallback for structured sweep if fit is out of bounds (Ohms)
-const float STRUCTURED_IR_SWEEP_MAX_LIMIT = 5.0f;               // Maximum plausible IR limit for the structured sweep regression (Ohms)
+const float STRUCTURED_IR_SWEEP_MAX_LIMIT = 15.0f;               // Maximum plausible IR limit for the structured sweep regression (Ohms)
 const int STRATIFIED_PAIRS_SEGMENTS = 10;                        // Number of equal current segments for pairs stratified random sampling
 const int STRATIFIED_LU_SEGMENTS = 4;                            // Number of equal current segments for loaded/unloaded stratified random sampling
 const double TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA = 0.5;      // Exponential moving average smoothing factor for raw temperature derivative
 
 // --- Outlier and Error Distribution Constants ---
 const float DISTRIBUTE_ERROR_DEFAULT_SPACING = 0.05f;           // Default spacing threshold if data count is low (A)
-const float DISTRIBUTE_ERROR_MIN_SPACING = 0.02f;               // Minimum allowed spacing threshold (A)
+const float DISTRIBUTE_ERROR_MIN_SPACING = 0.04f;               // Minimum allowed spacing threshold (A)
 const float DISTRIBUTE_ERROR_SPACING_MULTIPLIER = 1.5f;         // Multiplier for average spacing to compute spacing threshold
 const float DISTRIBUTE_ERROR_SD_MULTIPLIER = 1.5f;              // Number of standard deviations above median to classify an IR point as an outlier
 const float DISTRIBUTE_ERROR_SMOOTHING_ALPHA = 0.6f;            // Blending factor (alpha) to pull outlier points toward the local median
