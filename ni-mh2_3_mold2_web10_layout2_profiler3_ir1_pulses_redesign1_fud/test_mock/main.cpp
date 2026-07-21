@@ -850,8 +850,7 @@ void test_sensor_lag_compensation() {
     }
 
     // After 20 steps (5 seconds), the recovered ambient temp in the history should lead the lagging sensor towards 20C
-    assert(!s_thermalHistory.empty());
-    float final_recovered_ambient = s_thermalHistory.back().ambientTemp;
+    float final_recovered_ambient = recoveredAmbientTemp;
     float lagging_measured_sensor = (float)systemData._currentData.ambient_temp_c;
 
     std::cout << "  Physical True Ambient: " << sim.ambient << " C" << std::endl;

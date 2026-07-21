@@ -121,6 +121,11 @@ const float DISTRIBUTE_ERROR_SD_MULTIPLIER = 1.5f;              // Number of sta
 const float DISTRIBUTE_ERROR_SMOOTHING_ALPHA = 0.6f;            // Blending factor (alpha) to pull outlier points toward the local median
 const int DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE = 4;           // Minimum number of points in neighborhood for outlier detection/standard deviation
 
+// --- Outgassing and Derivative Safeguard Constants ---
+const unsigned long THERMAL_HISTORY_LOG_INTERVAL_MS = 5000;      // Log interval for short-term thermal history vector (ms)
+const uint8_t OUTGASSING_TRIP_THRESHOLD = 3;                     // Number of consecutive positive outgassing ticks to trigger end-of-charge
+const float MAX_TEMPERATURE_DERIVATIVE_C_PER_S = 0.5f;           // Max physically plausible rate-of-change of temperature to filter transition spikes (C/s)
+
 // Plotting parameters (now used for memory buffers only)
 #define PLOT_WIDTH          120
 
@@ -288,6 +293,8 @@ struct AsyncMeasure {
 // --- Extern Global Variables ---
 extern SHT4xSensor sht4Sensor;
 extern SystemDataManager systemData;
+extern float recoveredAmbientTemp;
+extern float recoveredBatteryTemp;
 extern CurrentModel currentModel;
 extern AsyncMeasure meas;
 extern FindOptManager findOpt;

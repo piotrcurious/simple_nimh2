@@ -654,7 +654,7 @@ void handleWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, 
                 // This eliminates manual malloc/free, prevents potential heap exhaustion crashes,
                 // and avoids memory leak vulnerabilities.
                 std::string s((const char*)data, len);
-                String cmd = s;
+                String cmd = s.c_str();
                 Serial.printf("WS Command received: %s\n", cmd.c_str());
                 processCommand(cmd, client);
             }

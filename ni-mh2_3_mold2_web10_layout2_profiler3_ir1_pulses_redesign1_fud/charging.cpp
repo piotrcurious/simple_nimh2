@@ -13,6 +13,8 @@ float maximumCurrent = 0.150;
 float currentRampTarget = 0.0f;
 
 // Global thermal tracking and derivative variables
+float recoveredAmbientTemp = 25.0f;
+float recoveredBatteryTemp = 25.0f;
 double prev_t1 = -1.0;
 double prev_t2 = -1.0;
 double t1_deriv = 0.0;
@@ -798,6 +800,13 @@ bool chargeBattery() {
                 // robust derivative with simple smoothing (alpha = 0.5)
                 double raw_t1_deriv = (t1 - prev_t1) / dt_s;
                 double raw_t2_deriv = (t2 - prev_t2) / dt_s;
+
+                // Physical Derivative Clamping: Guard against derivative spikes from transitions or sensor anomalies
+                if (raw_t1_deriv > MAX_TEMPERATURE_DERIVATIVE_C_PER_S) raw_t1_deriv = MAX_TEMPERATURE_DERIVATIVE_C_PER_S;
+                if (raw_t1_deriv < -MAX_TEMPERATURE_DERIVATIVE_C_PER_S) raw_t1_deriv = -MAX_TEMPERATURE_DERIVATIVE_C_PER_S;
+                if (raw_t2_deriv > MAX_TEMPERATURE_DERIVATIVE_C_PER_S) raw_t2_deriv = MAX_TEMPERATURE_DERIVATIVE_C_PER_S;
+                if (raw_t2_deriv < -MAX_TEMPERATURE_DERIVATIVE_C_PER_S) raw_t2_deriv = -MAX_TEMPERATURE_DERIVATIVE_C_PER_S;
+
                 t1_deriv = (1.0 - TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA) * t1_deriv + TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA * raw_t1_deriv;
                 t2_deriv = (1.0 - TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA) * t2_deriv + TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA * raw_t2_deriv;
                 prev_t1 = t1;
@@ -807,6 +816,10 @@ bool chargeBattery() {
                 float t1_true = (float)(t1 + estimatedTauSHT * t1_deriv);
                 float t2_true = (float)(t2 + estimatedTauTherm * t2_deriv);
                 float td_true = t2_true - t1_true;
+
+                // Update real-time global recovered physical values
+                recoveredAmbientTemp = t1_true;
+                recoveredBatteryTemp = t2_true;
 
                 // Complex thermal loss model evaluates loss at each time step (approx 1 step / CHARGING_HOUSEKEEP_INTERVAL)
                 // Predict temp change using recovered true ambient temperature (t1_true)
@@ -819,22 +832,29 @@ bool chargeBattery() {
                 float predictedV = s_irTest.unloadedVoltage + cur * regressedInternalResistancePairsIntercept;
                 float overpotential = v - predictedV;
 
-                // Store step response
-                ThermalStepResponse stepResp;
-                stepResp.timestamp = (uint32_t)now;
-                stepResp.current = cur;
-                stepResp.voltage = v;
-                stepResp.ambientTemp = t1_true;
-                stepResp.actualTemp = t2_true;
-                stepResp.predictedTemp = predictedTempTrack;
-                stepResp.predictedVoltage = predictedV;
-                stepResp.overpotential = overpotential;
-                stepResp.ir = regressedInternalResistancePairsIntercept;
-                s_thermalHistory.push_back(stepResp);
+                // Store step response to history buffer at a sparse interval (every 5 seconds)
+                // to cover a full 5 minutes (300 seconds) window with exactly 60 elements.
+                static unsigned long lastThermalHistoryAppendTime = 0;
+                bool appendedHistoryThisTick = false;
+                if (s_thermalHistory.empty() || (now - lastThermalHistoryAppendTime >= THERMAL_HISTORY_LOG_INTERVAL_MS)) {
+                    ThermalStepResponse stepResp;
+                    stepResp.timestamp = (uint32_t)now;
+                    stepResp.current = cur;
+                    stepResp.voltage = v;
+                    stepResp.ambientTemp = t1_true;
+                    stepResp.actualTemp = t2_true;
+                    stepResp.predictedTemp = predictedTempTrack;
+                    stepResp.predictedVoltage = predictedV;
+                    stepResp.overpotential = overpotential;
+                    stepResp.ir = regressedInternalResistancePairsIntercept;
+                    s_thermalHistory.push_back(stepResp);
+                    lastThermalHistoryAppendTime = now;
+                    appendedHistoryThisTick = true;
 
-                // Prune/cap the history size to prevent SRAM exhaustion (only keep last 60 elements)
-                if (s_thermalHistory.size() > 60) {
-                    s_thermalHistory.erase(s_thermalHistory.begin(), s_thermalHistory.end() - 60);
+                    // Prune/cap the history size to prevent SRAM exhaustion (only keep last 60 elements)
+                    if (s_thermalHistory.size() > 60) {
+                        s_thermalHistory.erase(s_thermalHistory.begin(), s_thermalHistory.end() - 60);
+                    }
                 }
 
                 // Detect when cell outgassing changes thermal profile (diverts from theoretical model)
@@ -875,19 +895,29 @@ bool chargeBattery() {
                 float correlation = 0.0f;
                 if (varDivergence > 1e-6f && varOverpotential > 1e-6f) {
                     correlation = covNumerator / std::sqrt(varDivergence * varOverpotential);
+                    // Robustness Guard: Clamp correlation to mathematical [-1.0, 1.0] domain
+                    if (std::isnan(correlation)) {
+                        correlation = 0.0f;
+                    } else if (correlation > 1.0f) {
+                        correlation = 1.0f;
+                    } else if (correlation < -1.0f) {
+                        correlation = -1.0f;
+                    }
                 }
 
                 // If temperature divergence exceeds threshold AND is highly correlated with the rising electrochemical overpotential (correlation > 0.6), flag outgassing.
                 // This acts as a robust confirmation step.
                 bool outgassingDiverged = (avgDivergence > 0.4f) && (correlation > 0.6f);
 #ifdef MOCK_TEST
-                std::cout << "    [DEBUG PUSH] timestamp: " << stepResp.timestamp
-                          << ", actualTemp: " << stepResp.actualTemp
-                          << ", predictedTemp: " << stepResp.predictedTemp
-                          << ", overpotential: " << stepResp.overpotential
-                          << ", unloadedVoltage: " << s_irTest.unloadedVoltage
-                          << ", calculatedIR: " << regressedInternalResistancePairsIntercept
-                          << ", cur: " << cur << std::endl;
+                if (appendedHistoryThisTick) {
+                    std::cout << "    [DEBUG PUSH] timestamp: " << now
+                              << ", actualTemp: " << t2_true
+                              << ", predictedTemp: " << predictedTempTrack
+                              << ", overpotential: " << overpotential
+                              << ", unloadedVoltage: " << s_irTest.unloadedVoltage
+                              << ", calculatedIR: " << regressedInternalResistancePairsIntercept
+                              << ", cur: " << cur << std::endl;
+                }
                 static int dbg_cnt = 0;
                 if (dbg_cnt++ % 10 == 0) {
                     std::cout << "  [CHARGE_PULSE_ACTIVE] avgDivergence: " << avgDivergence << ", correlation: " << correlation << ", overpotential: " << overpotential << std::endl;
@@ -914,14 +944,30 @@ bool chargeBattery() {
                 MAX_DIFF_TEMP = MAX_TEMP_DIFF_THRESHOLD + predictedDiff;
                 WEB_UNLOCK();
 
-                // Safety and End of Charge checks
-                if (td_true > (MAX_DIFF_TEMP + 1.5f) || outgassingDiverged) {
-                    if (++overtemp_trip_counter >= OVERTEMP_TRIP_TRESHOLD || outgassingDiverged) {
+                // Static trip counter for outgassing debounce protection
+                static uint8_t outgassing_trip_counter = 0;
+                if (!outgassingDiverged) {
+                    outgassing_trip_counter = 0;
+                }
+
+                bool outgassingTriggered = false;
+                if (outgassingDiverged) {
+                    if (++outgassing_trip_counter >= OUTGASSING_TRIP_THRESHOLD) {
+                        outgassingTriggered = true;
+                    }
+                }
+
+                // Safety and End of Charge checks: debounce both overtemperature and outgassing triggers
+                if (td_true > (MAX_DIFF_TEMP + 1.5f) || outgassingTriggered) {
+                    if (++overtemp_trip_counter >= OVERTEMP_TRIP_TRESHOLD || outgassingTriggered) {
                         overtemp_trip_counter = 0;
+                        outgassing_trip_counter = 0;
                         chargingState = CHARGE_STOPPED;
                         Serial.printf("End of Charge detected! Outgassing diverged: %s, Avg Divergence: %.3f C\n",
-                                      outgassingDiverged ? "YES" : "NO", avgDivergence);
+                                      outgassingTriggered ? "YES" : "NO", avgDivergence);
                     }
+                } else if (td_true <= (MAX_DIFF_TEMP + 1.5f)) {
+                    overtemp_trip_counter = 0;
                 }
 
                 if (elapsedMs >= pulseLengthMs && chargingState == CHARGE_PULSE_ACTIVE) {
