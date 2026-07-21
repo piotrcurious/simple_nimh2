@@ -36,7 +36,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       color: var(--text);
       font-family: Consolas, "Liberation Mono", Menlo, monospace;
       overflow-x: hidden;
-      padding-bottom: 24px;
     }
 
     body::before {
@@ -57,13 +56,10 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     }
 
     .wrap {
-      width: min(100%, 1400px);
+      width: min(100%, 100vw);
       margin: 0 auto;
-      padding: 8px;
+      padding: 4px;
       box-sizing: border-box;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
     }
 
     /* Profiler styles */
@@ -72,6 +68,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       height: 60px;
       background: #0b0f14;
       border-bottom: 1px solid rgba(255,255,255,0.1);
+      margin-bottom: 4px;
       position: relative;
       overflow: hidden;
     }
@@ -93,11 +90,11 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     .card, .panel, .controls {
       background: var(--panel);
       border: 1px solid rgba(0,255,255,0.14);
-      border-radius: 9px;
+      border-radius: 3px;
       box-shadow:
         0 0 0 1px rgba(0,255,255,0.03) inset,
         0 0 10px rgba(0,255,255,0.07);
-      overflow: hidden;
+      overflow: visible;
       position: relative;
     }
 
@@ -106,74 +103,51 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       position: absolute;
       inset: 0;
       pointer-events: none;
-      border-radius: 9px;
-      box-shadow: inset 0 0 12px rgba(0,255,255,0.035);
+      border-radius: 3px;
+      box-shadow: inset 0 0 3px rgba(0,255,255,0.035);
     }
-
     .topGrid {
-      display: grid;
-      grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.2fr);
-      gap: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1px;
+      align-items: flex-start;
     }
 
     .statusBox {
-      padding: 12px;
+      flex: 0 0 200px;
+    }
+
+    .topGrid > .card:last-child {
+      flex: 1 1 320px;
+    }
+
+    .statusRow {
       display: flex;
-      flex-direction: column;
-      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 2px 4px;
+      align-items: center;
     }
 
-    .statusGrid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px 12px;
+    .statusChip {
+      font-size: 11px;
+      color: #f4ffff;
+      padding: 2px 0;
+      white-space: nowrap;
+      text-shadow: 0 0 6px rgba(0,255,255,0.14);
     }
 
-    .mainStat {
-      grid-column: 1 / -1;
-      border-bottom: 1px solid rgba(0,255,255,0.15);
-      padding-bottom: 8px;
-      margin-bottom: 4px;
-    }
-
-    .statItem {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-    }
-
-    .statLabel {
-      font-size: 9px;
+    .statusChip.muted {
       color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    .statValue {
-      font-size: 16px;
-      font-weight: bold;
-      color: var(--cyan);
-      text-shadow: 0 0 8px rgba(0,255,255,0.25);
-    }
-
-    .mainStat .statValue {
-      font-size: 18px;
-      color: #fff;
-    }
-
-    .statusFootnote {
       font-size: 9px;
-      color: rgba(138, 207, 216, 0.6);
-      margin-top: 12px;
-      text-align: right;
     }
 
     .controls {
       display: flex;
       flex-wrap: wrap;
-      gap: 10px;
-      padding: 10px;
-      justify-content: center;
+      gap: 2px;
+      padding: 2px;
+      margin-top: 2px;
+      margin-bottom: 2px;
     }
 
     button {
@@ -181,76 +155,49 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       border: 1px solid rgba(0,255,255,0.22);
       background: linear-gradient(180deg, rgba(12,24,40,0.94), rgba(3,8,14,0.98));
       color: #b8ffff;
-      border-radius: 6px;
-      padding: 10px 16px;
+      border-radius: 3px;
+      padding: 3px 4px;
       font: inherit;
-      font-size: 11px;
-      font-weight: bold;
-      letter-spacing: 0.06em;
+      font-size: 10px;
+      letter-spacing: 0.03em;
       text-transform: uppercase;
       cursor: pointer;
       box-shadow:
         0 0 0 1px rgba(0,255,255,0.03) inset,
-        0 0 7px rgba(0,255,255,0.06);
-      transition: all 0.2s ease;
-    }
-
-    button:hover {
-      background: linear-gradient(180deg, rgba(20,40,60,0.94), rgba(5,15,25,0.98));
-      box-shadow: 0 0 12px rgba(0,255,255,0.15);
-      border-color: rgba(0,255,255,0.4);
+        0 0 3px rgba(0,255,255,0.06);
     }
 
     button:active {
       background: linear-gradient(180deg, rgba(3,8,14,0.98), rgba(12,24,40,0.94));
-      transform: translateY(1px);
     }
 
-    .gaugesBar {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 6px;
-      padding: 6px;
-      height: 100%;
-      box-sizing: border-box;
+   .gaugesBar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2px;
+      justify-content: flex-start;
     }
 
     .gaugeCard {
-      padding: 6px;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .gaugeLabel {
-      font-size: 9px;
-      color: var(--muted);
-      opacity: 0.9;
-      margin: 0 0 4px 2px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
+      flex: 0 0 60px;
+      width: 60px;
     }
 
     canvas.gauge {
       width: 100%;
-      flex-grow: 1;
-      display: block;
-      border-radius: 7px;
-      background:
-        radial-gradient(circle at 50% 45%, rgba(0,255,255,0.05), transparent 56%),
-        linear-gradient(180deg, rgba(0,0,0,0.18), rgba(0,0,0,0.42)),
-        #02060b;
+      height: 70px;
     }
 
     .grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
+      grid-template-columns: 1fr 1fr;
+      gap: 2px;
       align-items: start;
+      margin-top: 2px;
     }
 
     .panel {
-      padding: 6px;
+      padding: 4px;
       min-height: 0;
     }
 
@@ -259,11 +206,11 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     }
 
     .smallGraph canvas.graph {
-      height: clamp(165px, 20vh, 220px);
+      height: clamp(145px, 18vh, 190px);
     }
 
     .chargePanel canvas.graph {
-      height: clamp(340px, 50vh, 660px);
+      height: clamp(320px, 48vh, 620px);
     }
 
     .panelHead {
@@ -271,19 +218,18 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       justify-content: space-between;
       gap: 5px;
       align-items: baseline;
-      margin: 0 4px 6px 4px;
+      margin: 0 0 3px 0;
     }
 
     .panelTitle {
-      font-size: 10px;
-      font-weight: bold;
+      font-size: 9px;
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: #eaffff;
     }
 
     .panelHint {
-      font-size: 9px;
+      font-size: 8px;
       color: var(--muted);
       opacity: 0.9;
       text-align: right;
@@ -302,32 +248,25 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     }
 
     .legend {
-      margin-top: 6px;
-      font-size: 9px;
-      line-height: 1.4;
+      margin-top: 3px;
+      font-size: 8px;
+      line-height: 1.3;
       color: #9ce9f4;
       white-space: pre-wrap;
       opacity: 0.92;
-      padding: 0 4px;
-    }
-
-    @media (max-width: 1024px) {
-      .grid { grid-template-columns: 1fr 1fr; }
     }
 
     @media (max-width: 900px) {
       .topGrid { grid-template-columns: 1fr; }
       .gaugesBar { grid-template-columns: 1fr 1fr; }
-      canvas.gauge { height: 100px; }
+      .grid { grid-template-columns: 1fr; }
     }
 
     @media (max-width: 640px) {
-      .wrap { padding: 4px; }
+      .wrap { padding: 3px; }
       .gaugesBar { grid-template-columns: 1fr; }
-      .grid { grid-template-columns: 1fr; }
-      .smallGraph canvas.graph { height: 185px; }
-      .chargePanel canvas.graph { height: 320px; }
-      canvas.gauge { height: 120px; }
+      .smallGraph canvas.graph { height: 175px; }
+      .chargePanel canvas.graph { height: 300px; }
     }
   </style>
 </head>
@@ -339,55 +278,41 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
   <div class="wrap">
     <div class="topGrid">
       <div class="card statusBox">
-        <div class="statusGrid">
-          <div class="statItem mainStat">
-            <span class="statLabel">System State</span>
-            <span class="statValue" id="appState">IDLE</span>
-          </div>
-          <div class="statItem">
-            <span class="statLabel">Voltage</span>
-            <span class="statValue" id="vValue">0.000 V</span>
-          </div>
-          <div class="statItem">
-            <span class="statLabel">Current</span>
-            <span class="statValue" id="iValue">0.000 A</span>
-          </div>
-          <div class="statItem" style="grid-column: span 2;">
-            <span class="statLabel">Capacity Transferred</span>
-            <span class="statValue" id="mahValue">0.000 mAh</span>
-          </div>
+        <div class="statusRow">
+          <div class="statusChip" id="appState">IDLE</div>
+          <div class="statusChip" id="vValue">0.000 V</div>
+          <div class="statusChip" id="iValue">0.000 A</div>
+          <div class="statusChip" id="mahValue">0.000 mAh</div>
+          <div class="statusChip muted" id="extraState">CBOR live telemetry</div>
         </div>
-        <div class="statusFootnote" id="extraState">CBOR live telemetry</div>
       </div>
+
+    <div class="controls">
+      <button onclick="sendCommand('charge')">Start</button>
+      <button onclick="sendCommand('ir')">Measure IR</button>
+      <button onclick="sendCommand('reset')">Reset Ah</button>
+      <button onclick="sendCommand('stop')">Stop</button>
+    </div>
 
       <div class="card">
         <div class="gaugesBar">
           <div class="gaugeCard">
-            <div class="gaugeLabel">Voltage</div>
             <canvas class="gauge" id="gaugeV"></canvas>
           </div>
           <div class="gaugeCard">
-            <div class="gaugeLabel">Current</div>
             <canvas class="gauge" id="gaugeI"></canvas>
           </div>
           <div class="gaugeCard">
-            <div class="gaugeLabel">Max dT</div>
             <canvas class="gauge" id="gaugeTD"></canvas>
           </div>
           <div class="gaugeCard">
-            <div class="gaugeLabel">Duty</div>
             <canvas class="gauge" id="gaugeDuty"></canvas>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="controls">
-      <button onclick="sendCommand('charge')">Start Charge</button>
-      <button onclick="sendCommand('ir')">Measure IR</button>
-      <button onclick="sendCommand('reset')">Reset Ah</button>
-      <button onclick="sendCommand('stop')">Stop</button>
-    </div>
+
 
     <div class="grid">
       <div class="panel smallGraph">
@@ -738,6 +663,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       return Math.min(hi, Math.max(lo, v));
     }
 
+    // fmt utility: ensures non-finite is rendered as dash safely
     function fmt(v, digits = 2) {
       return Number.isFinite(v) ? v.toFixed(digits) : '—';
     }
@@ -777,6 +703,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     function clearCanvas(ctx) {
       ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+      ctx.drawnLabels = [];
     }
 
     function drawGlowText(ctx, text, x, y, color, align = 'left', size = 11, weight = 'bold') {
@@ -845,55 +772,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       ctx.restore();
     }
 
-    // LABEL COLLISION RESOLVER
-    function renderLabels(ctx, labelsList, margin, h) {
-      if (!labelsList || !labelsList.length) return;
-
-      // Sort labels top-to-bottom
-      labelsList.sort((a, b) => a.targetY - b.targetY);
-
-      const LABEL_H = 12; // Minimum vertical space per label
-
-      // Pass 1: Push overlapping labels downwards
-      for (let i = 1; i < labelsList.length; i++) {
-        if (labelsList[i].targetY < labelsList[i-1].targetY + LABEL_H) {
-          labelsList[i].targetY = labelsList[i-1].targetY + LABEL_H;
-        }
-      }
-
-      // Pass 2: Push labels back upwards if they overflow the bottom margin
-      const maxBottom = h - margin.bottom - 4;
-      if (labelsList[labelsList.length - 1].targetY > maxBottom) {
-        labelsList[labelsList.length - 1].targetY = maxBottom;
-        for (let i = labelsList.length - 2; i >= 0; i--) {
-          if (labelsList[i].targetY > labelsList[i+1].targetY - LABEL_H) {
-            labelsList[i].targetY = labelsList[i+1].targetY - LABEL_H;
-          }
-        }
-      }
-
-      // Draw Labels and Connection Lines
-      labelsList.forEach(lbl => {
-        ctx.fillStyle = lbl.color;
-        ctx.font = 'bold 10px Consolas, monospace';
-        ctx.textAlign = 'left';
-
-        // Draw a tiny angled connecting line if we shifted the label vertically
-        if (Math.abs(lbl.targetY - lbl.originalY) > 2) {
-          ctx.beginPath();
-          ctx.strokeStyle = lbl.color;
-          ctx.globalAlpha = 0.5;
-          ctx.moveTo(lbl.x, lbl.originalY);
-          ctx.lineTo(lbl.x + 4, lbl.targetY - 3);
-          ctx.stroke();
-          ctx.globalAlpha = 1.0;
-        }
-
-        ctx.fillText(lbl.text, lbl.x + 6, lbl.targetY);
-      });
-    }
-
-    function drawSeries(ctx, arr, color, min, max, margin, label = '', lineWidth = 1, labelsList = null) {
+    function drawSeries(ctx, arr, color, min, max, margin, label = '', lineWidth = 1) {
       if (!arr || !arr.length) return;
 
       const w = ctx.canvas.width;
@@ -938,29 +817,43 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       ctx.stroke();
 
       if (label && Number.isFinite(lastY)) {
-        const yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
-        if (labelsList) {
-          // Push to collection array instead of drawing immediately
-          labelsList.push({
-            text: `${label}:${lastVal.toFixed(2)}`,
-            x: lastX,
-            targetY: yPos,
-            originalY: lastY,
-            color: color
-          });
-        } else {
-          // Fallback if no array passed
-          ctx.fillStyle = color;
-          ctx.font = 'bold 10px Consolas, monospace';
-          ctx.textAlign = 'left';
-          ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
+        ctx.fillStyle = color;
+        ctx.font = 'bold 10px Consolas, monospace';
+        ctx.textAlign = 'left';
+        let yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
+
+        if (!ctx.drawnLabels) {
+          ctx.drawnLabels = [];
         }
+
+        const labelHeight = 11;
+        let overlap = true;
+        let attempts = 0;
+        while (overlap && attempts < 20) {
+          overlap = false;
+          for (const ly of ctx.drawnLabels) {
+            if (Math.abs(yPos - ly) < labelHeight) {
+              if (yPos >= ly) {
+                yPos = ly + labelHeight;
+              } else {
+                yPos = ly - labelHeight;
+              }
+              overlap = true;
+              break;
+            }
+          }
+          yPos = clamp(yPos, margin.top + 10, h - margin.bottom - 2);
+          attempts++;
+        }
+
+        ctx.drawnLabels.push(yPos);
+        ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
       }
 
       ctx.restore();
     }
 
-    function drawXY(ctx, points, color, xMin, xMax, yMin, yMax, margin, label = '', labelsList = null) {
+    function drawXY(ctx, points, color, xMin, xMax, yMin, yMax, margin, label = '') {
       if (!points || !points.length) return;
 
       const w = ctx.canvas.width;
@@ -1008,21 +901,37 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       ctx.stroke();
 
       if (label && Number.isFinite(lastY)) {
-        const yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
-        if (labelsList) {
-          labelsList.push({
-            text: `${label}:${lastVal.toFixed(2)}`,
-            x: lastX,
-            targetY: yPos,
-            originalY: lastY,
-            color: color
-          });
-        } else {
-          ctx.fillStyle = color;
-          ctx.font = 'bold 10px Consolas, monospace';
-          ctx.textAlign = 'left';
-          ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
+        ctx.fillStyle = color;
+        ctx.font = 'bold 10px Consolas, monospace';
+        ctx.textAlign = 'left';
+        let yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
+
+        if (!ctx.drawnLabels) {
+          ctx.drawnLabels = [];
         }
+
+        const labelHeight = 11;
+        let overlap = true;
+        let attempts = 0;
+        while (overlap && attempts < 20) {
+          overlap = false;
+          for (const ly of ctx.drawnLabels) {
+            if (Math.abs(yPos - ly) < labelHeight) {
+              if (yPos >= ly) {
+                yPos = ly + labelHeight;
+              } else {
+                yPos = ly - labelHeight;
+              }
+              overlap = true;
+              break;
+            }
+          }
+          yPos = clamp(yPos, margin.top + 10, h - margin.bottom - 2);
+          attempts++;
+        }
+
+        ctx.drawnLabels.push(yPos);
+        ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
       }
 
       ctx.restore();
@@ -1152,21 +1061,16 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     function renderMain(data) {
       const canvas = document.getElementById('mainGraph');
       const ctx = canvas.getContext('2d');
-      // Increased right margin slightly to ensure label values fit completely
       const margin = { top: 12, right: 55, bottom: 16, left: 30 };
       fitCanvas(canvas);
       clearCanvas(ctx);
 
       drawAxes(ctx, margin, 0, 320, 'Time', 0, 40, 'Value');
-
-      const labels = [];
-      drawSeries(ctx, data.v, '#ffe86a', 1.0, 2.0, margin, 'V', 1, labels);
-      drawSeries(ctx, data.i, '#ff4dff', 0.0, 0.5, margin, 'I', 1, labels);
-      drawSeries(ctx, data.t1, '#ff6c7a', 15, 40, margin, 'T1', 1, labels);
-      drawSeries(ctx, data.t2, '#58ff98', 15, 40, margin, 'T2', 1, labels);
-      drawSeries(ctx, data.td, '#58a8ff', -0.5, maxDT, margin, 'dT', 1, labels);
-
-      renderLabels(ctx, labels, margin, canvas.height);
+      drawSeries(ctx, data.v, '#ffe86a', 1.0, 2.0, margin, 'V', 1);
+      drawSeries(ctx, data.i, '#ff4dff', 0.0, 0.5, margin, 'I', 1);
+      drawSeries(ctx, data.t1, '#ff6c7a', 15, 40, margin, 'T1', 1);
+      drawSeries(ctx, data.t2, '#58ff98', 15, 40, margin, 'T2', 1);
+      drawSeries(ctx, data.td, '#58a8ff', -0.5, maxDT, margin, 'dT', 1);
     }
 
     function renderAmbient(data) {
@@ -1177,11 +1081,9 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       clearCanvas(ctx);
 
       drawAxes(ctx, margin, 0, 320, 'Time', 0, 100, 'T / H');
-
-      const labels = [];
-      drawSeries(ctx, data.t, '#ff6c7a', 10, 40, margin, 'T', 1, labels);
-      drawSeries(ctx, data.d, '#58ff98', 10, 40, margin, 'Dew', 1, labels);
-      drawSeries(ctx, data.h, '#58a8ff', 0, 100, margin, 'H', 1, labels);
+      drawSeries(ctx, data.t, '#ff6c7a', 10, 40, margin, 'T', 1);
+      drawSeries(ctx, data.d, '#58ff98', 10, 40, margin, 'Dew', 1);
+      drawSeries(ctx, data.h, '#58a8ff', 0, 100, margin, 'H', 1);
 
       const y = canvas.height - margin.bottom - (65 / 100) * (canvas.height - margin.top - margin.bottom);
       ctx.save();
@@ -1195,8 +1097,6 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       ctx.lineTo(canvas.width - margin.right, y);
       ctx.stroke();
       ctx.restore();
-
-      renderLabels(ctx, labels, margin, canvas.height);
     }
 
     function renderIR(data) {
@@ -1223,12 +1123,8 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       }
 
       drawAxes(ctx, margin, xMin, xMax, 'Current (A)', yMin, yMax, 'Resistance (Ω)');
-
-      const labels = [];
-      drawXY(ctx, data.lu, '#f6ffff', xMin, xMax, yMin, yMax, margin, 'LU', labels);
-      drawXY(ctx, data.pairs, '#58fff3', xMin, xMax, yMin, yMax, margin, 'Pairs', labels);
-
-      renderLabels(ctx, labels, margin, canvas.height);
+      drawXY(ctx, data.lu, '#f6ffff', xMin, xMax, yMin, yMax, margin, 'LU');
+      drawXY(ctx, data.pairs, '#58fff3', xMin, xMax, yMin, yMax, margin, 'Pairs');
     }
 
     function renderCharge(data) {
@@ -1268,6 +1164,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       // Tie dT scale directly to Th scale
       const sTD = [sTH[0], sTH[1]];
 
+
       const sIRLU = autoScale(arrIRLU);
       const sIRP = autoScale(arrIRP);
 
@@ -1277,16 +1174,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       drawAxes(ctx, margin, 0, data.length - 1, 'Index', yMin, yMax, 'Auto-scaled');
       drawRegion(ctx, arrTD, arrTH, 'rgba(255,108,122,0.20)', Math.min(sTD[0], sTH[0]), Math.max(sTD[1], sTH[1]), margin);
 
-      const labels = [];
-      drawSeries(ctx, arrI, '#ff4dff', sI[0], sI[1], margin, 'I', 1, labels);
-      drawSeries(ctx, arrV, '#ffe86a', sV[0], sV[1], margin, 'V', 1, labels);
-      drawSeries(ctx, arrD, '#a9a9a9', sD[0], sD[1], margin, 'Duty', 1, labels);
-      drawSeries(ctx, arrTD, '#58a8ff', sTD[0], sTD[1], margin, 'dT', 1, labels);
-      drawSeries(ctx, arrTH, '#ff6c7a', sTH[0], sTH[1], margin, 'Th', 1, labels);
-      drawSeries(ctx, arrIRLU, '#ffb05a', sIRLU[0], sIRLU[1], margin, 'RiLU', 1, labels);
-      drawSeries(ctx, arrIRP, '#58fff3', sIRP[0], sIRP[1], margin, 'RiP', 1, labels);
-
-      renderLabels(ctx, labels, margin, canvas.height);
+      drawSeries(ctx, arrI, '#ff4dff', sI[0], sI[1], margin, 'I', 1);
+      drawSeries(ctx, arrV, '#ffe86a', sV[0], sV[1], margin, 'V', 1);
+      drawSeries(ctx, arrD, '#a9a9a9', sD[0], sD[1], margin, 'Duty', 1);
+      drawSeries(ctx, arrTD, '#58a8ff', sTD[0], sTD[1], margin, 'dT', 1);
+      drawSeries(ctx, arrTH, '#ff6c7a', sTH[0], sTH[1], margin, 'Th', 1);
+      drawSeries(ctx, arrIRLU, '#ffb05a', sIRLU[0], sIRLU[1], margin, 'RiLU', 1);
+      drawSeries(ctx, arrIRP, '#58fff3', sIRP[0], sIRP[1], margin, 'RiP', 1);
 
       const last = data[data.length - 1];
       dom.chargeLegend.textContent =
@@ -1317,14 +1211,16 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       else if (data.lu !== undefined) {
         renderIR(data);
       }
+
       else if (data.batch !== undefined) {
-        // Chargelog batch: clear buffer on first packet of new stream
+      // Chargelog batch: clear buffer on first packet of new stream
         if (data.offset === 0) {
-          chargeLogBuffer = [];
+         chargeLogBuffer = [];
         }
-        chargeLogBuffer.push(...data.batch);
-        renderCharge(chargeLogBuffer);
+      chargeLogBuffer.push(...data.batch);
+      renderCharge(chargeLogBuffer);
       }
+
     }
 
     function loopData() {
