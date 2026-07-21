@@ -62,6 +62,54 @@ std::vector<float> AdvancedPolynomialFitter::fitPolynomialLebesgue(const std::ve
     return std::vector<float>(coeffs.begin(), coeffs.end());
 }
 
+std::vector<float> AdvancedPolynomialFitter::fitPolynomialLebesgueConstrainedZero(const std::vector<float>& x, const std::vector<float>& y, int degree) {
+    if (x.size() != y.size() || x.empty() || degree < 1) return {};
+    size_t n = x.size(); size_t m = degree; // Dim is degree, as constant term a0 = 0 is excluded
+
+    // Sort indices by X for measure calculation
+    std::vector<size_t> idx(n);
+    for(size_t i=0; i<n; ++i) idx[i] = i;
+    std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b){ return x[a] < x[b]; });
+
+    std::vector<std::vector<double>> ATA(m, std::vector<double>(m, 0.0));
+    std::vector<double> ATy(m, 0.0);
+
+    for (size_t i = 0; i < n; ++i) {
+        size_t curr = idx[i];
+
+        // Lebesgue weight
+        double weight = 0;
+        if (n == 1) weight = 1.0;
+        else if (i == 0) weight = (x[idx[1]] - x[idx[0]]);
+        else if (i == n - 1) weight = (x[idx[n-1]] - x[idx[n-2]]);
+        else weight = (x[idx[i+1]] - x[idx[i-1]]) / 2.0;
+
+        if (weight < 0) weight = 0;
+
+        // Monomial basis powers start at x^1 (x^0 is constrained to zero)
+        std::vector<double> xi_powers(m);
+        xi_powers[0] = x[curr];
+        for (size_t j = 1; j < m; ++j) xi_powers[j] = xi_powers[j - 1] * x[curr];
+
+        for (size_t j = 0; j < m; ++j) {
+            ATy[j] += weight * xi_powers[j] * y[curr];
+            for (size_t k = 0; k < m; ++k) ATA[j][k] += weight * xi_powers[j] * xi_powers[k];
+        }
+    }
+    // Tikhonov (Ridge) regularization to ensure positive-definiteness and invertibility of ATA
+    for (size_t j = 0; j < m; ++j) {
+        ATA[j][j] += 1e-6;
+    }
+    std::vector<double> coeffs = solveLinearSystem(ATA, ATy);
+
+    // Construct result vector of size degree + 1, setting a0 = 0.0 at index 0
+    std::vector<float> result(degree + 1, 0.0f);
+    for (size_t i = 0; i < m; ++i) {
+        result[i + 1] = (float)coeffs[i];
+    }
+    return result;
+}
+
 std::vector<double> AdvancedPolynomialFitter::solveLinearSystem(std::vector<std::vector<double>>& A, std::vector<double>& b) {
     size_t n = A.size();
     // Safety Thresholds: Use a safe, stable pivot threshold for single/double precision matrix math

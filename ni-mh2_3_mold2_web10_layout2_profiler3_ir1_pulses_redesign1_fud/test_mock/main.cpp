@@ -479,14 +479,14 @@ void buildCurrentModelStep() {
             if (mock_dutyCycles.size() >= 2) {
                 int degree = 3;
                 AdvancedPolynomialFitter fitter;
-                std::vector<float> coeffs = fitter.fitPolynomialLebesgue(mock_dutyCycles, mock_currents, degree);
+                // Mathematically consistent constrained fit: enforce zero current at zero duty
+                std::vector<float> coeffs = fitter.fitPolynomialLebesgueConstrainedZero(mock_dutyCycles, mock_currents, degree);
 
                 currentModel.coefficients.resize(coeffs.size());
                 for (size_t i = 0; i < (size_t)coeffs.size(); ++i) {
                     currentModel.coefficients(i) = coeffs[i];
                 }
 
-                if (degree >= 0) currentModel.coefficients(0) = 0.0;
                 currentModel.isModelBuilt = true;
                 applyDuty(0);
                 if (postModelAppState == APP_STATE_CHARGING) {
