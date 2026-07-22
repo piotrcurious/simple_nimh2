@@ -100,7 +100,7 @@ const float MIN_VALID_RESISTANCE = 0.0f;
 const int MAX_RESISTANCE_POINTS = 100;
 
 // --- Charging and Remeasurement Constants ---
-const unsigned long PULSE_IR_REMEASURE_STABILIZATION_MS = 2000; // Duration of each sub-step during pulse IR re-measurement
+const unsigned long PULSE_IR_REMEASURE_STABILIZATION_MS = 1000; // Duration of each sub-step during pulse IR re-measurement
 const float REMEASURE_MIN_CURRENT_DIFF = 0.008f;                 // Minimum current delta required to calculate local IR (A)
 const float REMEASURE_DEFAULT_IR_FALLBACK = 0.15f;              // Default fallback internal resistance if delta cur is too low (Ohms)
 const float REMEASURE_MAX_VALID_IR = 15.0f;                      // Maximum physically plausible IR before falling back to sweep test (Ohms)
@@ -127,7 +127,7 @@ const uint8_t OUTGASSING_TRIP_THRESHOLD = 3;                     // Number of co
 const float MAX_TEMPERATURE_DERIVATIVE_C_PER_S = 0.5f;           // Max physically plausible rate-of-change of temperature to filter transition spikes (C/s)
 
 // Plotting parameters (now used for memory buffers only)
-#define PLOT_WIDTH          240 // for home screen (360 seconds , 24h of data log)
+#define PLOT_WIDTH          120
 
 // --- Enums and Structs ---
 

@@ -11,8 +11,8 @@ public:
     void gatherData();
     void render() {} // No longer used for TFT
 
-    static constexpr int GATHER_INTERVAL_MS = 1000*360; // to store 24h worth of data
-    static constexpr int RENDER_INTERVAL_MS = 1000*15;  // for comfort 
+    static constexpr int GATHER_INTERVAL_MS = 1000;
+    static constexpr int RENDER_INTERVAL_MS = 1000;
 
     float temp_history[PLOT_WIDTH];
     float humidity_history[PLOT_WIDTH];
