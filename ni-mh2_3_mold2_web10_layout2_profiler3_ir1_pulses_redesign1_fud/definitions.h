@@ -127,7 +127,7 @@ const uint8_t OUTGASSING_TRIP_THRESHOLD = 3;                     // Number of co
 const float MAX_TEMPERATURE_DERIVATIVE_C_PER_S = 0.5f;           // Max physically plausible rate-of-change of temperature to filter transition spikes (C/s)
 
 // Plotting parameters (now used for memory buffers only)
-#define PLOT_WIDTH          120
+#define PLOT_WIDTH          240 // for home screen (360 seconds , 24h of data log)
 
 // --- Enums and Structs ---
 
