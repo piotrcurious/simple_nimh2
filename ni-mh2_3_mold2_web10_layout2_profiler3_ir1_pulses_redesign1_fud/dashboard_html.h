@@ -111,7 +111,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       flex-wrap: wrap;
       gap: 1px;
       align-items: flex-start;
-    } 
+    }
 
     .statusBox {
       flex: 0 0 200px;
@@ -286,14 +286,14 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
           <div class="statusChip muted" id="extraState">CBOR live telemetry</div>
         </div>
       </div>
-      
+
     <div class="controls">
       <button onclick="sendCommand('charge')">Start</button>
       <button onclick="sendCommand('ir')">Measure IR</button>
       <button onclick="sendCommand('reset')">Reset Ah</button>
       <button onclick="sendCommand('stop')">Stop</button>
     </div>
-    
+
       <div class="card">
         <div class="gaugesBar">
           <div class="gaugeCard">
@@ -663,6 +663,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       return Math.min(hi, Math.max(lo, v));
     }
 
+    // fmt utility: ensures non-finite is rendered as dash safely
     function fmt(v, digits = 2) {
       return Number.isFinite(v) ? v.toFixed(digits) : '—';
     }
@@ -702,6 +703,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     function clearCanvas(ctx) {
       ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+      ctx.drawnLabels = [];
     }
 
     function drawGlowText(ctx, text, x, y, color, align = 'left', size = 11, weight = 'bold') {
@@ -818,7 +820,33 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         ctx.fillStyle = color;
         ctx.font = 'bold 10px Consolas, monospace';
         ctx.textAlign = 'left';
-        const yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
+        let yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
+
+        if (!ctx.drawnLabels) {
+          ctx.drawnLabels = [];
+        }
+
+        const labelHeight = 11;
+        let overlap = true;
+        let attempts = 0;
+        while (overlap && attempts < 20) {
+          overlap = false;
+          for (const ly of ctx.drawnLabels) {
+            if (Math.abs(yPos - ly) < labelHeight) {
+              if (yPos >= ly) {
+                yPos = ly + labelHeight;
+              } else {
+                yPos = ly - labelHeight;
+              }
+              overlap = true;
+              break;
+            }
+          }
+          yPos = clamp(yPos, margin.top + 10, h - margin.bottom - 2);
+          attempts++;
+        }
+
+        ctx.drawnLabels.push(yPos);
         ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
       }
 
@@ -876,7 +904,33 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         ctx.fillStyle = color;
         ctx.font = 'bold 10px Consolas, monospace';
         ctx.textAlign = 'left';
-        const yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
+        let yPos = clamp(lastY, margin.top + 10, h - margin.bottom - 2);
+
+        if (!ctx.drawnLabels) {
+          ctx.drawnLabels = [];
+        }
+
+        const labelHeight = 11;
+        let overlap = true;
+        let attempts = 0;
+        while (overlap && attempts < 20) {
+          overlap = false;
+          for (const ly of ctx.drawnLabels) {
+            if (Math.abs(yPos - ly) < labelHeight) {
+              if (yPos >= ly) {
+                yPos = ly + labelHeight;
+              } else {
+                yPos = ly - labelHeight;
+              }
+              overlap = true;
+              break;
+            }
+          }
+          yPos = clamp(yPos, margin.top + 10, h - margin.bottom - 2);
+          attempts++;
+        }
+
+        ctx.drawnLabels.push(yPos);
         ctx.fillText(`${label}:${lastVal.toFixed(2)}`, lastX + 5, yPos);
       }
 
@@ -1007,7 +1061,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     function renderMain(data) {
       const canvas = document.getElementById('mainGraph');
       const ctx = canvas.getContext('2d');
-      const margin = { top: 12, right: 34, bottom: 16, left: 30 };
+      const margin = { top: 12, right: 55, bottom: 16, left: 30 };
       fitCanvas(canvas);
       clearCanvas(ctx);
 
@@ -1022,7 +1076,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     function renderAmbient(data) {
       const canvas = document.getElementById('ambientGraph');
       const ctx = canvas.getContext('2d');
-      const margin = { top: 12, right: 34, bottom: 16, left: 30 };
+      const margin = { top: 12, right: 55, bottom: 16, left: 30 };
       fitCanvas(canvas);
       clearCanvas(ctx);
 
@@ -1048,7 +1102,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     function renderIR(data) {
       const canvas = document.getElementById('irGraph');
       const ctx = canvas.getContext('2d');
-      const margin = { top: 12, right: 34, bottom: 16, left: 30 };
+      const margin = { top: 12, right: 55, bottom: 16, left: 30 };
       fitCanvas(canvas);
       clearCanvas(ctx);
 
@@ -1076,7 +1130,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
     function renderCharge(data) {
       const canvas = document.getElementById('chargeGraph');
       const ctx = canvas.getContext('2d');
-      const margin = { top: 12, right: 38, bottom: 16, left: 30 };
+      const margin = { top: 12, right: 65, bottom: 16, left: 30 };
       fitCanvas(canvas);
       clearCanvas(ctx);
 
@@ -1110,7 +1164,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       // Tie dT scale directly to Th scale
       const sTD = [sTH[0], sTH[1]];
 
-      
+
       const sIRLU = autoScale(arrIRLU);
       const sIRP = autoScale(arrIRP);
 
@@ -1137,7 +1191,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
 
     let chargeLogBuffer = [];
 
-    
+
     function handleWSData(data) {
       if (!data) return;
 
@@ -1166,18 +1220,18 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       chargeLogBuffer.push(...data.batch);
       renderCharge(chargeLogBuffer);
       }
-      
+
     }
 
     function loopData() {
       if (ws && ws.readyState === WebSocket.OPEN) {
         const now = Date.now();
-        
+
         if (now - lastHistoryFetch > 5000) {
           lastHistoryFetch = now;
           ws.send('REQ_HISTORY');
         }
-        
+
         if (now - lastAmbientFetch > 1000) {
           lastAmbientFetch = now;
           ws.send('REQ_AMBIENT');

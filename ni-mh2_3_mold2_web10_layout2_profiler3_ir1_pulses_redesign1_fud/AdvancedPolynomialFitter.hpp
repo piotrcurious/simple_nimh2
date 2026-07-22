@@ -28,6 +28,13 @@ public:
     std::vector<float> fitPolynomialLebesgue(const std::vector<float>& x, const std::vector<float>& y, int degree);
 
     /**
+     * @brief Fits a polynomial with a hard constraint that P(0) = 0 (constant term a0 = 0).
+     * Fits P(x) = a1*x + a2*x^2 + ... + ad*x^degree using Lebesgue-weighted Least Squares,
+     * maintaining strict mathematical least-squares consistency under the constraint.
+     */
+    std::vector<float> fitPolynomialLebesgueConstrainedZero(const std::vector<float>& x, const std::vector<float>& y, int degree);
+
+    /**
      * @brief Composes two sequential polynomials into one using analytical L2 projection
      * onto a shifted Legendre basis (the "Lebesgue" approach for continuous functions).
      */

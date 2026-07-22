@@ -133,7 +133,6 @@ static inline void putU32LE(uint8_t *buf, size_t &off, uint32_t v) {
 
 
 /*
-static void sendFramePacket(bool timeoutFlag) {
 #ifndef MOCK_TEST
     if (ws.count() == 0) return;
 
@@ -197,6 +196,14 @@ static void sendFramePacket(bool timeoutFlag) {
 
 */
 
+#ifndef MOCK_TEST
+// API Compatibility Helper: Overloaded functions to resolve different return types
+// of ws.getClients() across varying ESPAsyncWebServer library versions (either pointers
+// or object references) to a standard pointer before accessing client methods.
+inline AsyncWebSocketClient* resolve_client(AsyncWebSocketClient* c) { return c; }
+inline AsyncWebSocketClient* resolve_client(AsyncWebSocketClient& c) { return &c; }
+#endif
+
 static void sendFramePacket(bool timeoutFlag) {
 #ifndef MOCK_TEST
     if (ws.count() == 0) return;
@@ -250,15 +257,16 @@ static void sendFramePacket(bool timeoutFlag) {
     }
 
     // 6. Selective Broadcast (The Fix for the Disconnects)
-    for (auto & client : ws.getClients()) {
-        if (client.status() == WS_CONNECTED) {
+    for (auto & c : ws.getClients()) {
+        AsyncWebSocketClient* client = resolve_client(c);
+        if (client->status() == WS_CONNECTED) {
             // Only send if the queue is not backed up.
             // 16 is a safe threshold for a 32-slot queue.
-            if (client.queueLen() < 4) {
-                client.binary(packet, p);
+            if (client->queueLen() < 4) {
+                client->binary(packet, p);
             } else {
                 // Optional:
-                Serial.printf("Skipping frame for client %u (Queue full)\n", client.id());
+                Serial.printf("Skipping frame for client %u (Queue full)\n", client->id());
             }
         }
     }
@@ -283,7 +291,10 @@ static void masterTask(void *param) {
         // Instead, the actual application tasks will call recordEvent during the frame.
         // We just wait for the next frame.
 
-        vTaskDelay(pdMS_TO_TICKS(FRAME_PERIOD_US / 1000));
+        // Timing Precision Safety: Prevent truncation errors and tight loops if FRAME_PERIOD_US < 1000
+        uint32_t delay_ms = (FRAME_PERIOD_US + 999) / 1000;
+        if (delay_ms < 1) delay_ms = 1;
+        vTaskDelay(pdMS_TO_TICKS(delay_ms));
 
         sendFramePacket(false);
     }
@@ -630,7 +641,8 @@ void buildCurrentModelStep() {
             if (dutyCycles.size() >= 2) {
                 const int degree = 3;
                 AdvancedPolynomialFitter fitter;
-                std::vector<float> coeffs = fitter.fitPolynomialLebesgue(dutyCycles, currents, degree);
+                // Mathematically consistent constrained fit: enforce zero current at zero duty
+                std::vector<float> coeffs = fitter.fitPolynomialLebesgueConstrainedZero(dutyCycles, currents, degree);
 
                 WEB_LOCK();
                 currentModel.coefficients.resize(coeffs.size());
@@ -638,7 +650,6 @@ void buildCurrentModelStep() {
                     currentModel.coefficients(i) = coeffs[i];
                 }
 
-                if (degree >= 0) currentModel.coefficients(0) = 0.0;
                 currentModel.isModelBuilt = true;
 
                 applyDuty(0);
@@ -703,7 +714,7 @@ void task_readSHT4x(void* parameter) {
         uint32_t t0 = (uint32_t)(esp_timer_get_time() - frameRef);
         sht4Sensor.read();
         uint32_t t1 = (uint32_t)(esp_timer_get_time() - frameRef);
-        recordEvent(0, 1, (uint16_t)t0, (uint16_t)(t1 - t0));
+        recordEvent(0, 1, (uint16_t)t0, (uint16_t)(t1 - t0), 0);
 
         vTaskDelay(pdMS_TO_TICKS(TASK_DELAY_SHT4_MS));
     }
@@ -715,7 +726,7 @@ void task_processAdcDma(void* parameter) {
         uint32_t t0 = (uint32_t)(esp_timer_get_time() - frameRef);
         processAdcDma();
         uint32_t t1 = (uint32_t)(esp_timer_get_time() - frameRef);
-        recordEvent(0, 2, (uint16_t)t0, (uint16_t)(t1 - t0));
+        recordEvent(0, 2, (uint16_t)t0, (uint16_t)(t1 - t0), 0);
 
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -739,7 +750,7 @@ void task_updateSystemData(void* parameter) {
         mAh_charged = d.mah_charged;
         WEB_UNLOCK();
         uint32_t t1 = (uint32_t)(esp_timer_get_time() - frameRef);
-        recordEvent(1, 3, (uint16_t)t0, (uint16_t)(t1 - t0));
+        recordEvent(1, 3, (uint16_t)t0, (uint16_t)(t1 - t0), 0);
 
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -755,7 +766,7 @@ void task_webServer(void* parameter) {
         broadcastLiveTelemetry();
 #endif
         uint32_t t1 = (uint32_t)(esp_timer_get_time() - frameRef);
-        recordEvent(1, 4, (uint16_t)t0, (uint16_t)(t1 - t0));
+        recordEvent(1, 4, (uint16_t)t0, (uint16_t)(t1 - t0), 0);
 
         vTaskDelay(pdMS_TO_TICKS(500));
     }
@@ -852,7 +863,7 @@ void loop() {
 
     // Give other tasks time to run
     uint32_t t1 = (uint32_t)(esp_timer_get_time() - frameRef);
-    recordEvent(1, 0, (uint16_t)t0, (uint16_t)(t1 - t0));
+    recordEvent(1, 0, (uint16_t)t0, (uint16_t)(t1 - t0), 0);
 
-    vTaskDelay(10);
+    vTaskDelay(pdMS_TO_TICKS(10));
 }

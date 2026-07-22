@@ -154,7 +154,10 @@ void processAdcDma() {
     }
 #endif
 
-    if (xSemaphoreTake(data_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+    // Thread-Safety Guard: Ensure that data_mutex has been initialized by setupAdcDma()
+    // prior to attempting to acquire the lock. This prevents potential null pointer
+    // dereferences during early startup initialization phases of FreeRTOS tasks.
+    if (data_mutex && xSemaphoreTake(data_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
         while (sample_read_idx != sample_write_idx) {
             const SampleEntry &e = sample_ring[sample_read_idx];
 

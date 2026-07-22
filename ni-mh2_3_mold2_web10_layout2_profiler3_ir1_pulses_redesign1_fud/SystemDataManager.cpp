@@ -131,6 +131,13 @@ void SystemDataManager::processAdcSnapshots() {
     }
 
     // VOLTAGE (Throttled update, e.g., 4Hz)
+    // Mathematically Optimal Time Constant Balance:
+    // 1. Averaging 5,000 raw samples (at 20kHz continuous DMA) over a 250ms window provides exceptional
+    //    noise immunity, completely smoothing out high-frequency switching spikes and ripple for
+    //    end-of-charge slope detection, charge graph logging, and telemetry streams.
+    // 2. Since all active IR tests (structured sweep and re-measurement) utilize step durations of
+    //    at least 1,000ms - 2,000ms, the 250ms update interval allows the voltage to update at least 4-8
+    //    times and fully settle, guaranteeing robust, lag-free internal resistance computation.
     if (now - _lastVoltageUpdateMs >= 250) {
         if (voltageSnap.count != _lastSnapshots[ADC_IDX_VOLTAGE].count) {
             uint32_t avgRawVoltage = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_VOLTAGE], voltageSnap);
@@ -151,13 +158,21 @@ double SystemDataManager::calculateBatteryTemp(double ambientTemp, float therm1M
     double averageAnalogValue = (double)therm1Mv - _therm1Offset;
     double vcc_millivolts = (double)vccMv;
 
-    double vRatio = averageAnalogValue / ((vcc_millivolts * MAIN_VCC_RATIO) - averageAnalogValue);
-    if (vRatio <= 0) return ambientTemp; // Avoid log of non-positive
+    // Math Safety Guards: Avoid division by zero when denominator approaches zero
+    double denominator = (vcc_millivolts * MAIN_VCC_RATIO) - averageAnalogValue;
+    if (std::abs(denominator) < 1e-6) return ambientTemp;
+
+    double vRatio = averageAnalogValue / denominator;
+    if (vRatio <= 0) return ambientTemp; // Avoid log of non-positive or zero
 
     double logVRatio = log(vRatio);
     double ambientKelvin = ambientTemp + 273.15;
 
     double invBattKelvin = (1.0 / ambientKelvin) + (logVRatio / BCOEFFICIENT);
+
+    // Math Safety Guards: Avoid division by zero in reciprocal Kelvin calculation
+    if (std::abs(invBattKelvin) < 1e-12) return ambientTemp;
+
     double battKelvin = 1.0 / invBattKelvin;
     return battKelvin - 273.15;
 }
