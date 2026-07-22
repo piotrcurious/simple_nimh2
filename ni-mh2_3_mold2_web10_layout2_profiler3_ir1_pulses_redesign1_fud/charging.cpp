@@ -924,22 +924,6 @@ bool chargeBattery() {
                 }
 #endif
 
-                // Log historical data at robust sparse intervals (HIST_LOG_INTERVAL_MS) to prevent memory crash
-                if (lastLogTime == 0 || now - lastLogTime >= HIST_LOG_INTERVAL_MS) {
-                    lastLogTime = now;
-                    ChargeLogData e;
-                    e.timestamp = (uint32_t)now;
-                    e.current = cur;
-                    e.voltage = v;
-                    e.ambientTemperature = (float)t1;
-                    e.batteryTemperature = (float)t2;
-                    e.dutyCycle = (uint8_t)dutyCycle;
-                    e.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
-                    e.internalResistancePairs = regressedInternalResistancePairsIntercept;
-                    logChargeData(e);
-                    pushRecentChargeLog(e);
-                }
-
                 WEB_LOCK();
                 MAX_DIFF_TEMP = MAX_TEMP_DIFF_THRESHOLD + predictedDiff;
                 WEB_UNLOCK();
@@ -971,6 +955,20 @@ bool chargeBattery() {
                 }
 
                 if (elapsedMs >= pulseLengthMs && chargingState == CHARGE_PULSE_ACTIVE) {
+                    // Log historical data at the end of each charging pulse to prevent logging phase sync issues ("buzz")
+                    lastLogTime = now;
+                    ChargeLogData e;
+                    e.timestamp = (uint32_t)now;
+                    e.current = cur;
+                    e.voltage = v;
+                    e.ambientTemperature = (float)t1;
+                    e.batteryTemperature = (float)t2;
+                    e.dutyCycle = (uint8_t)dutyCycle;
+                    e.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
+                    e.internalResistancePairs = regressedInternalResistancePairsIntercept;
+                    logChargeData(e);
+                    pushRecentChargeLog(e);
+
                     // Transition back to IR pulse test phase for a new combined cycle
                     chargingState = CHARGE_PULSE_IR_TEST;
                     s_irTest.step = 0;
