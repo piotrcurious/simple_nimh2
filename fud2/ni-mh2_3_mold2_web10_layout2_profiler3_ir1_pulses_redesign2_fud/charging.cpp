@@ -24,9 +24,10 @@ unsigned long pulseCycleStartTime = 0;
 unsigned long lastLogTime = 0;
 
 // Divergence tracking for physical P_residual model
-double prev_divergence = 0.0;
-bool prev_divergence_set = false;
-double div_deriv = 0.0;
+double prev_divergence_m = 0.0;
+bool prev_divergence_m_set = false;
+double dD_dt_smooth = 0.0;
+double P_residual_slow = 0.0;
 
 // Monitoring evaluation snapshots (persist across states)
 float eval_mAh_snapshot = 0.0f;       // mAh at start of monitor evaluation interval
@@ -669,8 +670,9 @@ bool chargeBattery() {
                                 pulseCycleStartTime = now;
                                 prev_t1 = -1.0; // Reset derivative trackers to prevent spikes across state boundary
                                 prev_t2 = -1.0;
-                            prev_divergence_set = false;
-                            div_deriv = 0.0;
+                            prev_divergence_m_set = false;
+                            dD_dt_smooth = 0.0;
+                            P_residual_slow = 0.0;
                                 // Set constant current charging pulse duty cycle
                                 int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                                 applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
@@ -688,8 +690,9 @@ bool chargeBattery() {
                     pulseCycleStartTime = now;
                     prev_t1 = -1.0;
                     prev_t2 = -1.0;
-                    prev_divergence_set = false;
-                    div_deriv = 0.0;
+                    prev_divergence_m_set = false;
+                    dD_dt_smooth = 0.0;
+                    P_residual_slow = 0.0;
                     int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                     applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
                     break;
@@ -776,8 +779,9 @@ bool chargeBattery() {
                             pulseCycleStartTime = now;
                             prev_t1 = -1.0;
                             prev_t2 = -1.0;
-                            prev_divergence_set = false;
-                            div_deriv = 0.0;
+                            prev_divergence_m_set = false;
+                            dD_dt_smooth = 0.0;
+                            P_residual_slow = 0.0;
                             int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                             applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
                         }
@@ -809,8 +813,9 @@ bool chargeBattery() {
                     prev_t2 = t2;
                     t1_deriv = 0.0;
                     t2_deriv = 0.0;
-                    prev_divergence_set = false;
-                    div_deriv = 0.0;
+                    prev_divergence_m_set = false;
+                    dD_dt_smooth = 0.0;
+                    P_residual_slow = 0.0;
                 }
 
                 float dt_s = (float)CHARGING_HOUSEKEEP_INTERVAL / 1000.0f;
@@ -845,26 +850,33 @@ bool chargeBattery() {
                 float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, regressedInternalResistancePairsIntercept, t1_true, now, now - CHARGING_HOUSEKEEP_INTERVAL, predictedTempTrack, &g_unappliedEnergy_J);
                 predictedTempTrack = predictedDiff + t1_true;
 
-                // Divergence based on compensated (true) temperatures
-                float D = t2_true - predictedTempTrack;
-                if (!prev_divergence_set) {
-                    prev_divergence = D;
-                    prev_divergence_set = true;
-                    div_deriv = 0.0;
+                // Slow first-order residual-power estimator
+                // Calculate raw measured divergence
+                float D_m = (float)t2 - predictedTempTrack;
+                if (!prev_divergence_m_set) {
+                    prev_divergence_m = D_m;
+                    prev_divergence_m_set = true;
+                    dD_dt_smooth = 0.0;
+                    P_residual_slow = 0.0;
                 }
                 float dt_s_div = (float)CHARGING_HOUSEKEEP_INTERVAL / 1000.0f;
-                double raw_div_deriv = (D - prev_divergence) / dt_s_div;
+                double raw_div_deriv = (D_m - prev_divergence_m) / dt_s_div;
 
                 // Physical Derivative Clamping: filter outlier spikes
                 if (raw_div_deriv > MAX_TEMPERATURE_DERIVATIVE_C_PER_S) raw_div_deriv = MAX_TEMPERATURE_DERIVATIVE_C_PER_S;
                 if (raw_div_deriv < -MAX_TEMPERATURE_DERIVATIVE_C_PER_S) raw_div_deriv = -MAX_TEMPERATURE_DERIVATIVE_C_PER_S;
 
-                div_deriv = (1.0 - TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA) * div_deriv + TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA * raw_div_deriv;
-                prev_divergence = D;
+                // Smooth derivative with an alpha of 0.15
+                dD_dt_smooth = 0.85 * dD_dt_smooth + 0.15 * raw_div_deriv;
+                prev_divergence_m = D_m;
 
                 float Cth = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
-                float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY, t1_true + 273.15f);
-                float p_residual = Cth * div_deriv + G * D;
+                float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY, (float)t1 + 273.15f);
+                float P_inst = Cth * dD_dt_smooth + G * D_m;
+
+                // Estimate P_residual slowly with a 20s time constant to damp high-frequency thermistor noise
+                P_residual_slow = 0.9877 * P_residual_slow + 0.0123 * P_inst;
+                float p_residual = (float)P_residual_slow;
 
                 // Electrochemical voltage prediction under load: V_predicted = V_unloaded - I * R_int
                 float predictedV = s_irTest.unloadedVoltage - cur * regressedInternalResistancePairsIntercept;
