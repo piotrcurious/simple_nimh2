@@ -77,6 +77,7 @@ static const float STEFAN_BOLTZMANN           = 5.670374419e-8f;
 
 // Charging constants
 const float MAX_TEMP_DIFF_THRESHOLD = 0.7f;
+const float MIN_TEMP_DIFF_THRESHOLD = 0.35f;
 const uint8_t OVERTEMP_TRIP_TRESHOLD = 3;
 extern float maximumCurrent;
 const float MH_ELECTRODE_RATIO = 0.7f;

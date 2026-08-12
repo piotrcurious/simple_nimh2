@@ -964,8 +964,17 @@ bool chargeBattery() {
                 }
 
                 // If there's an active, unexplained physical heat source of >150mW (avgPresidual > 0.15W) and temperature has diverged (avgDivergence > 0.3C), flag outgassing.
-                // Or as fallback, if temperature has diverged by >0.4C and is highly correlated with electrochemical overpotential rise (correlation > 0.6), flag outgassing.
-                bool outgassingDiverged = (avgPresidual > 0.15f && avgDivergence > 0.3f) || (avgDivergence > 0.4f && correlation > 0.6f);
+                bool outgassingDiverged = (avgPresidual > 0.15f && avgDivergence > 0.3f);
+
+                // Use the correlation smoothly to scale the dynamic overtemperature safety threshold limit.
+                // If correlation is positive, scale the limit down towards MIN_TEMP_DIFF_THRESHOLD.
+                float corrWeight = 0.0f;
+                if (correlation > 0.0f) {
+                    corrWeight = correlation;
+                    if (corrWeight > 1.0f) corrWeight = 1.0f;
+                }
+                float tempDiffThreshold = MAX_TEMP_DIFF_THRESHOLD - corrWeight * (MAX_TEMP_DIFF_THRESHOLD - MIN_TEMP_DIFF_THRESHOLD);
+
 #ifdef MOCK_TEST
                 if (appendedHistoryThisTick) {
                     std::cout << "    [DEBUG PUSH] timestamp: " << now
@@ -979,12 +988,12 @@ bool chargeBattery() {
                 }
                 static int dbg_cnt = 0;
                 if (dbg_cnt++ % 10 == 0) {
-                    std::cout << "  [CHARGE_PULSE_ACTIVE] avgDivergence: " << avgDivergence << ", avgPresidual: " << avgPresidual << ", correlation: " << correlation << ", overpotential: " << overpotential << std::endl;
+                    std::cout << "  [CHARGE_PULSE_ACTIVE] avgDivergence: " << avgDivergence << ", avgPresidual: " << avgPresidual << ", correlation: " << correlation << ", tempDiffThreshold: " << tempDiffThreshold << ", overpotential: " << overpotential << std::endl;
                 }
 #endif
 
                 WEB_LOCK();
-                MAX_DIFF_TEMP = MAX_TEMP_DIFF_THRESHOLD + predictedDiff;
+                MAX_DIFF_TEMP = tempDiffThreshold + predictedDiff;
                 WEB_UNLOCK();
 
                 // Static trip counter for outgassing debounce protection
