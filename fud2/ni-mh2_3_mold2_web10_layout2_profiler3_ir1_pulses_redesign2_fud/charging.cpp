@@ -379,13 +379,17 @@ static float g_unappliedEnergy_J = 0.0f;
 static float g_internalReleaseTau_s = 60.0f;
 
 static float computeDissipatedPower(float vUnderLoad, float vNoLoad, float current, float Rparam) {
-  const float epsI = 1e-9f;
-  float P_v = 0.0f;
-  if (current > epsI) { float vDrop = vNoLoad - vUnderLoad; if (vDrop > 1e-6f) P_v = current * vDrop; }
-  float P_r = 0.0f;
-  if (Rparam > 0.0f) P_r = current * current * Rparam;
-  if (P_v > 0.0f && P_r > 0.0f) return 0.5f * (P_v + P_r);
-  return (P_v > 0.0f) ? P_v : P_r;
+  // Prioritize pure ohmic heating (I^2 * R) as it accurately models Joule heat dissipation
+  // while separating non-dissipative electrochemical polarization.
+  if (Rparam > 1e-6f && current > 1e-6f) {
+    return current * current * Rparam;
+  }
+  // Fall back to absolute voltage-drop power if Rparam is unavailable/uncalibrated
+  float vDrop = std::fabs(vNoLoad - vUnderLoad);
+  if (current > 1e-6f && vDrop > 1e-6f) {
+    return current * vDrop;
+  }
+  return 0.0f;
 }
 
 static float thermalConductance_W_per_K(float area, float h, float emissivity, float T_ambientK) {
