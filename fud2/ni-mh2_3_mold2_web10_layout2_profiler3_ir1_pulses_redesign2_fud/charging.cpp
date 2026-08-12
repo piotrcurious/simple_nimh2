@@ -866,9 +866,9 @@ bool chargeBattery() {
                 float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY, t1_true + 273.15f);
                 float p_residual = Cth * div_deriv + G * D;
 
-                // Electrochemical voltage prediction: V_predicted = V_unloaded + I * R_int
-                float predictedV = s_irTest.unloadedVoltage + cur * regressedInternalResistancePairsIntercept;
-                float overpotential = std::fabs(v - predictedV);
+                // Electrochemical voltage prediction under load: V_predicted = V_unloaded - I * R_int
+                float predictedV = s_irTest.unloadedVoltage - cur * regressedInternalResistancePairsIntercept;
+                float overpotential = std::fabs(predictedV - v);
 
                 // Store step response to history buffer at a sparse interval (every 5 seconds)
                 // to cover a full 5 minutes (300 seconds) window with exactly 60 elements.
