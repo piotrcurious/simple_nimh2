@@ -560,6 +560,7 @@ bool chargeBattery() {
             overtemp_trip_counter = 0;
             s_thermalHistory.clear();
             lastLogTime = 0;
+            g_unappliedEnergy_J = 0.0f;
             {
                 double t1, t2, td; float tmv, v, c; getThermistorReadings(t1, t2, td, tmv, v, c);
                 predictedTempTrack = (float)t2;
@@ -840,9 +841,8 @@ bool chargeBattery() {
 
                 // Complex thermal loss model evaluates loss at each time step (approx 1 step / CHARGING_HOUSEKEEP_INTERVAL)
                 // Predict temp change using recovered true ambient temperature (t1_true)
-                float unapplied = 0.0f;
-                // Run the standard non-linear estimateTempDiff model using predictedTempTrack
-                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, regressedInternalResistancePairsIntercept, t1_true, now, now - CHARGING_HOUSEKEEP_INTERVAL, predictedTempTrack, &unapplied);
+                // Run the standard non-linear estimateTempDiff model using predictedTempTrack and persistent file-scope unapplied energy state
+                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, regressedInternalResistancePairsIntercept, t1_true, now, now - CHARGING_HOUSEKEEP_INTERVAL, predictedTempTrack, &g_unappliedEnergy_J);
                 predictedTempTrack = predictedDiff + t1_true;
 
                 // Divergence based on compensated (true) temperatures
