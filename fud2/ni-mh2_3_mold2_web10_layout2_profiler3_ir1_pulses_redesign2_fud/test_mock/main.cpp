@@ -536,6 +536,16 @@ void reset_globals() {
     predictedTempTrack = 25.0f;
     pulseCycleStartTime = 0;
     lastLogTime = 0;
+    extern double prev_divergence_m;
+    extern bool prev_divergence_m_set;
+    extern double dD_dt_smooth;
+    extern double P_residual_slow;
+    extern float g_unappliedEnergy_J;
+    prev_divergence_m = 0.0;
+    prev_divergence_m_set = false;
+    dD_dt_smooth = 0.0;
+    P_residual_slow = 0.0;
+    g_unappliedEnergy_J = 0.0f;
     sht4Sensor.setTemperature(22.0f);
     mock_millis = 0; voltage_mv = 1000.0f; current_ma = 0.0f; mAh_charged = 0.0;
     dutyCycle = 0; chargingState = CHARGE_IDLE; chargeLog.clear();

@@ -376,7 +376,7 @@ bool remeasureStep() {
     }
 }
 
-static float g_unappliedEnergy_J = 0.0f;
+float g_unappliedEnergy_J = 0.0f;
 static float g_internalReleaseTau_s = 60.0f;
 
 static float computeDissipatedPower(float vUnderLoad, float vNoLoad, float current, float Rparam) {
