@@ -23,6 +23,11 @@ float predictedTempTrack = 25.0f;
 unsigned long pulseCycleStartTime = 0;
 unsigned long lastLogTime = 0;
 
+// Divergence tracking for physical P_residual model
+double prev_divergence = 0.0;
+bool prev_divergence_set = false;
+double div_deriv = 0.0;
+
 // Monitoring evaluation snapshots (persist across states)
 float eval_mAh_snapshot = 0.0f;       // mAh at start of monitor evaluation interval
 unsigned long eval_time_snapshot = 0; // ms at start of monitor evaluation interval
@@ -659,6 +664,8 @@ bool chargeBattery() {
                                 pulseCycleStartTime = now;
                                 prev_t1 = -1.0; // Reset derivative trackers to prevent spikes across state boundary
                                 prev_t2 = -1.0;
+                            prev_divergence_set = false;
+                            div_deriv = 0.0;
                                 // Set constant current charging pulse duty cycle
                                 int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                                 applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
@@ -676,6 +683,8 @@ bool chargeBattery() {
                     pulseCycleStartTime = now;
                     prev_t1 = -1.0;
                     prev_t2 = -1.0;
+                    prev_divergence_set = false;
+                    div_deriv = 0.0;
                     int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                     applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
                     break;
@@ -762,6 +771,8 @@ bool chargeBattery() {
                             pulseCycleStartTime = now;
                             prev_t1 = -1.0;
                             prev_t2 = -1.0;
+                            prev_divergence_set = false;
+                            div_deriv = 0.0;
                             int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                             applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
                         }
@@ -793,6 +804,8 @@ bool chargeBattery() {
                     prev_t2 = t2;
                     t1_deriv = 0.0;
                     t2_deriv = 0.0;
+                    prev_divergence_set = false;
+                    div_deriv = 0.0;
                 }
 
                 float dt_s = (float)CHARGING_HOUSEKEEP_INTERVAL / 1000.0f;
@@ -828,9 +841,30 @@ bool chargeBattery() {
                 float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, regressedInternalResistancePairsIntercept, t1_true, now, now - CHARGING_HOUSEKEEP_INTERVAL, predictedTempTrack, &unapplied);
                 predictedTempTrack = predictedDiff + t1_true;
 
+                // Divergence based on compensated (true) temperatures
+                float D = t2_true - predictedTempTrack;
+                if (!prev_divergence_set) {
+                    prev_divergence = D;
+                    prev_divergence_set = true;
+                    div_deriv = 0.0;
+                }
+                float dt_s_div = (float)CHARGING_HOUSEKEEP_INTERVAL / 1000.0f;
+                double raw_div_deriv = (D - prev_divergence) / dt_s_div;
+
+                // Physical Derivative Clamping: filter outlier spikes
+                if (raw_div_deriv > MAX_TEMPERATURE_DERIVATIVE_C_PER_S) raw_div_deriv = MAX_TEMPERATURE_DERIVATIVE_C_PER_S;
+                if (raw_div_deriv < -MAX_TEMPERATURE_DERIVATIVE_C_PER_S) raw_div_deriv = -MAX_TEMPERATURE_DERIVATIVE_C_PER_S;
+
+                div_deriv = (1.0 - TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA) * div_deriv + TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA * raw_div_deriv;
+                prev_divergence = D;
+
+                float Cth = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+                float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY, t1_true + 273.15f);
+                float p_residual = Cth * div_deriv + G * D;
+
                 // Electrochemical voltage prediction: V_predicted = V_unloaded + I * R_int
                 float predictedV = s_irTest.unloadedVoltage + cur * regressedInternalResistancePairsIntercept;
-                float overpotential = v - predictedV;
+                float overpotential = std::fabs(v - predictedV);
 
                 // Store step response to history buffer at a sparse interval (every 5 seconds)
                 // to cover a full 5 minutes (300 seconds) window with exactly 60 elements.
@@ -847,6 +881,7 @@ bool chargeBattery() {
                     stepResp.predictedVoltage = predictedV;
                     stepResp.overpotential = overpotential;
                     stepResp.ir = regressedInternalResistancePairsIntercept;
+                    stepResp.p_residual = p_residual;
                     s_thermalHistory.push_back(stepResp);
                     lastThermalHistoryAppendTime = now;
                     appendedHistoryThisTick = true;
@@ -859,7 +894,7 @@ bool chargeBattery() {
 
                 // Detect when cell outgassing changes thermal profile (diverts from theoretical model)
                 // The divergence is measured as: Actual Temp - Predicted Temp
-                float divergence = (float)t2 - predictedTempTrack;
+                float divergence = t2_true - predictedTempTrack;
                 float accumulatedDivergenceSum = 0.0f;
                 int countDivergences = 0;
 
@@ -869,16 +904,23 @@ bool chargeBattery() {
                 float accumulatedOverpotentialSum = 0.0f;
                 int countOverpotentials = 0;
 
+                // Track unexplained physical residual heat power P_residual
+                float accumulatedPresidualSum = 0.0f;
+                int countPresiduals = 0;
+
                 // Look at the last 5 minutes (300 seconds) of pulse history to verify divergence and overpotential correlation
                 for (auto it = s_thermalHistory.rbegin(); it != s_thermalHistory.rend() && (now - it->timestamp < 300000); ++it) {
                     accumulatedDivergenceSum += (it->actualTemp - it->predictedTemp);
                     accumulatedOverpotentialSum += it->overpotential;
+                    accumulatedPresidualSum += it->p_residual;
                     countDivergences++;
                     countOverpotentials++;
+                    countPresiduals++;
                 }
 
                 float avgDivergence = (countDivergences > 0) ? (accumulatedDivergenceSum / countDivergences) : 0.0f;
                 float avgOverpotential = (countOverpotentials > 0) ? (accumulatedOverpotentialSum / countOverpotentials) : 0.0f;
+                float avgPresidual = (countPresiduals > 0) ? (accumulatedPresidualSum / countPresiduals) : 0.0f;
 
                 // Calculate Pearson-like covariance/correlation coefficient over the window
                 float covNumerator = 0.0f;
@@ -905,22 +947,23 @@ bool chargeBattery() {
                     }
                 }
 
-                // If temperature divergence exceeds threshold AND is highly correlated with the rising electrochemical overpotential (correlation > 0.6), flag outgassing.
-                // This acts as a robust confirmation step.
-                bool outgassingDiverged = (avgDivergence > 0.4f) && (correlation > 0.6f);
+                // If there's an active, unexplained physical heat source of >150mW (avgPresidual > 0.15W) and temperature has diverged (avgDivergence > 0.3C), flag outgassing.
+                // Or as fallback, if temperature has diverged by >0.4C and is highly correlated with electrochemical overpotential rise (correlation > 0.6), flag outgassing.
+                bool outgassingDiverged = (avgPresidual > 0.15f && avgDivergence > 0.3f) || (avgDivergence > 0.4f && correlation > 0.6f);
 #ifdef MOCK_TEST
                 if (appendedHistoryThisTick) {
                     std::cout << "    [DEBUG PUSH] timestamp: " << now
                               << ", actualTemp: " << t2_true
                               << ", predictedTemp: " << predictedTempTrack
                               << ", overpotential: " << overpotential
+                              << ", p_residual: " << p_residual
                               << ", unloadedVoltage: " << s_irTest.unloadedVoltage
                               << ", calculatedIR: " << regressedInternalResistancePairsIntercept
                               << ", cur: " << cur << std::endl;
                 }
                 static int dbg_cnt = 0;
                 if (dbg_cnt++ % 10 == 0) {
-                    std::cout << "  [CHARGE_PULSE_ACTIVE] avgDivergence: " << avgDivergence << ", correlation: " << correlation << ", overpotential: " << overpotential << std::endl;
+                    std::cout << "  [CHARGE_PULSE_ACTIVE] avgDivergence: " << avgDivergence << ", avgPresidual: " << avgPresidual << ", correlation: " << correlation << ", overpotential: " << overpotential << std::endl;
                 }
 #endif
 
