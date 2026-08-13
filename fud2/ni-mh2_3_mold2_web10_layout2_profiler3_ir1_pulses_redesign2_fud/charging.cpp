@@ -1006,16 +1006,39 @@ bool chargeBattery() {
                 float avgOverpotential = (countOverpotentials > 0) ? (accumulatedOverpotentialSum / countOverpotentials) : 0.0f;
                 float avgPresidual = (countPresiduals > 0) ? (accumulatedPresidualSum / countPresiduals) : 0.0f;
 
-                // Calculate Pearson-like covariance/correlation coefficient over the window
+                // Calculate Pearson-like covariance/correlation coefficient over the window with a 10s (2-sample) lag.
+                // We correlate divergence(t) with overpotential(t - 10s) to compensate for sensor thermal lag.
                 float covNumerator = 0.0f;
                 float varDivergence = 0.0f;
                 float varOverpotential = 0.0f;
-                for (auto it = s_thermalHistory.rbegin(); it != s_thermalHistory.rend() && (now - it->timestamp < 300000); ++it) {
-                    float devDiv = (it->actualTemp - it->predictedTemp) - avgDivergence;
-                    float devOver = it->overpotential - avgOverpotential;
-                    covNumerator += devDiv * devOver;
-                    varDivergence += devDiv * devDiv;
-                    varOverpotential += devOver * devOver;
+
+                int activeCount = 0;
+                float sumDivergenceForLag = 0.0f;
+                float sumLaggedOverpotential = 0.0f;
+
+                // Pass 1: compute averages for the lagged samples in the 5-minute window
+                for (size_t i = 2; i < s_thermalHistory.size(); ++i) {
+                    if (now - s_thermalHistory[i].timestamp < 300000) {
+                        float div = s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp;
+                        float over = s_thermalHistory[i - 2].overpotential;
+                        sumDivergenceForLag += div;
+                        sumLaggedOverpotential += over;
+                        activeCount++;
+                    }
+                }
+
+                float avgLaggedDivergence = (activeCount > 0) ? (sumDivergenceForLag / activeCount) : 0.0f;
+                float avgLaggedOverpotential = (activeCount > 0) ? (sumLaggedOverpotential / activeCount) : 0.0f;
+
+                // Pass 2: compute covariance and variances
+                for (size_t i = 2; i < s_thermalHistory.size(); ++i) {
+                    if (now - s_thermalHistory[i].timestamp < 300000) {
+                        float devDiv = (s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp) - avgLaggedDivergence;
+                        float devOver = s_thermalHistory[i - 2].overpotential - avgLaggedOverpotential;
+                        covNumerator += devDiv * devOver;
+                        varDivergence += devDiv * devDiv;
+                        varOverpotential += devOver * devOver;
+                    }
                 }
 
                 float correlation = 0.0f;
@@ -1032,9 +1055,10 @@ bool chargeBattery() {
                 }
 
                 // We flag outgassing if we detect a persistent unexplained heat power event
-                // OR an accumulated unexplained thermal energy event!
-                bool persistentHeating = (avgPresidual > dynamicP_threshold && avgDivergence > 0.3f);
-                bool accumulatedEnergyEvent = (residualEnergy_J > dynamicE_threshold && avgDivergence > 0.3f);
+                // OR an accumulated unexplained thermal energy event, AND both exhibit a positive
+                // correlation with the electrochemical overpotential rise (establishing causal link).
+                bool persistentHeating = (avgPresidual > dynamicP_threshold && avgDivergence > 0.3f && correlation > 0.3f);
+                bool accumulatedEnergyEvent = (residualEnergy_J > dynamicE_threshold && avgDivergence > 0.3f && correlation > 0.3f);
                 bool outgassingDiverged = persistentHeating || accumulatedEnergyEvent;
 
                 // Use the correlation smoothly to scale the dynamic overtemperature safety threshold limit.
