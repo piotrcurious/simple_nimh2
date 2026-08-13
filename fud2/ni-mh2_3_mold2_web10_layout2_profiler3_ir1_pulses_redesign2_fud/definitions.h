@@ -186,6 +186,7 @@ struct ChargeLogData {
     uint8_t dutyCycle;
     float internalResistanceLoadedUnloaded;
     float internalResistancePairs;
+    float threshold;
 };
 
 struct MHElectrodeData {

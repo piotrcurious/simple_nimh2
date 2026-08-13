@@ -273,15 +273,7 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
             WEB_UNLOCK();
 
             float td = entry.batteryTemperature - entry.ambientTemperature;
-            float localEnergy = 0.0f;
-            uint32_t prevTs = (i == 0 && j == 0) ? entry.timestamp : lastTimestamp;
-            float estimatedDiff = estimateTempDiff(
-                entry.voltage, entry.voltage, entry.current,
-                currentRParam, entry.ambientTemperature,
-                entry.timestamp, prevTs, entry.batteryTemperature,
-                &localEnergy
-            );
-            float thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
+            float thresholdValue = entry.threshold;
             lastTimestamp = entry.timestamp;
 
             w.startMap(10);
@@ -342,15 +334,7 @@ static void handleJsonChargeLog(AsyncWebServerRequest *request) {
                 WEB_UNLOCK();
 
                 float td = entry.batteryTemperature - entry.ambientTemperature;
-                float localEnergy = 0.0f;
-                uint32_t prevTs = (currentEntry == 0) ? entry.timestamp : lastTimestamp;
-                float estimatedDiff = estimateTempDiff(
-                    entry.voltage, entry.voltage, entry.current,
-                    currentRParam, entry.ambientTemperature,
-                    entry.timestamp, prevTs, entry.batteryTemperature,
-                    &localEnergy
-                );
-                float thresholdValue = MAX_TEMP_DIFF_THRESHOLD + estimatedDiff;
+                float thresholdValue = entry.threshold;
 
                 char buf[256];
                 snprintf(buf, sizeof(buf),
