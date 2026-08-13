@@ -845,6 +845,7 @@ bool chargeBattery() {
                     prev_t2 = t2;
                     t1_deriv = 0.0;
                     t2_deriv = 0.0;
+                    predictedTempTrack = (float)t2; // Align tracking model with actual temperature at pulse boundary
                     prev_divergence_m_set = false;
                     dD_dt_smooth = 0.0;
                     P_residual_slow = 0.0;
