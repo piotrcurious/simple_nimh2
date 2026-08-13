@@ -12,6 +12,10 @@ unsigned long lastChargeEvaluationTime = 0;
 float maximumCurrent = 0.150;
 float currentRampTarget = 0.0f;
 
+static uint8_t outgassing_trip_counter = 0;
+static bool outgassingTriggered = false;
+static unsigned long lastHousekeepTime = 0;
+
 // Global thermal tracking and derivative variables
 float recoveredAmbientTemp = 25.0f;
 float recoveredBatteryTemp = 25.0f;
@@ -569,6 +573,9 @@ bool chargeBattery() {
             eval_mAh_snapshot = (float)mAh_charged;
             eval_time_snapshot = now;
             overtemp_trip_counter = 0;
+            outgassing_trip_counter = 0;
+            outgassingTriggered = false;
+            lastHousekeepTime = 0;
             s_thermalHistory.clear();
             lastLogTime = 0;
             g_unappliedEnergy_J = 0.0f;
@@ -691,7 +698,6 @@ bool chargeBattery() {
                             prev_divergence_m_set = false;
                             dD_dt_smooth = 0.0;
                             P_residual_slow = 0.0;
-                            residualEnergy_J = 0.0f; // Reset integrated energy when starting active pulse
                                 // Set constant current charging pulse duty cycle
                                 int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                                 applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
@@ -712,7 +718,6 @@ bool chargeBattery() {
                     prev_divergence_m_set = false;
                     dD_dt_smooth = 0.0;
                     P_residual_slow = 0.0;
-                    residualEnergy_J = 0.0f;
                     int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                     applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
                     break;
@@ -802,7 +807,6 @@ bool chargeBattery() {
                             prev_divergence_m_set = false;
                             dD_dt_smooth = 0.0;
                             P_residual_slow = 0.0;
-                            residualEnergy_J = 0.0f;
                             int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                             applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
                         }
@@ -829,6 +833,13 @@ bool chargeBattery() {
                     }
                 }
 
+                unsigned long dt_ms = now - lastHousekeepTime;
+                if (lastHousekeepTime == 0 || dt_ms == 0 || dt_ms > 10000) {
+                    dt_ms = CHARGING_HOUSEKEEP_INTERVAL; // Fallback
+                }
+                float dt_s = (float)dt_ms / 1000.0f;
+                lastHousekeepTime = now;
+
                 if (prev_t1 < 0) {
                     prev_t1 = t1;
                     prev_t2 = t2;
@@ -837,10 +848,8 @@ bool chargeBattery() {
                     prev_divergence_m_set = false;
                     dD_dt_smooth = 0.0;
                     P_residual_slow = 0.0;
-                    residualEnergy_J = 0.0f;
+                    lastHousekeepTime = now;
                 }
-
-                float dt_s = (float)CHARGING_HOUSEKEEP_INTERVAL / 1000.0f;
 
                 // robust derivative with simple smoothing (alpha = 0.5)
                 double raw_t1_deriv = (t1 - prev_t1) / dt_s;
@@ -866,10 +875,10 @@ bool chargeBattery() {
                 recoveredAmbientTemp = t1_true;
                 recoveredBatteryTemp = t2_true;
 
-                // Complex thermal loss model evaluates loss at each time step (approx 1 step / CHARGING_HOUSEKEEP_INTERVAL)
+                // Complex thermal loss model evaluates loss at each time step (approx 1 step / dt_ms)
                 // Predict temp change using recovered true ambient temperature (t1_true)
                 // Run the standard non-linear estimateTempDiff model using predictedTempTrack and persistent file-scope unapplied energy state
-                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, regressedInternalResistancePairsIntercept, t1_true, now, now - CHARGING_HOUSEKEEP_INTERVAL, predictedTempTrack, &g_unappliedEnergy_J);
+                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, regressedInternalResistancePairsIntercept, t1_true, now, now - dt_ms, predictedTempTrack, &g_unappliedEnergy_J);
                 predictedTempTrack = predictedDiff + t1_true;
 
                 // Slow first-order residual-power estimator
@@ -881,7 +890,7 @@ bool chargeBattery() {
                     dD_dt_smooth = 0.0;
                     P_residual_slow = 0.0;
                 }
-                float dt_s_div = (float)CHARGING_HOUSEKEEP_INTERVAL / 1000.0f;
+                float dt_s_div = dt_s;
                 double raw_div_deriv = (D_m - prev_divergence_m) / dt_s_div;
 
                 // Physical Derivative Clamping: filter outlier spikes
