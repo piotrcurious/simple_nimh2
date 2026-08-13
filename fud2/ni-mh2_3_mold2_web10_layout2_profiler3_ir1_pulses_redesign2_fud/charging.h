@@ -14,6 +14,7 @@ struct ThermalStepResponse {
     float predictedVoltage;
     float overpotential;
     float ir;
+    float p_residual;
 };
 
 extern std::vector<ThermalStepResponse> s_thermalHistory;
