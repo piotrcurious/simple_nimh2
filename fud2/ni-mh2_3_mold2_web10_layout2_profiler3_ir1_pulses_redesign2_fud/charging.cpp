@@ -883,8 +883,8 @@ bool chargeBattery() {
                 predictedTempTrack = predictedDiff + t1_true;
 
                 // Slow first-order residual-power estimator
-                // Calculate raw measured divergence
-                float D_m = (float)t2 - predictedTempTrack;
+                // Calculate raw measured divergence using unified lag-compensated physical temperature (t2_true)
+                float D_m = t2_true - predictedTempTrack;
                 if (!prev_divergence_m_set) {
                     prev_divergence_m = D_m;
                     prev_divergence_m_set = true;
