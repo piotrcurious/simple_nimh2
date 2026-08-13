@@ -909,9 +909,10 @@ bool chargeBattery() {
                 P_residual_slow = 0.9877 * P_residual_slow + 0.0123 * P_inst;
                 float p_residual = (float)P_residual_slow;
 
-                // Integrate unexplained thermal power to calculate residual energy
-                // Apply control-theory anti-windup clamp to prevent negative integrated energy hiding a real outgassing event
-                residualEnergy_J = std::max(0.0f, residualEnergy_J + p_residual * dt_s);
+                // Integrate unexplained thermal power using a leaky integrator (relaxation time constant = 60s)
+                // This ensures transient modeling errors do not accumulate indefinitely (decaying old residuals naturally),
+                // while still letting persistent outgassing heat build up to trip the safety limit.
+                residualEnergy_J = std::max(0.0f, residualEnergy_J * expf(-dt_s / 60.0f) + p_residual * dt_s);
 
                 // Self-tune baseline during first 30 seconds of active charging pulse cycle (120 samples)
                 if (!baseline_calibrated) {
