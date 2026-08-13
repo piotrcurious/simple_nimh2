@@ -588,6 +588,7 @@ bool chargeBattery() {
                 t2_deriv = 0.0;
                 ChargeLogData s; s.timestamp = (uint32_t)now; s.current = c; s.voltage = v; s.ambientTemperature = (float)t1; s.batteryTemperature = (float)t2;
                 s.dutyCycle = 0; s.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept; s.internalResistancePairs = regressedInternalResistancePairsIntercept;
+                s.threshold = MAX_DIFF_TEMP;
                 logChargeData(s); pushRecentChargeLog(s);
             }
             chargingState = CHARGE_PULSE_IR_TEST;
@@ -1095,6 +1096,7 @@ bool chargeBattery() {
                     e.dutyCycle = (uint8_t)dutyCycle;
                     e.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
                     e.internalResistancePairs = regressedInternalResistancePairsIntercept;
+                    e.threshold = MAX_DIFF_TEMP;
                     logChargeData(e);
                     pushRecentChargeLog(e);
 
