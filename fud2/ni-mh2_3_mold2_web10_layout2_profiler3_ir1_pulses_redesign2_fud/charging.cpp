@@ -12,6 +12,40 @@ unsigned long lastChargeEvaluationTime = 0;
 float maximumCurrent = 0.150;
 float currentRampTarget = 0.0f;
 
+static uint8_t outgassing_trip_counter = 0;
+static bool outgassingTriggered = false;
+static unsigned long lastHousekeepTime = 0;
+
+float getAverageResistanceNearCurrent(float cur, float data[][2], int count) {
+    if (count <= 0) return 0.18f;
+    float sumR = 0.0f;
+    int matchingCount = 0;
+    float tolerance = 0.15f;
+    for (int i = 0; i < count; ++i) {
+        if (std::fabs(data[i][0] - cur) <= tolerance) {
+            sumR += data[i][1];
+            matchingCount++;
+        }
+    }
+    if (matchingCount > 0) {
+        return sumR / (float)matchingCount;
+    }
+    tolerance = 0.35f;
+    for (int i = 0; i < count; ++i) {
+        if (std::fabs(data[i][0] - cur) <= tolerance) {
+            sumR += data[i][1];
+            matchingCount++;
+        }
+    }
+    if (matchingCount > 0) {
+        return sumR / (float)matchingCount;
+    }
+    for (int i = 0; i < count; ++i) {
+        sumR += data[i][1];
+    }
+    return sumR / (float)count;
+}
+
 // Global thermal tracking and derivative variables
 float recoveredAmbientTemp = 25.0f;
 float recoveredBatteryTemp = 25.0f;
@@ -103,7 +137,9 @@ float computeAbsoluteTempRiseFromHistory(int depth) {
 
         float cur = e.current;
         if (!std::isfinite(cur) || cur < 0.0f) cur = 0.0f;
-        float Rparam = regressedInternalResistancePairsIntercept;
+        float Rparam = getAverageResistanceNearCurrent(cur, internalResistanceDataPairs, resistanceDataCountPairs);
+        if (Rparam < 0.01f) Rparam = 0.01f;
+        if (Rparam > 5.0f) Rparam = 5.0f;
         float vUnderLoad = e.voltage;
         float ambient = e.ambientTemperature;
         if (!std::isfinite(ambient)) ambient = 25.0f;
@@ -569,6 +605,9 @@ bool chargeBattery() {
             eval_mAh_snapshot = (float)mAh_charged;
             eval_time_snapshot = now;
             overtemp_trip_counter = 0;
+            outgassing_trip_counter = 0;
+            outgassingTriggered = false;
+            lastHousekeepTime = 0;
             s_thermalHistory.clear();
             lastLogTime = 0;
             g_unappliedEnergy_J = 0.0f;
@@ -691,7 +730,6 @@ bool chargeBattery() {
                             prev_divergence_m_set = false;
                             dD_dt_smooth = 0.0;
                             P_residual_slow = 0.0;
-                            residualEnergy_J = 0.0f; // Reset integrated energy when starting active pulse
                                 // Set constant current charging pulse duty cycle
                                 int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                                 applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
@@ -712,7 +750,6 @@ bool chargeBattery() {
                     prev_divergence_m_set = false;
                     dD_dt_smooth = 0.0;
                     P_residual_slow = 0.0;
-                    residualEnergy_J = 0.0f;
                     int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                     applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
                     break;
@@ -802,7 +839,6 @@ bool chargeBattery() {
                             prev_divergence_m_set = false;
                             dD_dt_smooth = 0.0;
                             P_residual_slow = 0.0;
-                            residualEnergy_J = 0.0f;
                             int optimalDC = estimateDutyCycleForCurrent(maximumCurrent);
                             applyDuty(std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, optimalDC)));
                         }
@@ -829,18 +865,24 @@ bool chargeBattery() {
                     }
                 }
 
+                unsigned long dt_ms = now - lastHousekeepTime;
+                if (lastHousekeepTime == 0 || dt_ms == 0 || dt_ms > 10000) {
+                    dt_ms = CHARGING_HOUSEKEEP_INTERVAL; // Fallback
+                }
+                float dt_s = (float)dt_ms / 1000.0f;
+                lastHousekeepTime = now;
+
                 if (prev_t1 < 0) {
                     prev_t1 = t1;
                     prev_t2 = t2;
                     t1_deriv = 0.0;
                     t2_deriv = 0.0;
+                    predictedTempTrack = (float)t2; // Align tracking model with actual temperature at pulse boundary
                     prev_divergence_m_set = false;
                     dD_dt_smooth = 0.0;
                     P_residual_slow = 0.0;
-                    residualEnergy_J = 0.0f;
+                    lastHousekeepTime = now;
                 }
-
-                float dt_s = (float)CHARGING_HOUSEKEEP_INTERVAL / 1000.0f;
 
                 // robust derivative with simple smoothing (alpha = 0.5)
                 double raw_t1_deriv = (t1 - prev_t1) / dt_s;
@@ -866,22 +908,25 @@ bool chargeBattery() {
                 recoveredAmbientTemp = t1_true;
                 recoveredBatteryTemp = t2_true;
 
-                // Complex thermal loss model evaluates loss at each time step (approx 1 step / CHARGING_HOUSEKEEP_INTERVAL)
+                // Complex thermal loss model evaluates loss at each time step (approx 1 step / dt_ms)
                 // Predict temp change using recovered true ambient temperature (t1_true)
                 // Run the standard non-linear estimateTempDiff model using predictedTempTrack and persistent file-scope unapplied energy state
-                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, regressedInternalResistancePairsIntercept, t1_true, now, now - CHARGING_HOUSEKEEP_INTERVAL, predictedTempTrack, &g_unappliedEnergy_J);
+                float R_load = getAverageResistanceNearCurrent(cur, internalResistanceDataPairs, resistanceDataCountPairs);
+                if (R_load < 0.01f) R_load = 0.01f;
+                if (R_load > 5.0f) R_load = 5.0f;
+                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, R_load, t1_true, now, now - dt_ms, predictedTempTrack, &g_unappliedEnergy_J);
                 predictedTempTrack = predictedDiff + t1_true;
 
                 // Slow first-order residual-power estimator
-                // Calculate raw measured divergence
-                float D_m = (float)t2 - predictedTempTrack;
+                // Calculate raw measured divergence using unified lag-compensated physical temperature (t2_true)
+                float D_m = t2_true - predictedTempTrack;
                 if (!prev_divergence_m_set) {
                     prev_divergence_m = D_m;
                     prev_divergence_m_set = true;
                     dD_dt_smooth = 0.0;
                     P_residual_slow = 0.0;
                 }
-                float dt_s_div = (float)CHARGING_HOUSEKEEP_INTERVAL / 1000.0f;
+                float dt_s_div = dt_s;
                 double raw_div_deriv = (D_m - prev_divergence_m) / dt_s_div;
 
                 // Physical Derivative Clamping: filter outlier spikes
@@ -900,9 +945,10 @@ bool chargeBattery() {
                 P_residual_slow = 0.9877 * P_residual_slow + 0.0123 * P_inst;
                 float p_residual = (float)P_residual_slow;
 
-                // Integrate unexplained thermal power to calculate residual energy
-                // Apply control-theory anti-windup clamp to prevent negative integrated energy hiding a real outgassing event
-                residualEnergy_J = std::max(0.0f, residualEnergy_J + p_residual * dt_s);
+                // Integrate unexplained thermal power using a leaky integrator (relaxation time constant = 60s)
+                // This ensures transient modeling errors do not accumulate indefinitely (decaying old residuals naturally),
+                // while still letting persistent outgassing heat build up to trip the safety limit.
+                residualEnergy_J = std::max(0.0f, residualEnergy_J * expf(-dt_s / 60.0f) + p_residual * dt_s);
 
                 // Self-tune baseline during first 30 seconds of active charging pulse cycle (120 samples)
                 if (!baseline_calibrated) {
@@ -937,9 +983,17 @@ bool chargeBattery() {
                     }
                 }
 
-                // Electrochemical voltage prediction under load: V_predicted = V_unloaded - I * R_int
-                float predictedV = s_irTest.unloadedVoltage - cur * regressedInternalResistancePairsIntercept;
-                float overpotential = std::fabs(predictedV - v);
+                // Electrochemical voltage prediction under load: V_predicted = V_unloaded + I * R(I) (during charging)
+                float R_load_v = getAverageResistanceNearCurrent(cur, internalResistanceDataPairs, resistanceDataCountPairs);
+                if (R_load_v < 0.01f) R_load_v = 0.01f;
+                if (R_load_v > 5.0f) R_load_v = 5.0f;
+                float predictedV = s_irTest.unloadedVoltage + cur * R_load_v;
+                // Retain true signed physical overpotential direction for statistically meaningful Pearson correlation
+                float overpotential = v - predictedV;
+
+                // Expected model power dissipation (P_model = I^2 * R) normalized with a floor to prevent zero divisions
+                float expectedP_model = cur * cur * R_load_v;
+                float r_p_instant = p_residual / std::max(expectedP_model, 0.05f);
 
                 // Store step response to history buffer at a sparse interval (every 5 seconds)
                 // to cover a full 5 minutes (300 seconds) window with exactly 60 elements.
@@ -955,8 +1009,9 @@ bool chargeBattery() {
                     stepResp.predictedTemp = predictedTempTrack;
                     stepResp.predictedVoltage = predictedV;
                     stepResp.overpotential = overpotential;
-                    stepResp.ir = regressedInternalResistancePairsIntercept;
+                    stepResp.ir = R_load_v;
                     stepResp.p_residual = p_residual;
+                    stepResp.r_p = r_p_instant;
                     s_thermalHistory.push_back(stepResp);
                     lastThermalHistoryAppendTime = now;
                     appendedHistoryThisTick = true;
@@ -979,8 +1034,9 @@ bool chargeBattery() {
                 float accumulatedOverpotentialSum = 0.0f;
                 int countOverpotentials = 0;
 
-                // Track unexplained physical residual heat power P_residual
+                // Track unexplained physical residual heat power P_residual and normalized ratio r_p
                 float accumulatedPresidualSum = 0.0f;
+                float accumulatedRpSum = 0.0f;
                 int countPresiduals = 0;
 
                 // Look at the last 5 minutes (300 seconds) of pulse history to verify divergence and overpotential correlation
@@ -988,6 +1044,7 @@ bool chargeBattery() {
                     accumulatedDivergenceSum += (it->actualTemp - it->predictedTemp);
                     accumulatedOverpotentialSum += it->overpotential;
                     accumulatedPresidualSum += it->p_residual;
+                    accumulatedRpSum += it->r_p;
                     countDivergences++;
                     countOverpotentials++;
                     countPresiduals++;
@@ -996,21 +1053,71 @@ bool chargeBattery() {
                 float avgDivergence = (countDivergences > 0) ? (accumulatedDivergenceSum / countDivergences) : 0.0f;
                 float avgOverpotential = (countOverpotentials > 0) ? (accumulatedOverpotentialSum / countOverpotentials) : 0.0f;
                 float avgPresidual = (countPresiduals > 0) ? (accumulatedPresidualSum / countPresiduals) : 0.0f;
+                float avgRp = (countPresiduals > 0) ? (accumulatedRpSum / countPresiduals) : 0.0f;
 
-                // Calculate Pearson-like covariance/correlation coefficient over the window
+                // Calculate Pearson-like covariance/correlation coefficient over the window with a 10s lag.
+                // We correlate divergence(t) with overpotential(t - 10s) using jitter-immune timestamp-based search
+                // to physically compensate for sensor thermal lag.
                 float covNumerator = 0.0f;
                 float varDivergence = 0.0f;
                 float varOverpotential = 0.0f;
-                for (auto it = s_thermalHistory.rbegin(); it != s_thermalHistory.rend() && (now - it->timestamp < 300000); ++it) {
-                    float devDiv = (it->actualTemp - it->predictedTemp) - avgDivergence;
-                    float devOver = it->overpotential - avgOverpotential;
-                    covNumerator += devDiv * devOver;
-                    varDivergence += devDiv * devDiv;
-                    varOverpotential += devOver * devOver;
+
+                int activeCount = 0;
+                float sumDivergenceForLag = 0.0f;
+                float sumLaggedOverpotential = 0.0f;
+
+                auto get_lagged_overpotential = [](size_t i, uint32_t target_time) -> float {
+                    if (i == 0) return -1.0f;
+                    size_t best_j = 0;
+                    uint32_t best_diff = 0xFFFFFFFF;
+                    for (size_t j = 0; j < i; ++j) {
+                        uint32_t ts = s_thermalHistory[j].timestamp;
+                        uint32_t diff = (ts > target_time) ? (ts - target_time) : (target_time - ts);
+                        if (diff < best_diff) {
+                            best_diff = diff;
+                            best_j = j;
+                        }
+                    }
+                    // Only return if the closest timestamp is within a reasonable 3-second window of target 10s lag
+                    if (best_diff <= 3000) {
+                        return s_thermalHistory[best_j].overpotential;
+                    }
+                    return -1.0f;
+                };
+
+                // Pass 1: compute averages for the lagged samples in the 5-minute window
+                for (size_t i = 1; i < s_thermalHistory.size(); ++i) {
+                    if (now - s_thermalHistory[i].timestamp < 300000) {
+                        float div = s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp;
+                        float over = get_lagged_overpotential(i, s_thermalHistory[i].timestamp - 10000);
+                        if (over >= 0.0f) {
+                            sumDivergenceForLag += div;
+                            sumLaggedOverpotential += over;
+                            activeCount++;
+                        }
+                    }
+                }
+
+                float avgLaggedDivergence = (activeCount > 0) ? (sumDivergenceForLag / activeCount) : 0.0f;
+                float avgLaggedOverpotential = (activeCount > 0) ? (sumLaggedOverpotential / activeCount) : 0.0f;
+
+                // Pass 2: compute covariance and variances
+                for (size_t i = 1; i < s_thermalHistory.size(); ++i) {
+                    if (now - s_thermalHistory[i].timestamp < 300000) {
+                        float over = get_lagged_overpotential(i, s_thermalHistory[i].timestamp - 10000);
+                        if (over >= 0.0f) {
+                            float devDiv = (s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp) - avgLaggedDivergence;
+                            float devOver = over - avgLaggedOverpotential;
+                            covNumerator += devDiv * devOver;
+                            varDivergence += devDiv * devDiv;
+                            varOverpotential += devOver * devOver;
+                        }
+                    }
                 }
 
                 float correlation = 0.0f;
-                if (varDivergence > 1e-6f && varOverpotential > 1e-6f) {
+                // Enforce a minimum sample count of 20 to prevent spurious statistical correlation with sparse start-of-pulse data
+                if (activeCount >= 20 && varDivergence > 1e-6f && varOverpotential > 1e-6f) {
                     correlation = covNumerator / std::sqrt(varDivergence * varOverpotential);
                     // Robustness Guard: Clamp correlation to mathematical [-1.0, 1.0] domain
                     if (std::isnan(correlation)) {
@@ -1023,9 +1130,11 @@ bool chargeBattery() {
                 }
 
                 // We flag outgassing if we detect a persistent unexplained heat power event
-                // OR an accumulated unexplained thermal energy event!
-                bool persistentHeating = (avgPresidual > dynamicP_threshold && avgDivergence > 0.3f);
-                bool accumulatedEnergyEvent = (residualEnergy_J > dynamicE_threshold && avgDivergence > 0.3f);
+                // OR an accumulated unexplained thermal energy event, AND both exhibit a positive
+                // correlation, normalized power ratio divergence (>15%), and a minimum positive
+                // average overpotential (polarization > 10mV) with the electrochemical rise (establishing causal link).
+                bool persistentHeating = (avgPresidual > dynamicP_threshold && avgRp > 0.15f && avgDivergence > 0.3f && correlation > 0.3f && avgOverpotential > 0.01f);
+                bool accumulatedEnergyEvent = (residualEnergy_J > dynamicE_threshold && avgRp > 0.15f && avgDivergence > 0.3f && correlation > 0.3f && avgOverpotential > 0.01f);
                 bool outgassingDiverged = persistentHeating || accumulatedEnergyEvent;
 
                 // Use the correlation smoothly to scale the dynamic overtemperature safety threshold limit.
@@ -1095,7 +1204,12 @@ bool chargeBattery() {
                     e.batteryTemperature = (float)t2;
                     e.dutyCycle = (uint8_t)dutyCycle;
                     e.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
-                    e.internalResistancePairs = regressedInternalResistancePairsIntercept;
+                    {
+                        float R_log = getAverageResistanceNearCurrent(cur, internalResistanceDataPairs, resistanceDataCountPairs);
+                        if (R_log < 0.01f) R_log = 0.01f;
+                        if (R_log > 5.0f) R_log = 5.0f;
+                        e.internalResistancePairs = R_log;
+                    }
                     e.threshold = MAX_DIFF_TEMP;
                     logChargeData(e);
                     pushRecentChargeLog(e);

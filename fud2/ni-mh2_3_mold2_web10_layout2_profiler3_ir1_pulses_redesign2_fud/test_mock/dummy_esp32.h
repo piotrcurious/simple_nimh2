@@ -317,8 +317,13 @@ struct WebServer {
     void sendContent(const char* data, size_t size) { lastResponseContent.append(data, size); }
 };
 
+extern int mock_boot_pin_state;
 inline void pinMode(int pin, int mode) {}
 inline void digitalWrite(int pin, int val) {}
+inline int digitalRead(int pin) {
+    if (pin == 0) return mock_boot_pin_state;
+    return 1;
+}
 inline int analogRead(int pin) { return 0; }
 inline void analogWrite(int pin, int val) {}
 inline void analogWriteResolution(int pin, int res) {}

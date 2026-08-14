@@ -342,6 +342,30 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
     current = d.charge_current_a;
 }
 
+// --- Thermal Characterize variables ---
+static double tempStart = 0.0;
+static double tempAtShutoff = 0.0;
+static unsigned long startTime = 0;
+static unsigned long shutoffTime = 0;
+static double peakTempAfterShutoff = 0.0;
+static unsigned long peakTimeAfterShutoff = 0;
+static int characPhase = 0; // 0: Heating, 1: Peak detection, 2: Cool-off
+static unsigned long cooloffStartTime = 0;
+
+static int characIteration = 0; // Iterates 3 times
+static float sumTauThermal = 0.0f;
+static float sumTauThermistor = 0.0f;
+static float sumTauSHT4x = 0.0f;
+
+static unsigned long currentHeatingDurationMs = 15000;
+static unsigned long currentCooloffDurationMs = 30000;
+
+static int sweepStep = -1;
+static float sweepUnloadedV = 0.0f;
+static float sweepVoltages[15] = {0.0f};
+static float sweepCurrents[15] = {0.0f};
+static unsigned long sweepStepStartTime = 0;
+
 // --- Non-blocking build current model ---
 void buildCurrentModelStep() {
     const unsigned long now = millis();
@@ -359,6 +383,31 @@ void buildCurrentModelStep() {
             applyDuty(0);
             buildModelDutyCycle = 0;
             buildModelLastStepTime = now;
+
+            // Reset thermal characterize variables
+            tempStart = 0.0;
+            tempAtShutoff = 0.0;
+            startTime = 0;
+            shutoffTime = 0;
+            peakTempAfterShutoff = 0.0;
+            peakTimeAfterShutoff = 0;
+            characPhase = 0;
+            cooloffStartTime = 0;
+            characIteration = 0;
+            sumTauThermal = 0.0f;
+            sumTauThermistor = 0.0f;
+            sumTauSHT4x = 0.0f;
+            currentHeatingDurationMs = 15000;
+            currentCooloffDurationMs = 30000;
+
+            sweepStep = -1;
+            sweepUnloadedV = 0.0f;
+            for (int k = 0; k < 15; k++) {
+                sweepVoltages[k] = 0.0f;
+                sweepCurrents[k] = 0.0f;
+            }
+            sweepStepStartTime = 0;
+
             setBuildModelPhase(BuildModelPhase::Settle);
             Serial.println("Building Current Model: Settling (2s)...");
             Serial.flush();
@@ -435,8 +484,8 @@ void buildCurrentModelStep() {
 
                     Serial.printf("Dead region ends at Duty: %d, Threshold: %.3f A\n", buildModelDutyCycle, (float)MEASURABLE_CURRENT_THRESHOLD);
                     buildModelDutyCycle += 1;
-                    buildModelLastStepTime = now; // Reset timer for ThermalCharacterize
-                    setBuildModelPhase(BuildModelPhase::ThermalCharacterize);
+                    buildModelLastStepTime = now; // Reset timer for SetDuty
+                    setBuildModelPhase(BuildModelPhase::SetDuty);
                 } else {
                     buildModelDutyCycle += 1; // Slightly faster increment
                     if (buildModelDutyCycle > MAX_DUTY_CYCLE) {
@@ -456,23 +505,6 @@ void buildCurrentModelStep() {
                 // Dynamic Iterative Thermal and Sensor Lag Characterization (3-phase self-tuning loop):
                 // Runs 3 full cycles to verify measurements and self-tune parameters.
                 // Adjusts Heating and Cool-off durations for iterations 1 and 2 based on previous estimations.
-                static double tempStart = 0.0;
-                static double tempAtShutoff = 0.0;
-                static unsigned long startTime = 0;
-                static unsigned long shutoffTime = 0;
-                static double peakTempAfterShutoff = 0.0;
-                static unsigned long peakTimeAfterShutoff = 0;
-                static int characPhase = 0; // 0: Heating, 1: Peak detection, 2: Cool-off
-                static unsigned long cooloffStartTime = 0;
-
-                static int characIteration = 0; // Iterates 3 times
-                static float sumTauThermal = 0.0f;
-                static float sumTauThermistor = 0.0f;
-                static float sumTauSHT4x = 0.0f;
-
-                static unsigned long currentHeatingDurationMs = 15000;
-                static unsigned long currentCooloffDurationMs = 30000;
-
                 if (tempStart == 0.0) {
                     double t1, t2, td; float tmv, v, c;
                     getThermistorReadings(t1, t2, td, tmv, v, c);
@@ -490,24 +522,113 @@ void buildCurrentModelStep() {
                         sumTauSHT4x = 0.0f;
                         currentHeatingDurationMs = 15000;
                         currentCooloffDurationMs = 30000;
+                        sweepStep = -1;
+                        sweepStepStartTime = now;
+                        applyDuty(0); // Start sweep with unloaded point
+                        Serial.println("Thermal Characterize Iteration 1: Starting 15-point sweep...");
+                    } else {
+                        float targetI = 0.90f * estimateCurrent(MAX_DUTY_CYCLE);
+                        int characDuty = estimateDutyCycleForCurrent(targetI);
+                        if (characDuty < MIN_CHARGE_DUTY_CYCLE) characDuty = MIN_CHARGE_DUTY_CYCLE;
+                        applyDuty(characDuty);
+                        Serial.printf("Thermal Characterize [Iteration %d/3] Phase 1 (Heating, %lu ms): applied 90%% load (Duty %d, Target %.3f A), initial temp: %.2f C\n",
+                                      characIteration + 1, currentHeatingDurationMs, characDuty, targetI, tempStart);
                     }
-                    applyDuty(MAX_DUTY_CYCLE / 2);
-                    Serial.printf("Thermal Characterize [Iteration %d/3] Phase 1 (Heating, %lu ms): applied half-load, initial temp: %.2f C\n",
-                                  characIteration + 1, currentHeatingDurationMs, tempStart);
                 }
 
                 if (characPhase == 0) {
-                    if (now - startTime >= currentHeatingDurationMs) {
-                        double t1, t2, td; float tmv, v, c;
-                        getThermistorReadings(t1, t2, td, tmv, v, c);
-                        tempAtShutoff = t2;
-                        peakTempAfterShutoff = t2;
-                        peakTimeAfterShutoff = now;
-                        shutoffTime = now;
-                        applyDuty(0); // Shutoff load to observe sensor lag peak
-                        characPhase = 1;
-                        Serial.printf("Thermal Characterize [Iteration %d/3] Phase 2 (Overshoot Peak Detection): shutoff load at temp: %.4f C\n",
-                                      characIteration + 1, tempAtShutoff);
+                    if (characIteration == 0) {
+                        // 15-point sweep state machine
+                        if (sweepStep == -1) {
+                            if (now - startTime >= 2000) {
+                                double t1, t2, td; float tmv, v, c;
+                                getThermistorReadings(t1, t2, td, tmv, v, c);
+                                sweepUnloadedV = v;
+                                sweepStep = 0;
+
+                                float maxC = estimateCurrent(MAX_DUTY_CYCLE);
+                                float minC = MEASURABLE_CURRENT_THRESHOLD > 0.01f ? MEASURABLE_CURRENT_THRESHOLD : 0.05f;
+                                float limitC = 0.90f * maxC;
+                                if (limitC <= minC) limitC = maxC;
+
+                                float targetI = minC;
+                                int dCycle = estimateDutyCycleForCurrent(targetI);
+                                applyDuty(dCycle);
+                                sweepStepStartTime = now;
+                                Serial.printf("  Sweep Step %d/15: Applied Duty %d for target %.3f A (unloadedV = %.3f V)\n", sweepStep+1, dCycle, targetI, sweepUnloadedV);
+                            }
+                        } else if (sweepStep >= 0 && sweepStep <= 14) {
+                            if (now - sweepStepStartTime >= 1000) {
+                                double t1, t2, td; float tmv, v, c;
+                                getThermistorReadings(t1, t2, td, tmv, v, c);
+                                sweepVoltages[sweepStep] = v;
+                                sweepCurrents[sweepStep] = c;
+
+                                if (sweepStep < 14) {
+                                    sweepStep++;
+                                    float maxC = estimateCurrent(MAX_DUTY_CYCLE);
+                                    float minC = MEASURABLE_CURRENT_THRESHOLD > 0.01f ? MEASURABLE_CURRENT_THRESHOLD : 0.05f;
+                                    float limitC = 0.90f * maxC;
+                                    if (limitC <= minC) limitC = maxC;
+
+                                    float targetI = minC + (float)sweepStep * (limitC - minC) / 14.0f;
+                                    int dCycle = estimateDutyCycleForCurrent(targetI);
+                                    applyDuty(dCycle);
+                                    sweepStepStartTime = now;
+                                    Serial.printf("  Sweep Step %d/15: Applied Duty %d for target %.3f A\n", sweepStep+1, dCycle, targetI);
+                                } else {
+                                    // Finished 15 points
+                                    float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+                                    sumX += 0.0f;
+                                    sumY += sweepUnloadedV;
+                                    for (int k = 0; k < 15; k++) {
+                                        float I = sweepCurrents[k];
+                                        float V = sweepVoltages[k];
+                                        sumX += I;
+                                        sumY += V;
+                                        sumXY += I * V;
+                                        sumX2 += I * I;
+                                    }
+                                    float denom = (16 * sumX2 - sumX * sumX);
+                                    float calculatedIR = 0.15f;
+                                    if (std::abs(denom) > 1e-6f) {
+                                        float slope = (16 * sumXY - sumX * sumY) / denom;
+                                        calculatedIR = std::fabs(slope);
+                                    }
+                                    if (calculatedIR < MIN_VALID_RESISTANCE || calculatedIR > STRUCTURED_IR_SWEEP_MAX_LIMIT) {
+                                        calculatedIR = STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK;
+                                    }
+
+                                    WEB_LOCK();
+                                    regressedInternalResistancePairsIntercept = calculatedIR;
+                                    regressedInternalResistanceIntercept = calculatedIR;
+                                    storeOrAverageResistanceData(sweepCurrents[14], calculatedIR, internalResistanceDataPairs, resistanceDataCountPairs);
+                                    storeOrAverageResistanceData(sweepCurrents[14], calculatedIR, internalResistanceData, resistanceDataCount);
+                                    WEB_UNLOCK();
+
+                                    tempAtShutoff = t2;
+                                    peakTempAfterShutoff = t2;
+                                    peakTimeAfterShutoff = now;
+                                    shutoffTime = now;
+                                    applyDuty(0);
+                                    characPhase = 1;
+                                    Serial.printf("  Sweep IR Regression Complete: IR = %.4f Ohms. Transitioning to Peak Detection.\n", calculatedIR);
+                                }
+                            }
+                        }
+                    } else {
+                        if (now - startTime >= currentHeatingDurationMs) {
+                            double t1, t2, td; float tmv, v, c;
+                            getThermistorReadings(t1, t2, td, tmv, v, c);
+                            tempAtShutoff = t2;
+                            peakTempAfterShutoff = t2;
+                            peakTimeAfterShutoff = now;
+                            shutoffTime = now;
+                            applyDuty(0); // Shutoff load to observe sensor lag peak
+                            characPhase = 1;
+                            Serial.printf("Thermal Characterize [Iteration %d/3] Phase 2 (Overshoot Peak Detection): shutoff load at temp: %.4f C\n",
+                                          characIteration + 1, tempAtShutoff);
+                        }
                     }
                 } else if (characPhase == 1) {
                     double t1, t2, td; float tmv, v, c;
@@ -598,6 +719,18 @@ void buildCurrentModelStep() {
                             estimatedTauThermal = sumTauThermal / 3.0f;
                             estimatedTauTherm = sumTauThermistor / 3.0f;
                             estimatedTauSHT = sumTauSHT4x / 3.0f;
+
+                            applyDuty(0);
+                            if (postModelAppState == APP_STATE_CHARGING) {
+                                setAppState(APP_STATE_CHARGING);
+                                startCharging();
+                            } else if (postModelAppState == APP_STATE_MEASURING_IR) {
+                                currentIRState = IR_STATE_START;
+                                setAppState(APP_STATE_MEASURING_IR);
+                            } else {
+                                setAppState(APP_STATE_IDLE);
+                            }
+                            postModelAppState = APP_STATE_IDLE;
                             WEB_UNLOCK();
 
                             Serial.printf("Multi-Iteration Thermal Characterize Complete (All 3 Iterations Verified):\n");
@@ -608,7 +741,7 @@ void buildCurrentModelStep() {
                             characIteration = 0;
                             characPhase = 0;
                             buildModelLastStepTime = now;
-                            setBuildModelPhase(BuildModelPhase::SetDuty);
+                            setBuildModelPhase(BuildModelPhase::Idle);
                         }
                     }
                 }
@@ -651,19 +784,12 @@ void buildCurrentModelStep() {
                 }
 
                 currentModel.isModelBuilt = true;
-
                 applyDuty(0);
-                if (postModelAppState == APP_STATE_CHARGING) {
-                    setAppState(APP_STATE_CHARGING);
-                    startCharging();
-                } else if (postModelAppState == APP_STATE_MEASURING_IR) {
-                    currentIRState = IR_STATE_START;
-                    setAppState(APP_STATE_MEASURING_IR);
-                } else {
-                    setAppState(APP_STATE_IDLE);
-                }
-                postModelAppState = APP_STATE_IDLE;
                 WEB_UNLOCK();
+
+                Serial.println("Duty Cycle Model Built. Transitioning to Thermal Characterization.");
+                buildModelLastStepTime = now;
+                setBuildModelPhase(BuildModelPhase::ThermalCharacterize);
             } else {
                 WEB_LOCK();
                 currentModel.isModelBuilt = false;
@@ -671,8 +797,8 @@ void buildCurrentModelStep() {
                 postModelAppState = APP_STATE_IDLE;
                 WEB_UNLOCK();
                 applyDuty(0);
+                setBuildModelPhase(BuildModelPhase::Idle);
             }
-            setBuildModelPhase(BuildModelPhase::Idle);
             break;
     }
 }
@@ -822,10 +948,14 @@ void setup() {
         1
     );
 
+    pinMode(BOOT_PIN, INPUT_PULLUP);
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
+
     setupPWM();
     WiFi.setSleep(false); // prevent modem sleep to stay snappy
 
-    Serial.println("System Ready.");
+    Serial.println("System Ready. Boot pin setup on GPIO 0, LED on GPIO 2.");
 }
 
 void gatherData() {
@@ -839,6 +969,64 @@ void loop() {
     uint32_t frameRef = g_frameStartUs;
     uint32_t t0 = (uint32_t)(esp_timer_get_time() - frameRef);
     const unsigned long now = millis();
+
+    // --- Boot Pin Control (GPIO 0 Start Charging Trigger) ---
+    static bool lastBootPinReading = HIGH;
+    static unsigned long lastBootDebounceTime = 0;
+    static bool bootButtonState = HIGH;
+
+    int currentBootReading = digitalRead(BOOT_PIN);
+    if (currentBootReading != lastBootPinReading) {
+        lastBootDebounceTime = now;
+        lastBootPinReading = currentBootReading;
+    }
+
+    if ((now - lastBootDebounceTime) > 50) {
+        if (currentBootReading != bootButtonState) {
+            bootButtonState = currentBootReading;
+            if (bootButtonState == LOW) { // Button pressed (active LOW)
+                Serial.println("Hardware BOOT button pressed: Triggering charging flow...");
+                WEB_LOCK();
+                resetAh = true;
+                postModelAppState = APP_STATE_CHARGING;
+                WEB_UNLOCK();
+                setBuildModelPhase(BuildModelPhase::Idle);
+                setAppState(APP_STATE_BUILDING_MODEL);
+            }
+        }
+    }
+
+    // --- Built-in LED Visual Feedback (GPIO 2) ---
+    static unsigned long lastLedToggleTime = 0;
+    static bool ledState = LOW;
+    unsigned long ledInterval = 0;
+
+    if (currentAppState == APP_STATE_BUILDING_MODEL || currentAppState == APP_STATE_MEASURING_IR) {
+        ledInterval = 100; // Fast blink for model building & IR sweep
+    } else if (currentAppState == APP_STATE_CHARGING) {
+        if (chargingState == CHARGE_PULSE_ACTIVE) {
+            ledInterval = 500; // Normal active pulse charging heartbeat
+        } else if (chargingState == CHARGE_PULSE_IR_TEST || chargingState == CHARGE_PULSE_IR_REMEASURE) {
+            ledInterval = 250; // IR pulse re-measurement testing
+        } else {
+            ledInterval = 0; // OFF when stopped
+        }
+    } else {
+        ledInterval = 0; // OFF in IDLE
+    }
+
+    if (ledInterval == 0) {
+        if (ledState != LOW) {
+            ledState = LOW;
+            digitalWrite(LED_PIN, LOW);
+        }
+    } else {
+        if (now - lastLedToggleTime >= ledInterval) {
+            lastLedToggleTime = now;
+            ledState = !ledState;
+            digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+        }
+    }
 
     switch (currentAppState) {
         case APP_STATE_IDLE: break;

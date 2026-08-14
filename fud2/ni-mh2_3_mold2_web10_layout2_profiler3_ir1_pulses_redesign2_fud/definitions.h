@@ -38,6 +38,8 @@
 #define DEBUG_LABELS
 
 // --- Pin Definitions ---
+#define BOOT_PIN 0
+#define LED_PIN 2
 #define THERMISTOR_PIN_1 36
 #define THERMISTOR_PIN_1_ATTENUATION ADC_ATTEN_DB_11
 #define THERMISTOR_PIN_1_OVERSAMPLING 256
