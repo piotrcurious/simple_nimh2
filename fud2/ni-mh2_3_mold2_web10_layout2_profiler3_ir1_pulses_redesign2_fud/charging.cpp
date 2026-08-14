@@ -991,6 +991,10 @@ bool chargeBattery() {
                 // Retain true signed physical overpotential direction for statistically meaningful Pearson correlation
                 float overpotential = v - predictedV;
 
+                // Expected model power dissipation (P_model = I^2 * R) normalized with a floor to prevent zero divisions
+                float expectedP_model = cur * cur * R_load_v;
+                float r_p_instant = p_residual / std::max(expectedP_model, 0.05f);
+
                 // Store step response to history buffer at a sparse interval (every 5 seconds)
                 // to cover a full 5 minutes (300 seconds) window with exactly 60 elements.
                 static unsigned long lastThermalHistoryAppendTime = 0;
@@ -1007,6 +1011,7 @@ bool chargeBattery() {
                     stepResp.overpotential = overpotential;
                     stepResp.ir = R_load_v;
                     stepResp.p_residual = p_residual;
+                    stepResp.r_p = r_p_instant;
                     s_thermalHistory.push_back(stepResp);
                     lastThermalHistoryAppendTime = now;
                     appendedHistoryThisTick = true;
@@ -1029,8 +1034,9 @@ bool chargeBattery() {
                 float accumulatedOverpotentialSum = 0.0f;
                 int countOverpotentials = 0;
 
-                // Track unexplained physical residual heat power P_residual
+                // Track unexplained physical residual heat power P_residual and normalized ratio r_p
                 float accumulatedPresidualSum = 0.0f;
+                float accumulatedRpSum = 0.0f;
                 int countPresiduals = 0;
 
                 // Look at the last 5 minutes (300 seconds) of pulse history to verify divergence and overpotential correlation
@@ -1038,6 +1044,7 @@ bool chargeBattery() {
                     accumulatedDivergenceSum += (it->actualTemp - it->predictedTemp);
                     accumulatedOverpotentialSum += it->overpotential;
                     accumulatedPresidualSum += it->p_residual;
+                    accumulatedRpSum += it->r_p;
                     countDivergences++;
                     countOverpotentials++;
                     countPresiduals++;
@@ -1046,6 +1053,7 @@ bool chargeBattery() {
                 float avgDivergence = (countDivergences > 0) ? (accumulatedDivergenceSum / countDivergences) : 0.0f;
                 float avgOverpotential = (countOverpotentials > 0) ? (accumulatedOverpotentialSum / countOverpotentials) : 0.0f;
                 float avgPresidual = (countPresiduals > 0) ? (accumulatedPresidualSum / countPresiduals) : 0.0f;
+                float avgRp = (countPresiduals > 0) ? (accumulatedRpSum / countPresiduals) : 0.0f;
 
                 // Calculate Pearson-like covariance/correlation coefficient over the window with a 10s lag.
                 // We correlate divergence(t) with overpotential(t - 10s) using jitter-immune timestamp-based search
@@ -1123,10 +1131,10 @@ bool chargeBattery() {
 
                 // We flag outgassing if we detect a persistent unexplained heat power event
                 // OR an accumulated unexplained thermal energy event, AND both exhibit a positive
-                // correlation and a minimum positive average overpotential (polarization > 10mV)
-                // with the electrochemical rise (establishing causal link).
-                bool persistentHeating = (avgPresidual > dynamicP_threshold && avgDivergence > 0.3f && correlation > 0.3f && avgOverpotential > 0.01f);
-                bool accumulatedEnergyEvent = (residualEnergy_J > dynamicE_threshold && avgDivergence > 0.3f && correlation > 0.3f && avgOverpotential > 0.01f);
+                // correlation, normalized power ratio divergence (>15%), and a minimum positive
+                // average overpotential (polarization > 10mV) with the electrochemical rise (establishing causal link).
+                bool persistentHeating = (avgPresidual > dynamicP_threshold && avgRp > 0.15f && avgDivergence > 0.3f && correlation > 0.3f && avgOverpotential > 0.01f);
+                bool accumulatedEnergyEvent = (residualEnergy_J > dynamicE_threshold && avgRp > 0.15f && avgDivergence > 0.3f && correlation > 0.3f && avgOverpotential > 0.01f);
                 bool outgassingDiverged = persistentHeating || accumulatedEnergyEvent;
 
                 // Use the correlation smoothly to scale the dynamic overtemperature safety threshold limit.
