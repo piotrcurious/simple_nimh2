@@ -1008,8 +1008,9 @@ bool chargeBattery() {
                 float avgOverpotential = (countOverpotentials > 0) ? (accumulatedOverpotentialSum / countOverpotentials) : 0.0f;
                 float avgPresidual = (countPresiduals > 0) ? (accumulatedPresidualSum / countPresiduals) : 0.0f;
 
-                // Calculate Pearson-like covariance/correlation coefficient over the window with a 10s (2-sample) lag.
-                // We correlate divergence(t) with overpotential(t - 10s) to compensate for sensor thermal lag.
+                // Calculate Pearson-like covariance/correlation coefficient over the window with a 10s lag.
+                // We correlate divergence(t) with overpotential(t - 10s) using jitter-immune timestamp-based search
+                // to physically compensate for sensor thermal lag.
                 float covNumerator = 0.0f;
                 float varDivergence = 0.0f;
                 float varOverpotential = 0.0f;
@@ -1018,14 +1019,35 @@ bool chargeBattery() {
                 float sumDivergenceForLag = 0.0f;
                 float sumLaggedOverpotential = 0.0f;
 
+                auto get_lagged_overpotential = [](size_t i, uint32_t target_time) -> float {
+                    if (i == 0) return -1.0f;
+                    size_t best_j = 0;
+                    uint32_t best_diff = 0xFFFFFFFF;
+                    for (size_t j = 0; j < i; ++j) {
+                        uint32_t ts = s_thermalHistory[j].timestamp;
+                        uint32_t diff = (ts > target_time) ? (ts - target_time) : (target_time - ts);
+                        if (diff < best_diff) {
+                            best_diff = diff;
+                            best_j = j;
+                        }
+                    }
+                    // Only return if the closest timestamp is within a reasonable 3-second window of target 10s lag
+                    if (best_diff <= 3000) {
+                        return s_thermalHistory[best_j].overpotential;
+                    }
+                    return -1.0f;
+                };
+
                 // Pass 1: compute averages for the lagged samples in the 5-minute window
-                for (size_t i = 2; i < s_thermalHistory.size(); ++i) {
+                for (size_t i = 1; i < s_thermalHistory.size(); ++i) {
                     if (now - s_thermalHistory[i].timestamp < 300000) {
                         float div = s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp;
-                        float over = s_thermalHistory[i - 2].overpotential;
-                        sumDivergenceForLag += div;
-                        sumLaggedOverpotential += over;
-                        activeCount++;
+                        float over = get_lagged_overpotential(i, s_thermalHistory[i].timestamp - 10000);
+                        if (over >= 0.0f) {
+                            sumDivergenceForLag += div;
+                            sumLaggedOverpotential += over;
+                            activeCount++;
+                        }
                     }
                 }
 
@@ -1033,18 +1055,22 @@ bool chargeBattery() {
                 float avgLaggedOverpotential = (activeCount > 0) ? (sumLaggedOverpotential / activeCount) : 0.0f;
 
                 // Pass 2: compute covariance and variances
-                for (size_t i = 2; i < s_thermalHistory.size(); ++i) {
+                for (size_t i = 1; i < s_thermalHistory.size(); ++i) {
                     if (now - s_thermalHistory[i].timestamp < 300000) {
-                        float devDiv = (s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp) - avgLaggedDivergence;
-                        float devOver = s_thermalHistory[i - 2].overpotential - avgLaggedOverpotential;
-                        covNumerator += devDiv * devOver;
-                        varDivergence += devDiv * devDiv;
-                        varOverpotential += devOver * devOver;
+                        float over = get_lagged_overpotential(i, s_thermalHistory[i].timestamp - 10000);
+                        if (over >= 0.0f) {
+                            float devDiv = (s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp) - avgLaggedDivergence;
+                            float devOver = over - avgLaggedOverpotential;
+                            covNumerator += devDiv * devOver;
+                            varDivergence += devDiv * devDiv;
+                            varOverpotential += devOver * devOver;
+                        }
                     }
                 }
 
                 float correlation = 0.0f;
-                if (varDivergence > 1e-6f && varOverpotential > 1e-6f) {
+                // Enforce a minimum sample count of 20 to prevent spurious statistical correlation with sparse start-of-pulse data
+                if (activeCount >= 20 && varDivergence > 1e-6f && varOverpotential > 1e-6f) {
                     correlation = covNumerator / std::sqrt(varDivergence * varOverpotential);
                     // Robustness Guard: Clamp correlation to mathematical [-1.0, 1.0] domain
                     if (std::isnan(correlation)) {
