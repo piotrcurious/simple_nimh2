@@ -16,6 +16,36 @@ static uint8_t outgassing_trip_counter = 0;
 static bool outgassingTriggered = false;
 static unsigned long lastHousekeepTime = 0;
 
+float getAverageResistanceNearCurrent(float cur, float data[][2], int count) {
+    if (count <= 0) return 0.18f;
+    float sumR = 0.0f;
+    int matchingCount = 0;
+    float tolerance = 0.15f;
+    for (int i = 0; i < count; ++i) {
+        if (std::fabs(data[i][0] - cur) <= tolerance) {
+            sumR += data[i][1];
+            matchingCount++;
+        }
+    }
+    if (matchingCount > 0) {
+        return sumR / (float)matchingCount;
+    }
+    tolerance = 0.35f;
+    for (int i = 0; i < count; ++i) {
+        if (std::fabs(data[i][0] - cur) <= tolerance) {
+            sumR += data[i][1];
+            matchingCount++;
+        }
+    }
+    if (matchingCount > 0) {
+        return sumR / (float)matchingCount;
+    }
+    for (int i = 0; i < count; ++i) {
+        sumR += data[i][1];
+    }
+    return sumR / (float)count;
+}
+
 // Global thermal tracking and derivative variables
 float recoveredAmbientTemp = 25.0f;
 float recoveredBatteryTemp = 25.0f;
@@ -107,7 +137,7 @@ float computeAbsoluteTempRiseFromHistory(int depth) {
 
         float cur = e.current;
         if (!std::isfinite(cur) || cur < 0.0f) cur = 0.0f;
-        float Rparam = regressedInternalResistancePairsSlope * cur + regressedInternalResistancePairsIntercept;
+        float Rparam = getAverageResistanceNearCurrent(cur, internalResistanceDataPairs, resistanceDataCountPairs);
         if (Rparam < 0.01f) Rparam = 0.01f;
         if (Rparam > 5.0f) Rparam = 5.0f;
         float vUnderLoad = e.voltage;
@@ -881,7 +911,7 @@ bool chargeBattery() {
                 // Complex thermal loss model evaluates loss at each time step (approx 1 step / dt_ms)
                 // Predict temp change using recovered true ambient temperature (t1_true)
                 // Run the standard non-linear estimateTempDiff model using predictedTempTrack and persistent file-scope unapplied energy state
-                float R_load = regressedInternalResistancePairsSlope * cur + regressedInternalResistancePairsIntercept;
+                float R_load = getAverageResistanceNearCurrent(cur, internalResistanceDataPairs, resistanceDataCountPairs);
                 if (R_load < 0.01f) R_load = 0.01f;
                 if (R_load > 5.0f) R_load = 5.0f;
                 float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, R_load, t1_true, now, now - dt_ms, predictedTempTrack, &g_unappliedEnergy_J);
@@ -954,7 +984,7 @@ bool chargeBattery() {
                 }
 
                 // Electrochemical voltage prediction under load: V_predicted = V_unloaded + I * R(I) (during charging)
-                float R_load_v = regressedInternalResistancePairsSlope * cur + regressedInternalResistancePairsIntercept;
+                float R_load_v = getAverageResistanceNearCurrent(cur, internalResistanceDataPairs, resistanceDataCountPairs);
                 if (R_load_v < 0.01f) R_load_v = 0.01f;
                 if (R_load_v > 5.0f) R_load_v = 5.0f;
                 float predictedV = s_irTest.unloadedVoltage + cur * R_load_v;
@@ -1167,7 +1197,7 @@ bool chargeBattery() {
                     e.dutyCycle = (uint8_t)dutyCycle;
                     e.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
                     {
-                        float R_log = regressedInternalResistancePairsSlope * cur + regressedInternalResistancePairsIntercept;
+                        float R_log = getAverageResistanceNearCurrent(cur, internalResistanceDataPairs, resistanceDataCountPairs);
                         if (R_log < 0.01f) R_log = 0.01f;
                         if (R_log > 5.0f) R_log = 5.0f;
                         e.internalResistancePairs = R_log;
