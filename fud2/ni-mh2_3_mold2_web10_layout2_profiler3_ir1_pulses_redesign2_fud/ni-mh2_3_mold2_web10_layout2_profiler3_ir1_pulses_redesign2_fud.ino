@@ -948,10 +948,14 @@ void setup() {
         1
     );
 
+    pinMode(BOOT_PIN, INPUT_PULLUP);
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
+
     setupPWM();
     WiFi.setSleep(false); // prevent modem sleep to stay snappy
 
-    Serial.println("System Ready.");
+    Serial.println("System Ready. Boot pin setup on GPIO 0, LED on GPIO 2.");
 }
 
 void gatherData() {
@@ -965,6 +969,64 @@ void loop() {
     uint32_t frameRef = g_frameStartUs;
     uint32_t t0 = (uint32_t)(esp_timer_get_time() - frameRef);
     const unsigned long now = millis();
+
+    // --- Boot Pin Control (GPIO 0 Start Charging Trigger) ---
+    static bool lastBootPinReading = HIGH;
+    static unsigned long lastBootDebounceTime = 0;
+    static bool bootButtonState = HIGH;
+
+    int currentBootReading = digitalRead(BOOT_PIN);
+    if (currentBootReading != lastBootPinReading) {
+        lastBootDebounceTime = now;
+        lastBootPinReading = currentBootReading;
+    }
+
+    if ((now - lastBootDebounceTime) > 50) {
+        if (currentBootReading != bootButtonState) {
+            bootButtonState = currentBootReading;
+            if (bootButtonState == LOW) { // Button pressed (active LOW)
+                Serial.println("Hardware BOOT button pressed: Triggering charging flow...");
+                WEB_LOCK();
+                resetAh = true;
+                postModelAppState = APP_STATE_CHARGING;
+                WEB_UNLOCK();
+                setBuildModelPhase(BuildModelPhase::Idle);
+                setAppState(APP_STATE_BUILDING_MODEL);
+            }
+        }
+    }
+
+    // --- Built-in LED Visual Feedback (GPIO 2) ---
+    static unsigned long lastLedToggleTime = 0;
+    static bool ledState = LOW;
+    unsigned long ledInterval = 0;
+
+    if (currentAppState == APP_STATE_BUILDING_MODEL || currentAppState == APP_STATE_MEASURING_IR) {
+        ledInterval = 100; // Fast blink for model building & IR sweep
+    } else if (currentAppState == APP_STATE_CHARGING) {
+        if (chargingState == CHARGE_PULSE_ACTIVE) {
+            ledInterval = 500; // Normal active pulse charging heartbeat
+        } else if (chargingState == CHARGE_PULSE_IR_TEST || chargingState == CHARGE_PULSE_IR_REMEASURE) {
+            ledInterval = 250; // IR pulse re-measurement testing
+        } else {
+            ledInterval = 0; // OFF when stopped
+        }
+    } else {
+        ledInterval = 0; // OFF in IDLE
+    }
+
+    if (ledInterval == 0) {
+        if (ledState != LOW) {
+            ledState = LOW;
+            digitalWrite(LED_PIN, LOW);
+        }
+    } else {
+        if (now - lastLedToggleTime >= ledInterval) {
+            lastLedToggleTime = now;
+            ledState = !ledState;
+            digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+        }
+    }
 
     switch (currentAppState) {
         case APP_STATE_IDLE: break;

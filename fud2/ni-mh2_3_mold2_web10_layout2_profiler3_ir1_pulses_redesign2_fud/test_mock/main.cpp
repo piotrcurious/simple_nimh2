@@ -17,6 +17,7 @@ using std::max;
 
 MockSerial Serial;
 unsigned long mock_millis = 0;
+int mock_boot_pin_state = 1;
 uint64_t mock_esp_timer_now = 0;
 
 // Redirect definitions.h includes
@@ -714,7 +715,7 @@ void reset_globals() {
     P_residual_slow = 0.0;
     g_unappliedEnergy_J = 0.0f;
     sht4Sensor.setTemperature(22.0f);
-    mock_millis = 0; voltage_mv = 1000.0f; current_ma = 0.0f; mAh_charged = 0.0;
+    mock_millis = 0; mock_boot_pin_state = 1; voltage_mv = 1000.0f; current_ma = 0.0f; mAh_charged = 0.0;
     dutyCycle = 0; chargingState = CHARGE_IDLE; chargeLog.clear();
     sim = BatterySim(); overtemp_trip_counter = 0; currentAppState = APP_STATE_IDLE;
     postModelAppState = APP_STATE_IDLE;
