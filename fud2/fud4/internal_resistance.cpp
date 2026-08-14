@@ -213,23 +213,222 @@ void handleGeneratePairs() {
     }
 }
 
-void handlePairGeneration() {
-    if (pairIndex < MAX_RESISTANCE_POINTS / 2) {
-        float targetHighCurrent = maxCurrent -
-            (pairIndex * (maxCurrent - minCurrent) / (MAX_RESISTANCE_POINTS / 2));
+bool isDutyCycleLinearRegion(int dc, float& out_slope) {
+    out_slope = 0.0f;
+    if (dc < MIN_DUTY_CYCLE_START || dc > MAX_DUTY_CYCLE) return false;
+    float currentEst = estimateCurrent(dc);
+    if (currentEst < MEASURABLE_CURRENT_THRESHOLD) return false;
 
-        int currentHighDc = estimateDutyCycleForCurrent(targetHighCurrent);
-        if (currentHighDc > previousHighDc && pairIndex > 0) currentHighDc = previousHighDc;
-        if (currentHighDc < minimalDutyCycle) currentHighDc = minimalDutyCycle;
+    int lowDC = std::max(MIN_CHARGE_DUTY_CYCLE, dc - 1);
+    int highDC = std::min(MAX_DUTY_CYCLE, dc + 1);
+    float lowI = estimateCurrent(lowDC);
+    float highI = estimateCurrent(highDC);
+    out_slope = (highI - lowI) / static_cast<float>(highDC - lowDC);
 
-        dutyCyclePairs.push_back({minimalDutyCycle, currentHighDc});
-        previousHighDc = currentHighDc - 1;
-        pairIndex++;
-    } else {
-        currentIRState = IR_STATE_MEASURE_L_UL;
-        pairIndex = 0;
-        measureStep = 0;
+    if (out_slope < MIN_VALID_DUTY_MODEL_SLOPE) return false;
+    return true;
+}
+
+void findCurrentBlindSpots(float gaps[][2], int& gapCount, float maxOperatingCurrent) {
+    gapCount = 0;
+    if (resistanceDataCountPairs < 2) {
+        gaps[0][0] = MEASURABLE_CURRENT_THRESHOLD;
+        gaps[0][1] = maxOperatingCurrent;
+        gapCount = 1;
+        return;
     }
+
+    for (int i = 0; i < resistanceDataCountPairs - 1; ++i) {
+        float i1 = internalResistanceDataPairs[i][0];
+        float i2 = internalResistanceDataPairs[i + 1][0];
+        float gapSize = i2 - i1;
+        if (gapSize > 0.08f && gapCount < 5) {
+            gaps[gapCount][0] = i1;
+            gaps[gapCount][1] = i2;
+            gapCount++;
+        }
+    }
+}
+
+void generateCategorizedDutyPairs(std::vector<DutyPair>& pairs, int maxPairs) {
+    pairs.clear();
+    int minDC = minimalDutyCycle;
+    if (minDC < MIN_DUTY_CYCLE_START) minDC = MIN_DUTY_CYCLE_START;
+    int maxDC = MAX_DUTY_CYCLE;
+
+    float slopeMin = 0.0f, slopeMax = 0.0f;
+    while (minDC < maxDC && !isDutyCycleLinearRegion(minDC, slopeMin)) minDC++;
+    while (maxDC > minDC && !isDutyCycleLinearRegion(maxDC, slopeMax)) maxDC--;
+
+    float minI = estimateCurrent(minDC);
+    float maxI = estimateCurrent(maxDC);
+    float spanI = maxI - minI;
+
+    if (spanI < 0.05f) {
+        DutyPair p;
+        p.lowDC = minDC;
+        p.highDC = maxDC;
+        p.type = PAIR_TYPE_GLOBAL;
+        p.targetLowCurrent = minI;
+        p.targetHighCurrent = maxI;
+        pairs.push_back(p);
+        return;
+    }
+
+    // 1. Global Pairs (High Quality, Large Delta I, stable baseline/mean)
+    DutyPair g1;
+    g1.lowDC = minDC;
+    g1.highDC = maxDC;
+    g1.type = PAIR_TYPE_GLOBAL;
+    g1.targetLowCurrent = minI;
+    g1.targetHighCurrent = maxI;
+    pairs.push_back(g1);
+
+    if (maxPairs > 2) {
+        int g2_low = estimateDutyCycleForCurrent(minI + 0.15f * spanI);
+        int g2_high = estimateDutyCycleForCurrent(minI + 0.85f * spanI);
+        if (g2_high - g2_low > 10) {
+            DutyPair g2;
+            g2.lowDC = std::max(minDC, g2_low);
+            g2.highDC = std::min(maxDC, g2_high);
+            g2.type = PAIR_TYPE_GLOBAL;
+            g2.targetLowCurrent = estimateCurrent(g2.lowDC);
+            g2.targetHighCurrent = estimateCurrent(g2.highDC);
+            pairs.push_back(g2);
+        }
+    }
+
+    // 2. Local Pairs (Close currents, local accuracy & derivative)
+    float localStepI = std::min(LOCAL_PAIR_MAX_DELTA_I, std::max(LOCAL_PAIR_MIN_DELTA_I, spanI * 0.15f));
+
+    float l_low1 = minI + 0.05f * spanI;
+    int dc_l_low1 = estimateDutyCycleForCurrent(l_low1);
+    int dc_l_low2 = estimateDutyCycleForCurrent(l_low1 + localStepI);
+    if (dc_l_low2 > dc_l_low1) {
+        DutyPair l1;
+        l1.lowDC = dc_l_low1; l1.highDC = dc_l_low2;
+        l1.type = PAIR_TYPE_LOCAL;
+        l1.targetLowCurrent = estimateCurrent(dc_l_low1);
+        l1.targetHighCurrent = estimateCurrent(dc_l_low2);
+        pairs.push_back(l1);
+    }
+
+    float l_mid1 = minI + 0.45f * spanI;
+    int dc_l_mid1 = estimateDutyCycleForCurrent(l_mid1);
+    int dc_l_mid2 = estimateDutyCycleForCurrent(l_mid1 + localStepI);
+    if (dc_l_mid2 > dc_l_mid1 && (int)pairs.size() < maxPairs) {
+        DutyPair l2;
+        l2.lowDC = dc_l_mid1; l2.highDC = dc_l_mid2;
+        l2.type = PAIR_TYPE_LOCAL;
+        l2.targetLowCurrent = estimateCurrent(dc_l_mid1);
+        l2.targetHighCurrent = estimateCurrent(dc_l_mid2);
+        pairs.push_back(l2);
+    }
+
+    float l_high1 = minI + 0.75f * spanI;
+    int dc_l_high1 = estimateDutyCycleForCurrent(l_high1);
+    int dc_l_high2 = estimateDutyCycleForCurrent(l_high1 + localStepI);
+    if (dc_l_high2 > dc_l_high1 && (int)pairs.size() < maxPairs) {
+        DutyPair l3;
+        l3.lowDC = dc_l_high1; l3.highDC = dc_l_high2;
+        l3.type = PAIR_TYPE_LOCAL;
+        l3.targetLowCurrent = estimateCurrent(dc_l_high1);
+        l3.targetHighCurrent = estimateCurrent(dc_l_high2);
+        pairs.push_back(l3);
+    }
+
+    // 3. Random / Blind-Spot Pairs
+    float blindSpots[5][2];
+    int gapCount = 0;
+    findCurrentBlindSpots(blindSpots, gapCount, maxI);
+    for (int k = 0; k < gapCount && (int)pairs.size() < maxPairs; k++) {
+        float gapMid = (blindSpots[k][0] + blindSpots[k][1]) / 2.0f;
+        int dc1 = estimateDutyCycleForCurrent(gapMid - localStepI * 0.5f);
+        int dc2 = estimateDutyCycleForCurrent(gapMid + localStepI * 0.5f);
+        if (dc2 > dc1) {
+            DutyPair r1;
+            r1.lowDC = std::max(minDC, dc1);
+            r1.highDC = std::min(maxDC, dc2);
+            r1.type = PAIR_TYPE_RANDOM_BLINDSPOT;
+            r1.targetLowCurrent = estimateCurrent(r1.lowDC);
+            r1.targetHighCurrent = estimateCurrent(r1.highDC);
+            pairs.push_back(r1);
+        }
+    }
+
+    while ((int)pairs.size() < maxPairs) {
+        float randFraction = static_cast<float>(rand()) / static_cast<float>(RAND_MAX);
+        float rI1 = minI + randFraction * std::max(0.01f, maxI - minI - localStepI);
+        int rDC1 = estimateDutyCycleForCurrent(rI1);
+        int rDC2 = estimateDutyCycleForCurrent(rI1 + localStepI);
+        if (rDC2 > rDC1) {
+            DutyPair rPair;
+            rPair.lowDC = std::max(minDC, rDC1);
+            rPair.highDC = std::min(maxDC, rDC2);
+            rPair.type = PAIR_TYPE_RANDOM_BLINDSPOT;
+            rPair.targetLowCurrent = estimateCurrent(rPair.lowDC);
+            rPair.targetHighCurrent = estimateCurrent(rPair.highDC);
+            pairs.push_back(rPair);
+        } else {
+            break;
+        }
+    }
+}
+
+bool evaluateAndCorrectPairData(int dc1, int dc2, float v1, float v2, float i1, float i2, float& out_I, float& out_IR) {
+    out_I = std::max(i1, i2);
+    out_IR = 0.0f;
+
+    float slope1 = 0.0f, slope2 = 0.0f;
+    bool linear1 = isDutyCycleLinearRegion(dc1, slope1);
+    bool linear2 = isDutyCycleLinearRegion(dc2, slope2);
+
+    if (!linear1 && !linear2 && (i1 < MEASURABLE_CURRENT_THRESHOLD && i2 < MEASURABLE_CURRENT_THRESHOLD)) {
+        Serial.printf("Excluding pair (DC %d, %d): Both in non-linear dead region.\n", dc1, dc2);
+        return false;
+    }
+
+    float deltaI_meas = std::fabs(i2 - i1);
+    float deltaI_model = std::fabs(estimateCurrent(dc2) - estimateCurrent(dc1));
+
+    if (deltaI_meas < REMEASURE_MIN_CURRENT_DIFF && deltaI_model < REMEASURE_MIN_CURRENT_DIFF) {
+        Serial.printf("Excluding pair (DC %d, %d): Delta I too small (measured=%.4fA, model=%.4fA).\n",
+                      dc1, dc2, deltaI_meas, deltaI_model);
+        return false;
+    }
+
+    float deltaV = std::fabs(v1 - v2);
+
+    float deltaI_eff = deltaI_meas;
+    if (linear1 && linear2 && deltaI_model > 0.01f) {
+        deltaI_eff = (1.0f - MODEL_CORRECTION_WEIGHT) * deltaI_meas + MODEL_CORRECTION_WEIGHT * deltaI_model;
+    }
+
+    if (deltaI_eff < 1e-4f) return false;
+
+    float ir_calc = deltaV / deltaI_eff;
+
+    if (ir_calc < MIN_VALID_RESISTANCE || ir_calc > REMEASURE_MAX_VALID_IR) {
+        Serial.printf("Excluding pair (DC %d, %d): Calculated IR %.4f out of physical bounds.\n", dc1, dc2, ir_calc);
+        return false;
+    }
+
+    out_IR = ir_calc;
+    return true;
+}
+
+void handlePairGeneration() {
+    std::vector<DutyPair> catPairs;
+    generateCategorizedDutyPairs(catPairs, MAX_RESISTANCE_POINTS / 2);
+
+    dutyCyclePairs.clear();
+    for (const auto& cp : catPairs) {
+        dutyCyclePairs.push_back({cp.lowDC, cp.highDC});
+    }
+
+    currentIRState = IR_STATE_MEASURE_L_UL;
+    pairIndex = 0;
+    measureStep = 0;
 }
 
 void handleMeasureLoadedUnloaded() {
@@ -253,13 +452,19 @@ void handleMeasureLoadedUnloaded() {
             break;
         case 2:
             {
+                float loadedVoltage = voltagesLoaded.back();
                 float loadedCurrent = currentsLoaded.back();
-                float currentDiff = loadedCurrent - currentMeasurement.current;
-                if (std::fabs(currentDiff) > 0.01f) {
-                    float internalResistance = (currentMeasurement.voltage - voltagesLoaded.back()) / currentDiff;
+                int dc = dutyCyclePairs[pairIndex].second;
+
+                float unloadedVoltage = currentMeasurement.voltage;
+                float unloadedCurrent = currentMeasurement.current;
+
+                float calcI = 0.0f, calcIR = 0.0f;
+                bool valid = evaluateAndCorrectPairData(0, dc, unloadedVoltage, loadedVoltage, unloadedCurrent, loadedCurrent, calcI, calcIR);
+
+                if (valid) {
                     WEB_LOCK();
-                    storeResistanceData(loadedCurrent, std::fabs(internalResistance),
-                                      internalResistanceData, resistanceDataCount);
+                    storeResistanceData(calcI, calcIR, internalResistanceData, resistanceDataCount);
                     bubbleSort(internalResistanceData, resistanceDataCount);
                     WEB_UNLOCK();
                 }
@@ -288,14 +493,21 @@ void handleMeasurePairs() {
             break;
         case 2:
             {
-                float currentDiff = currentMeasurement.current - currentsLoaded.back();
-                if (currentDiff > MIN_CURRENT_DIFFERENCE_FOR_PAIR) {
-                    float voltageDiff = voltagesLoaded.back() - currentMeasurement.voltage;
-                    float internalResistance = voltageDiff / currentDiff;
-                    consecutiveInternalResistances.push_back(std::fabs(internalResistance));
+                float v1 = voltagesLoaded.back();
+                float i1 = currentsLoaded.back();
+                int dc1 = dutyCyclePairs[pairIndex].first;
+
+                float v2 = currentMeasurement.voltage;
+                float i2 = currentMeasurement.current;
+                int dc2 = dutyCyclePairs[pairIndex].second;
+
+                float calcI = 0.0f, calcIR = 0.0f;
+                bool valid = evaluateAndCorrectPairData(dc1, dc2, v1, v2, i1, i2, calcI, calcIR);
+
+                if (valid) {
+                    consecutiveInternalResistances.push_back(calcIR);
                     WEB_LOCK();
-                    storeResistanceData(currentMeasurement.current, std::fabs(internalResistance),
-                                      internalResistanceDataPairs, resistanceDataCountPairs);
+                    storeResistanceData(calcI, calcIR, internalResistanceDataPairs, resistanceDataCountPairs);
                     bubbleSort(internalResistanceDataPairs, resistanceDataCountPairs);
                     WEB_UNLOCK();
                 } else {

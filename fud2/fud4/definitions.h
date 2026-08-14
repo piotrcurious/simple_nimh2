@@ -104,7 +104,7 @@ const int MAX_RESISTANCE_POINTS = 100;
 
 // --- Charging and Remeasurement Constants ---
 const unsigned long PULSE_IR_REMEASURE_STABILIZATION_MS = 2000; // Duration of each sub-step during pulse IR re-measurement
-const float REMEASURE_MIN_CURRENT_DIFF = 0.05f;                 // Minimum current delta required to calculate local IR (A)
+const float REMEASURE_MIN_CURRENT_DIFF = 0.03f;                 // Minimum current delta required to calculate local IR (A)
 const float REMEASURE_DEFAULT_IR_FALLBACK = 0.15f;              // Default fallback internal resistance if delta cur is too low (Ohms)
 const float REMEASURE_MAX_VALID_IR = 15.0f;                      // Maximum physically plausible IR before falling back to sweep test (Ohms)
 const float DYNAMIC_REGULATOR_CURRENT_MARGIN = 0.003f;         // Deadband current offset for the dynamic CC closed-loop PWM regulator (A)
@@ -115,6 +115,14 @@ const float STRUCTURED_IR_SWEEP_MAX_LIMIT = 15.0f;               // Maximum plau
 const int STRATIFIED_PAIRS_SEGMENTS = 10;                        // Number of equal current segments for pairs stratified random sampling
 const int STRATIFIED_LU_SEGMENTS = 4;                            // Number of equal current segments for loaded/unloaded stratified random sampling
 const double TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA = 0.5;      // Exponential moving average smoothing factor for raw temperature derivative
+
+// --- Categorized IR Pair & Re-measurement Constants ---
+const int PULSE_REMEASURE_BUDGET = 6;                          // Limited budget of re-measurements per pulse cycle
+const float GLOBAL_PAIR_MIN_DELTA_I = 0.25f;                     // Min current delta for global pairs (large Delta I, stable baseline)
+const float LOCAL_PAIR_MAX_DELTA_I = 0.18f;                     // Max current delta for local pairs (close currents, local accuracy)
+const float LOCAL_PAIR_MIN_DELTA_I = 0.04f;                     // Min current delta for local pairs
+const float MIN_VALID_DUTY_MODEL_SLOPE = 0.0003f;                // Min valid dI/dDC slope to predict linear current region
+const float MODEL_CORRECTION_WEIGHT = 0.35f;                    // Blend weight for duty model current delta vs measured delta
 
 // --- Outlier and Error Distribution Constants ---
 const float DISTRIBUTE_ERROR_DEFAULT_SPACING = 0.05f;           // Default spacing threshold if data count is low (A)
@@ -133,6 +141,20 @@ const float MAX_TEMPERATURE_DERIVATIVE_C_PER_S = 0.5f;           // Max physical
 #define PLOT_WIDTH          240
 
 // --- Enums and Structs ---
+
+enum PairType {
+    PAIR_TYPE_GLOBAL,           // Large Delta I, high SNR, stable baseline/mean IR
+    PAIR_TYPE_LOCAL,            // Small Delta I, local accuracy & derivative variation
+    PAIR_TYPE_RANDOM_BLINDSPOT  // Target blind spots and random sampling for error distribution
+};
+
+struct DutyPair {
+    int lowDC;
+    int highDC;
+    PairType type;
+    float targetLowCurrent;
+    float targetHighCurrent;
+};
 
 enum DisplayState {
     DISPLAY_STATE_IDLE,

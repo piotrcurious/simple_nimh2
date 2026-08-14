@@ -1,6 +1,7 @@
 #include "charging.h"
 #include "definitions.h"
 #include "logging.h"
+#include "internal_resistance.h"
 
 
 unsigned long chargingStartTime = 0;
@@ -516,70 +517,76 @@ void selectRandomRePoints() {
     s_reMeasure.subStep = 0;
     s_reMeasure.active = false;
 
-    float topCurrent = estimateCurrent(MAX_DUTY_CYCLE);
+    extern int minimalDutyCycle;
+    int minDC = minimalDutyCycle;
+    if (minDC < MIN_DUTY_CYCLE_START) minDC = MIN_DUTY_CYCLE_START;
+    int maxDC = MAX_DUTY_CYCLE;
 
-    // 1. Select up to STRATIFIED_PAIRS_SEGMENTS points using Stratified Random Sampling from internalResistanceDataPairs.
-    // This divides the sorted history into STRATIFIED_PAIRS_SEGMENTS equal segments and picks one point randomly from each,
-    // guaranteeing maximum current variation across the operating spectrum!
-    WEB_LOCK();
-    int totalPairs = resistanceDataCountPairs;
-    WEB_UNLOCK();
+    float slopeMin = 0.0f, slopeMax = 0.0f;
+    while (minDC < maxDC && !isDutyCycleLinearRegion(minDC, slopeMin)) minDC++;
+    while (maxDC > minDC && !isDutyCycleLinearRegion(maxDC, slopeMax)) maxDC--;
 
-    if (totalPairs > 0) {
-        int numSegments = std::min(STRATIFIED_PAIRS_SEGMENTS, totalPairs);
-        float segmentSize = (float)totalPairs / (float)numSegments;
+    float minI = estimateCurrent(minDC);
+    float maxI = estimateCurrent(maxDC);
 
-        for (int k = 0; k < numSegments; k++) {
-            int startIdx = (int)(k * segmentSize);
-            int endIdx = (int)((k + 1) * segmentSize);
-            if (endIdx > totalPairs) endIdx = totalPairs;
-            if (endIdx <= startIdx) endIdx = startIdx + 1;
+    // 1. Global Pairs (Large Delta I, high SNR, stable baseline/mean IR)
+    if (maxI - minI >= GLOBAL_PAIR_MIN_DELTA_I) {
+        RePoint pGlobalLow;
+        pGlobalLow.current = minI;
+        pGlobalLow.duty = minDC;
+        pGlobalLow.isPair = true;
+        s_reMeasure.points.push_back(pGlobalLow);
 
-            int idx = startIdx + rand() % (endIdx - startIdx);
-            WEB_LOCK();
-            float I = internalResistanceDataPairs[idx][0];
-            WEB_UNLOCK();
+        RePoint pGlobalHigh;
+        pGlobalHigh.current = maxI;
+        pGlobalHigh.duty = maxDC;
+        pGlobalHigh.isPair = true;
+        s_reMeasure.points.push_back(pGlobalHigh);
+    }
 
-            // Trim/truncate currents not reachable by re-measurement
-            if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
-                RePoint p;
-                p.current = I;
-                p.duty = estimateDutyCycleForCurrent(I);
-                p.isPair = true;
-                s_reMeasure.points.push_back(p);
-            }
+    // 2. Local Pairs (Close currents around active charging current maximumCurrent)
+    float activeTarget = maximumCurrent;
+    float localDelta = std::min(LOCAL_PAIR_MAX_DELTA_I, std::max(LOCAL_PAIR_MIN_DELTA_I, (maxI - minI) * 0.15f));
+    float localI1 = std::max(minI, activeTarget - localDelta);
+    float localI2 = std::min(maxI, activeTarget + localDelta);
+
+    int dcLocal1 = estimateDutyCycleForCurrent(localI1);
+    int dcLocal2 = estimateDutyCycleForCurrent(localI2);
+
+    if (dcLocal1 >= minDC && dcLocal1 <= maxDC) {
+        RePoint pLocal1;
+        pLocal1.current = estimateCurrent(dcLocal1);
+        pLocal1.duty = dcLocal1;
+        pLocal1.isPair = true;
+        s_reMeasure.points.push_back(pLocal1);
+    }
+    if (dcLocal2 >= minDC && dcLocal2 <= maxDC && dcLocal2 != dcLocal1) {
+        RePoint pLocal2;
+        pLocal2.current = estimateCurrent(dcLocal2);
+        pLocal2.duty = dcLocal2;
+        pLocal2.isPair = true;
+        s_reMeasure.points.push_back(pLocal2);
+    }
+
+    // 3. Random / Blind-spot Points (Targeting largest current gaps in existing dataset)
+    float blindSpots[5][2];
+    int gapCount = 0;
+    findCurrentBlindSpots(blindSpots, gapCount, maxI);
+    for (int k = 0; k < gapCount && (int)s_reMeasure.points.size() < PULSE_REMEASURE_BUDGET; k++) {
+        float gapMid = (blindSpots[k][0] + blindSpots[k][1]) / 2.0f;
+        int dcGap = estimateDutyCycleForCurrent(gapMid);
+        if (dcGap >= minDC && dcGap <= maxDC) {
+            RePoint pBlind;
+            pBlind.current = estimateCurrent(dcGap);
+            pBlind.duty = dcGap;
+            pBlind.isPair = false;
+            s_reMeasure.points.push_back(pBlind);
         }
     }
 
-    // 2. Select up to STRATIFIED_LU_SEGMENTS points using Stratified Random Sampling from internalResistanceData (loaded/unloaded).
-    // Divides the sorted history into STRATIFIED_LU_SEGMENTS equal segments and picks one point randomly from each.
-    WEB_LOCK();
-    int totalLU = resistanceDataCount;
-    WEB_UNLOCK();
-
-    if (totalLU > 0) {
-        int numSegments = std::min(STRATIFIED_LU_SEGMENTS, totalLU);
-        float segmentSize = (float)totalLU / (float)numSegments;
-
-        for (int k = 0; k < numSegments; k++) {
-            int startIdx = (int)(k * segmentSize);
-            int endIdx = (int)((k + 1) * segmentSize);
-            if (endIdx > totalLU) endIdx = totalLU;
-            if (endIdx <= startIdx) endIdx = startIdx + 1;
-
-            int idx = startIdx + rand() % (endIdx - startIdx);
-            WEB_LOCK();
-            float I = internalResistanceData[idx][0];
-            WEB_UNLOCK();
-
-            if (I >= MEASURABLE_CURRENT_THRESHOLD && I <= topCurrent) {
-                RePoint p;
-                p.current = I;
-                p.duty = estimateDutyCycleForCurrent(I);
-                p.isPair = false;
-                s_reMeasure.points.push_back(p);
-            }
-        }
+    // Strict budget cap
+    if ((int)s_reMeasure.points.size() > PULSE_REMEASURE_BUDGET) {
+        s_reMeasure.points.resize(PULSE_REMEASURE_BUDGET);
     }
 
     if (!s_reMeasure.points.empty()) {
@@ -771,24 +778,31 @@ bool chargeBattery() {
                 } else if (s_reMeasure.subStep == 1) {
                     // Loaded step: measure and calculate IR
                     if (stepElapsed >= PULSE_IR_REMEASURE_STABILIZATION_MS) {
-                        float currentDiff = std::fabs(cur - s_reMeasure.unloadedCurrent);
-                        float measuredIR = REMEASURE_DEFAULT_IR_FALLBACK;
-                        if (currentDiff > REMEASURE_MIN_CURRENT_DIFF) {
-                            measuredIR = std::fabs(v - s_reMeasure.unloadedVoltage) / currentDiff;
-                        }
-                        if (measuredIR < MIN_VALID_RESISTANCE || measuredIR > REMEASURE_MAX_VALID_IR) {
-                            measuredIR = s_irTest.calculatedIR; // Fallback to sweep test if out of bounds
+                        extern int minimalDutyCycle;
+                        int lowDC = pt.isPair ? minimalDutyCycle : 0;
+                        float v1 = s_reMeasure.unloadedVoltage;
+                        float i1 = s_reMeasure.unloadedCurrent;
+                        int dc2 = pt.duty;
+                        float v2 = v;
+                        float i2 = cur;
+
+                        float calcI = 0.0f, calcIR = 0.0f;
+                        bool valid = evaluateAndCorrectPairData(lowDC, dc2, v1, v2, i1, i2, calcI, calcIR);
+
+                        if (!valid) {
+                            calcIR = s_irTest.calculatedIR;
+                            calcI = cur;
                         }
 
                         WEB_LOCK();
-                        storeOrAverageResistanceData(cur, measuredIR,
+                        storeOrAverageResistanceData(calcI, calcIR,
                                                      pt.isPair ? internalResistanceDataPairs : internalResistanceData,
                                                      pt.isPair ? resistanceDataCountPairs : resistanceDataCount);
                         WEB_UNLOCK();
 
                         Serial.printf("  Re-measured point %d/%d (%s): I=%.3fA, V_unloaded=%.3fV, V_loaded=%.3fV -> IR=%.4f Ohms\n",
                                       s_reMeasure.index + 1, (int)s_reMeasure.points.size(), pt.isPair ? "PAIR" : "L/UL",
-                                      cur, s_reMeasure.unloadedVoltage, v, measuredIR);
+                                      cur, s_reMeasure.unloadedVoltage, v, calcIR);
 
                         s_reMeasure.index++;
                         s_reMeasure.subStep = 0;

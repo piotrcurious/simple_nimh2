@@ -11,4 +11,10 @@ void handleMeasurePairs();
 void completeResistanceMeasurement();
 void storeResistanceData(float current, float resistance, float dataArray[MAX_RESISTANCE_POINTS][2], int& count);
 
+// Duty Cycle Model non-linear region prediction, blind-spot discovery, and pair generation helpers
+bool isDutyCycleLinearRegion(int dc, float& out_slope);
+void generateCategorizedDutyPairs(std::vector<DutyPair>& pairs, int maxPairs);
+void findCurrentBlindSpots(float gaps[][2], int& gapCount, float maxOperatingCurrent);
+bool evaluateAndCorrectPairData(int dc1, int dc2, float v1, float v2, float i1, float i2, float& out_I, float& out_IR);
+
 #endif
