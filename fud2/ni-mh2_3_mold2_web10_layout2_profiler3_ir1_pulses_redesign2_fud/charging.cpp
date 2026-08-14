@@ -948,9 +948,10 @@ bool chargeBattery() {
                     }
                 }
 
-                // Electrochemical voltage prediction under load: V_predicted = V_unloaded - I * R_int
-                float predictedV = s_irTest.unloadedVoltage - cur * regressedInternalResistancePairsIntercept;
-                float overpotential = std::fabs(predictedV - v);
+                // Electrochemical voltage prediction under load: V_predicted = V_unloaded + I * R_int (during charging)
+                float predictedV = s_irTest.unloadedVoltage + cur * regressedInternalResistancePairsIntercept;
+                // Retain true signed physical overpotential direction for statistically meaningful Pearson correlation
+                float overpotential = v - predictedV;
 
                 // Store step response to history buffer at a sparse interval (every 5 seconds)
                 // to cover a full 5 minutes (300 seconds) window with exactly 60 elements.
@@ -1084,9 +1085,10 @@ bool chargeBattery() {
 
                 // We flag outgassing if we detect a persistent unexplained heat power event
                 // OR an accumulated unexplained thermal energy event, AND both exhibit a positive
-                // correlation with the electrochemical overpotential rise (establishing causal link).
-                bool persistentHeating = (avgPresidual > dynamicP_threshold && avgDivergence > 0.3f && correlation > 0.3f);
-                bool accumulatedEnergyEvent = (residualEnergy_J > dynamicE_threshold && avgDivergence > 0.3f && correlation > 0.3f);
+                // correlation and a minimum positive average overpotential (polarization > 10mV)
+                // with the electrochemical rise (establishing causal link).
+                bool persistentHeating = (avgPresidual > dynamicP_threshold && avgDivergence > 0.3f && correlation > 0.3f && avgOverpotential > 0.01f);
+                bool accumulatedEnergyEvent = (residualEnergy_J > dynamicE_threshold && avgDivergence > 0.3f && correlation > 0.3f && avgOverpotential > 0.01f);
                 bool outgassingDiverged = persistentHeating || accumulatedEnergyEvent;
 
                 // Use the correlation smoothly to scale the dynamic overtemperature safety threshold limit.
