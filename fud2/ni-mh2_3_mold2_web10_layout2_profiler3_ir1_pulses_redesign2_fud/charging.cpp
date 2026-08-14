@@ -107,7 +107,9 @@ float computeAbsoluteTempRiseFromHistory(int depth) {
 
         float cur = e.current;
         if (!std::isfinite(cur) || cur < 0.0f) cur = 0.0f;
-        float Rparam = regressedInternalResistancePairsIntercept;
+        float Rparam = regressedInternalResistancePairsSlope * cur + regressedInternalResistancePairsIntercept;
+        if (Rparam < 0.01f) Rparam = 0.01f;
+        if (Rparam > 5.0f) Rparam = 5.0f;
         float vUnderLoad = e.voltage;
         float ambient = e.ambientTemperature;
         if (!std::isfinite(ambient)) ambient = 25.0f;
@@ -879,7 +881,10 @@ bool chargeBattery() {
                 // Complex thermal loss model evaluates loss at each time step (approx 1 step / dt_ms)
                 // Predict temp change using recovered true ambient temperature (t1_true)
                 // Run the standard non-linear estimateTempDiff model using predictedTempTrack and persistent file-scope unapplied energy state
-                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, regressedInternalResistancePairsIntercept, t1_true, now, now - dt_ms, predictedTempTrack, &g_unappliedEnergy_J);
+                float R_load = regressedInternalResistancePairsSlope * cur + regressedInternalResistancePairsIntercept;
+                if (R_load < 0.01f) R_load = 0.01f;
+                if (R_load > 5.0f) R_load = 5.0f;
+                float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, R_load, t1_true, now, now - dt_ms, predictedTempTrack, &g_unappliedEnergy_J);
                 predictedTempTrack = predictedDiff + t1_true;
 
                 // Slow first-order residual-power estimator
@@ -948,8 +953,11 @@ bool chargeBattery() {
                     }
                 }
 
-                // Electrochemical voltage prediction under load: V_predicted = V_unloaded + I * R_int (during charging)
-                float predictedV = s_irTest.unloadedVoltage + cur * regressedInternalResistancePairsIntercept;
+                // Electrochemical voltage prediction under load: V_predicted = V_unloaded + I * R(I) (during charging)
+                float R_load_v = regressedInternalResistancePairsSlope * cur + regressedInternalResistancePairsIntercept;
+                if (R_load_v < 0.01f) R_load_v = 0.01f;
+                if (R_load_v > 5.0f) R_load_v = 5.0f;
+                float predictedV = s_irTest.unloadedVoltage + cur * R_load_v;
                 // Retain true signed physical overpotential direction for statistically meaningful Pearson correlation
                 float overpotential = v - predictedV;
 
@@ -967,7 +975,7 @@ bool chargeBattery() {
                     stepResp.predictedTemp = predictedTempTrack;
                     stepResp.predictedVoltage = predictedV;
                     stepResp.overpotential = overpotential;
-                    stepResp.ir = regressedInternalResistancePairsIntercept;
+                    stepResp.ir = R_load_v;
                     stepResp.p_residual = p_residual;
                     s_thermalHistory.push_back(stepResp);
                     lastThermalHistoryAppendTime = now;
@@ -1158,7 +1166,12 @@ bool chargeBattery() {
                     e.batteryTemperature = (float)t2;
                     e.dutyCycle = (uint8_t)dutyCycle;
                     e.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
-                    e.internalResistancePairs = regressedInternalResistancePairsIntercept;
+                    {
+                        float R_log = regressedInternalResistancePairsSlope * cur + regressedInternalResistancePairsIntercept;
+                        if (R_log < 0.01f) R_log = 0.01f;
+                        if (R_log > 5.0f) R_log = 5.0f;
+                        e.internalResistancePairs = R_log;
+                    }
                     e.threshold = MAX_DIFF_TEMP;
                     logChargeData(e);
                     pushRecentChargeLog(e);

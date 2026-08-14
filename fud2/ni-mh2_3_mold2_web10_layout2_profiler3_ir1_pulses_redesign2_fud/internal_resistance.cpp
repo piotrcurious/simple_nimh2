@@ -472,9 +472,9 @@ bool performLinearRegression(float data[][2], int count, float& slope, float& in
     if (coeffs.size() >= 2) {
         intercept = coeffs[0];
         slope = coeffs[1];
-        return true;
+    } else {
+        return false;
     }
-    return false;
 #else
     // Simple least squares fallback for mock or if fitter fails
     double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
@@ -488,6 +488,21 @@ bool performLinearRegression(float data[][2], int count, float& slope, float& in
     if (std::abs(denominator) < 1e-9) return false;
     slope = (float)((count * sumXY - sumX * sumY) / denominator);
     intercept = (float)((sumY - (double)slope * sumX) / count);
-    return true;
 #endif
+
+    // Calculate Standard Error of the Regression to determine fit quality / error
+    double ss_resid = 0.0;
+    for (int i = 0; i < count; i++) {
+        double pred = (double)slope * data[i][0] + intercept;
+        double res = data[i][1] - pred;
+        ss_resid += res * res;
+    }
+    double std_error = 0.0;
+    if (count > 2) {
+        std_error = std::sqrt(ss_resid / (count - 2));
+    } else if (count == 2) {
+        std_error = std::sqrt(ss_resid / 1.0);
+    }
+    Serial.printf("Linear Regression Fit: Slope = %.4f, Intercept = %.4f, Standard Error = %.4f Ohms (n = %d)\n", slope, intercept, (float)std_error, count);
+    return true;
 }
