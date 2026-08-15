@@ -169,10 +169,7 @@ void startMHElectrodeMeasurement(int testDutyCycle, unsigned long stabilization_
     if (meas.active()) return;
     meas.reset();
     meas.testDuty = (uint8_t)testDutyCycle;
-    if (stabilization_delay == STABILIZATION_DELAY_MS && g_electrode.evaluated) {
-        stabilization_delay = g_electrode.adaptiveDelayMs;
-    }
-    meas.stabilizationDelay = stabilization_delay;
+    meas.stabilizationDelay = getAdaptiveStabilizationDelay(stabilization_delay);
     meas.unloadedDelay = unloaded_delay;
     applyDuty(0);
     meas.stateStart = millis();
@@ -609,7 +606,7 @@ bool chargeBattery() {
                 unsigned long stepElapsed = now - s_irTest.stepStartTime;
                 double t1, t2, td; float tmv, v, cur; getThermistorReadings(t1, t2, td, tmv, v, cur);
 
-                unsigned long reqStepDelay = g_electrode.evaluated ? g_electrode.adaptiveDelayMs : 1000;
+                unsigned long reqStepDelay = getAdaptiveStabilizationDelay(1000);
 
                 if (s_irTest.step == 0) {
                     if (stepElapsed >= 1000) {
@@ -738,7 +735,7 @@ bool chargeBattery() {
                 double t1, t2, td; float tmv, v, cur; getThermistorReadings(t1, t2, td, tmv, v, cur);
                 const RePoint& pt = s_reMeasure.points[s_reMeasure.index];
 
-                unsigned long reqRemeasureDelay = g_electrode.evaluated ? g_electrode.adaptiveDelayMs : PULSE_IR_REMEASURE_STABILIZATION_MS;
+                unsigned long reqRemeasureDelay = getAdaptiveStabilizationDelay(PULSE_IR_REMEASURE_STABILIZATION_MS);
 
                 if (s_reMeasure.subStep == 0) {
                     // Unloaded step: wait for adaptive stabilization

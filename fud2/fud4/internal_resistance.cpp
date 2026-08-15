@@ -77,9 +77,11 @@ void evaluateElectrodeParameters(float v_unloaded, float v_step_initial, float v
     float surfaceProxy = C_dl / 1.0f;
 
     float requiredDelayS = 3.5f * tau_rc;
-    unsigned long adaptiveDelayMs = static_cast<unsigned long>(requiredDelayS * 1000.0f);
-    if (adaptiveDelayMs < 600) adaptiveDelayMs = 600;
-    if (adaptiveDelayMs > 3500) adaptiveDelayMs = 3500;
+    unsigned long rawAdaptiveMs = static_cast<unsigned long>(requiredDelayS * 1000.0f);
+    // Align delay to 250ms SystemDataManager ADC snapshot sampling intervals for optimal noise-free settling
+    unsigned long adaptiveDelayMs = ((rawAdaptiveMs + 124) / 250) * 250;
+    if (adaptiveDelayMs < 500) adaptiveDelayMs = 500;
+    if (adaptiveDelayMs > 4000) adaptiveDelayMs = 4000;
 
     WEB_LOCK();
     g_electrode.R_ohmic = R_ohmic;
@@ -93,6 +95,13 @@ void evaluateElectrodeParameters(float v_unloaded, float v_step_initial, float v
 
     Serial.printf("Electrode Params Evaluated: R_ohmic=%.4f, R_ct=%.4f, Tau_RC=%.3fs, C_dl=%.3fF, ActiveAreaProxy=%.2f, AdaptiveDelay=%lu ms\n",
                   R_ohmic, R_ct, tau_rc, C_dl, surfaceProxy, adaptiveDelayMs);
+}
+
+unsigned long getAdaptiveStabilizationDelay(unsigned long defaultDelayMs) {
+    if (g_electrode.evaluated && g_electrode.adaptiveDelayMs > 0) {
+        return g_electrode.adaptiveDelayMs;
+    }
+    return defaultDelayMs;
 }
 
 // Helper function to initiate measurement
@@ -199,7 +208,7 @@ void measureInternalResistanceStep() {
 
         case IR_STATE_GET_MEASUREMENT:
             {
-                unsigned long reqDelay = g_electrode.evaluated ? g_electrode.adaptiveDelayMs : STABILIZATION_DELAY_MS;
+                unsigned long reqDelay = getAdaptiveStabilizationDelay(STABILIZATION_DELAY_MS);
                 if (now - irStateChangeTime >= reqDelay) {
                     getThermistorReadings(currentMeasurement.temp1, currentMeasurement.temp2,
                                          currentMeasurement.tempDiff, currentMeasurement.t1_millivolts,
