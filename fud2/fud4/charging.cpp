@@ -47,6 +47,10 @@ float getAverageResistanceNearCurrent(float cur, float data[][2], int count) {
     return sumR / (float)count;
 }
 
+// Pulse charge current mean accumulation tracking
+static double pulseCurrentSum = 0.0;
+static uint32_t pulseCurrentSamples = 0;
+
 // Global thermal tracking and derivative variables
 float recoveredAmbientTemp = 25.0f;
 float recoveredBatteryTemp = 25.0f;
@@ -732,6 +736,8 @@ bool chargeBattery() {
                                 // Transition directly to charging pulse
                                 chargingState = CHARGE_PULSE_ACTIVE;
                                 pulseCycleStartTime = now;
+                                pulseCurrentSum = 0.0;
+                                pulseCurrentSamples = 0;
                                 prev_t1 = -1.0; // Reset derivative trackers to prevent spikes across state boundary
                                 prev_t2 = -1.0;
                             prev_divergence_m_set = false;
@@ -848,6 +854,8 @@ bool chargeBattery() {
 
                             chargingState = CHARGE_PULSE_ACTIVE;
                             pulseCycleStartTime = now;
+                            pulseCurrentSum = 0.0;
+                            pulseCurrentSamples = 0;
                             prev_t1 = -1.0;
                             prev_t2 = -1.0;
                             prev_divergence_m_set = false;
@@ -885,6 +893,9 @@ bool chargeBattery() {
                 }
                 float dt_s = (float)dt_ms / 1000.0f;
                 lastHousekeepTime = now;
+
+                pulseCurrentSum += cur;
+                pulseCurrentSamples++;
 
                 if (prev_t1 < 0) {
                     prev_t1 = t1;
@@ -1212,7 +1223,8 @@ bool chargeBattery() {
                     lastLogTime = now;
                     ChargeLogData e;
                     e.timestamp = (uint32_t)now;
-                    e.current = cur;
+                    float meanPulseCurrent = (pulseCurrentSamples > 0) ? (float)(pulseCurrentSum / pulseCurrentSamples) : cur;
+                    e.current = meanPulseCurrent;
                     e.voltage = v;
                     e.ambientTemperature = (float)t1;
                     e.batteryTemperature = (float)t2;

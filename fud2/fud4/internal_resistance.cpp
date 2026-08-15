@@ -325,9 +325,10 @@ void generateCategorizedDutyPairs(std::vector<DutyPair>& pairs, int maxPairs) {
         pairs.push_back(l2);
     }
 
-    float l_high1 = minI + 0.75f * spanI;
-    int dc_l_high1 = estimateDutyCycleForCurrent(l_high1);
-    int dc_l_high2 = estimateDutyCycleForCurrent(l_high1 + localStepI);
+    // High current pair: Anchor against minDC to ensure large Delta I and prevent high-end saturation divergence
+    float l_high1 = minI + 0.85f * spanI;
+    int dc_l_high2 = estimateDutyCycleForCurrent(l_high1);
+    int dc_l_high1 = minDC;
     if (dc_l_high2 > dc_l_high1 && (int)pairs.size() < maxPairs) {
         DutyPair l3;
         l3.lowDC = dc_l_high1; l3.highDC = dc_l_high2;
@@ -383,6 +384,7 @@ bool evaluateAndCorrectPairData(int dc1, int dc2, float v1, float v2, float i1, 
     bool linear1 = isDutyCycleLinearRegion(dc1, slope1);
     bool linear2 = isDutyCycleLinearRegion(dc2, slope2);
 
+    // Exclusion 1: Both duty cycles in severe dead region
     if (!linear1 && !linear2 && (i1 < MEASURABLE_CURRENT_THRESHOLD && i2 < MEASURABLE_CURRENT_THRESHOLD)) {
         Serial.printf("Excluding pair (DC %d, %d): Both in non-linear dead region.\n", dc1, dc2);
         return false;
@@ -390,6 +392,13 @@ bool evaluateAndCorrectPairData(int dc1, int dc2, float v1, float v2, float i1, 
 
     float deltaI_meas = std::fabs(i2 - i1);
     float deltaI_model = std::fabs(estimateCurrent(dc2) - estimateCurrent(dc1));
+
+    // Exclusion 2: High-end driver saturation divergence protection
+    if (dc1 > (int)(0.6f * MAX_DUTY_CYCLE) && dc2 > (int)(0.6f * MAX_DUTY_CYCLE) && deltaI_meas < 0.12f) {
+        Serial.printf("Excluding high-end pair (DC %d, %d): High-end driver saturation risk (Delta I=%.4fA).\n",
+                      dc1, dc2, deltaI_meas);
+        return false;
+    }
 
     if (deltaI_meas < REMEASURE_MIN_CURRENT_DIFF && deltaI_model < REMEASURE_MIN_CURRENT_DIFF) {
         Serial.printf("Excluding pair (DC %d, %d): Delta I too small (measured=%.4fA, model=%.4fA).\n",
@@ -408,9 +417,19 @@ bool evaluateAndCorrectPairData(int dc1, int dc2, float v1, float v2, float i1, 
 
     float ir_calc = deltaV / deltaI_eff;
 
+    // Exclusion 3: Physical bounds & divergence check against baseline
     if (ir_calc < MIN_VALID_RESISTANCE || ir_calc > REMEASURE_MAX_VALID_IR) {
         Serial.printf("Excluding pair (DC %d, %d): Calculated IR %.4f out of physical bounds.\n", dc1, dc2, ir_calc);
         return false;
+    }
+
+    float baseIR = regressedInternalResistanceIntercept;
+    if (baseIR > 0.01f && baseIR < 1.0f) {
+        if (ir_calc > 3.0f * baseIR + 0.25f && out_I > 0.5f) {
+            Serial.printf("Excluding divergent high-end pair IR %.4f vs baseline %.4f at I=%.3fA\n",
+                          ir_calc, baseIR, out_I);
+            return false;
+        }
     }
 
     out_IR = ir_calc;

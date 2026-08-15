@@ -117,7 +117,7 @@ const int STRATIFIED_LU_SEGMENTS = 4;                            // Number of eq
 const double TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA = 0.5;      // Exponential moving average smoothing factor for raw temperature derivative
 
 // --- Categorized IR Pair & Re-measurement Constants ---
-const int PULSE_REMEASURE_BUDGET = 6;                          // Limited budget of re-measurements per pulse cycle
+const int PULSE_REMEASURE_BUDGET = 12;                         // Increased budget of re-measurements per pulse cycle
 const float GLOBAL_PAIR_MIN_DELTA_I = 0.25f;                     // Min current delta for global pairs (large Delta I, stable baseline)
 const float LOCAL_PAIR_MAX_DELTA_I = 0.18f;                     // Max current delta for local pairs (close currents, local accuracy)
 const float LOCAL_PAIR_MIN_DELTA_I = 0.04f;                     // Min current delta for local pairs
