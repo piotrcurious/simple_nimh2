@@ -723,7 +723,8 @@ void buildCurrentModelStep() {
                         double theta_end = tempEnd - t1;
                         double computedTau = 300.0; // Default 5 minutes fallback
 
-                        double dt_cooloff_s = (double)currentCooloffDurationMs / 1000.0;
+                        double dt_cooloff_s = (peakTimeAfterShutoff > 0 && now > peakTimeAfterShutoff) ?
+                            (double)(now - peakTimeAfterShutoff) / 1000.0 : (double)currentCooloffDurationMs / 1000.0;
                         if (theta_peak > 0.01 && theta_end > 0.005 && theta_peak > theta_end) {
                             double ratio = theta_peak / theta_end;
                             computedTau = dt_cooloff_s / log(ratio);
