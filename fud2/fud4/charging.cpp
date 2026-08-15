@@ -448,6 +448,24 @@ static float thermalConductance_W_per_K(float area, float h, float emissivity, f
   return h * area + 4.0f * emissivity * STEFAN_BOLTZMANN * area * powf(T_ambientK, 3.0f);
 }
 
+void updateDynamicMaximumCurrent() {
+    double t1, t2, td; float tmv, v, c;
+    getThermistorReadings(t1, t2, td, tmv, v, c);
+    float ambK = (float)t1 + 273.15f;
+    float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY, ambK);
+
+    float R_int = regressedInternalResistancePairsIntercept;
+    if (R_int < 0.01f) R_int = regressedInternalResistanceIntercept;
+    if (R_int < 0.01f) R_int = 0.18f;
+
+    float targetI = std::sqrt(1.0f * G / std::max(1e-4f, R_int));
+    float maxCurrentLimit = 0.150f;
+    maximumCurrent = std::min(maxCurrentLimit, std::max(0.010f, targetI));
+
+    Serial.printf("Dynamic Max Current Updated: G=%.6f W/K, R_int=%.4f Ohms -> MaxCurrent=%.4f A (Clamped to 0.150A max)\n",
+                  G, R_int, maximumCurrent);
+}
+
 float estimateTempDiff(float vL, float vN, float cur, float Rp, float ambC, uint32_t now, uint32_t last, float bC, float* uE, float mass, float spec, float area, float convH, float emiss) {
   uint32_t dt_ms = now - last;
   float dt_s = (float)dt_ms * 0.001f;
@@ -612,6 +630,7 @@ bool chargeBattery() {
     switch (chargingState) {
         case CHARGE_IDLE:
             chargingStartTime = now;
+            updateDynamicMaximumCurrent();
             pulseCycleStartTime = now;
             eval_mAh_snapshot = (float)mAh_charged;
             eval_time_snapshot = now;
@@ -713,6 +732,7 @@ bool chargeBattery() {
                             storeOrAverageResistanceData(s_irTest.currents[3], s_irTest.calculatedIR, internalResistanceData, resistanceDataCount);
                             WEB_UNLOCK();
 
+                            updateDynamicMaximumCurrent();
                             Serial.printf("Structured IR Pulse Test Complete: IR = %.4f Ohms\n", s_irTest.calculatedIR);
 
                             // Check if we should execute alike original system IR re-measurement
@@ -852,6 +872,7 @@ bool chargeBattery() {
                             if (resistanceDataCountPairs >= 2) performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
                             WEB_UNLOCK();
 
+                            updateDynamicMaximumCurrent();
                             Serial.println("Pulse IR Re-measurement Complete. Fitted new linear regression lines.");
 
                             chargingState = CHARGE_PULSE_ACTIVE;
