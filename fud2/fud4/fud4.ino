@@ -348,6 +348,7 @@ static double tempAtShutoff = 0.0;
 static unsigned long startTime = 0;
 static unsigned long shutoffTime = 0;
 static double peakTempAfterShutoff = 0.0;
+static double peakAmbientTemp = 0.0;
 static unsigned long peakTimeAfterShutoff = 0;
 static int characPhase = 0; // 0: Heating, 1: Peak detection, 2: Cool-off
 static unsigned long cooloffStartTime = 0;
@@ -394,6 +395,7 @@ void buildCurrentModelStep() {
             startTime = 0;
             shutoffTime = 0;
             peakTempAfterShutoff = 0.0;
+            peakAmbientTemp = 0.0;
             peakTimeAfterShutoff = 0;
             characPhase = 0;
             cooloffStartTime = 0;
@@ -520,6 +522,7 @@ void buildCurrentModelStep() {
                     startTime = now;
                     shutoffTime = 0;
                     peakTempAfterShutoff = 0.0;
+                    peakAmbientTemp = t1;
                     peakTimeAfterShutoff = 0;
                     characPhase = 0;
                     cooloffStartTime = 0;
@@ -659,6 +662,7 @@ void buildCurrentModelStep() {
 
                                     tempAtShutoff = t2;
                                     peakTempAfterShutoff = t2;
+                                    peakAmbientTemp = t1;
                                     peakTimeAfterShutoff = now;
                                     shutoffTime = now;
                                     applyDuty(0);
@@ -674,6 +678,7 @@ void buildCurrentModelStep() {
                             getThermistorReadings(t1, t2, td, tmv, v, c);
                             tempAtShutoff = t2;
                             peakTempAfterShutoff = t2;
+                            peakAmbientTemp = t1;
                             peakTimeAfterShutoff = now;
                             shutoffTime = now;
                             applyDuty(0); // Shutoff load to observe sensor lag peak
@@ -689,6 +694,7 @@ void buildCurrentModelStep() {
 
                     if (t2 > peakTempAfterShutoff + 0.001) {
                         peakTempAfterShutoff = t2;
+                        peakAmbientTemp = t1;
                         peakTimeAfterShutoff = now;
                         consecutiveDeclineCount = 0;
                     } else if (t2 < peakTempAfterShutoff - 0.001) {
@@ -719,7 +725,7 @@ void buildCurrentModelStep() {
                         // Fit battery thermal time constant analytically:
                         // theta_end = theta_peak * exp(-dt / tau_thermal)
                         // tau_thermal = dt / ln(theta_peak / theta_end)
-                        double theta_peak = peakTempAfterShutoff - t1;
+                        double theta_peak = peakTempAfterShutoff - peakAmbientTemp;
                         double theta_end = tempEnd - t1;
                         double computedTau = 300.0; // Default 5 minutes fallback
 
