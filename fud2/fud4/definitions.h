@@ -104,7 +104,7 @@ const int MAX_RESISTANCE_POINTS = 100;
 
 // --- Charging and Remeasurement Constants ---
 const unsigned long PULSE_IR_REMEASURE_STABILIZATION_MS = 2000; // Duration of each sub-step during pulse IR re-measurement
-const float REMEASURE_MIN_CURRENT_DIFF = 0.05f;                 // Minimum current delta required to calculate local IR (A)
+const float REMEASURE_MIN_CURRENT_DIFF = 0.03f;                 // Minimum current delta required to calculate local IR (A)
 const float REMEASURE_DEFAULT_IR_FALLBACK = 0.15f;              // Default fallback internal resistance if delta cur is too low (Ohms)
 const float REMEASURE_MAX_VALID_IR = 15.0f;                      // Maximum physically plausible IR before falling back to sweep test (Ohms)
 const float DYNAMIC_REGULATOR_CURRENT_MARGIN = 0.003f;         // Deadband current offset for the dynamic CC closed-loop PWM regulator (A)
@@ -115,6 +115,15 @@ const float STRUCTURED_IR_SWEEP_MAX_LIMIT = 15.0f;               // Maximum plau
 const int STRATIFIED_PAIRS_SEGMENTS = 10;                        // Number of equal current segments for pairs stratified random sampling
 const int STRATIFIED_LU_SEGMENTS = 4;                            // Number of equal current segments for loaded/unloaded stratified random sampling
 const double TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA = 0.5;      // Exponential moving average smoothing factor for raw temperature derivative
+
+// --- Categorized IR Pair & Re-measurement Constants ---
+const int PULSE_REMEASURE_BUDGET = 12;                         // Increased budget of re-measurements per pulse cycle
+const float GLOBAL_PAIR_MIN_DELTA_I = 0.25f;                     // Min current delta for global pairs (large Delta I, stable baseline)
+const float LOCAL_PAIR_MAX_DELTA_I = 0.18f;                     // Max current delta for local pairs (close currents, local accuracy)
+const float LOCAL_PAIR_MIN_DELTA_I = 0.04f;                     // Min current delta for local pairs
+const float MIN_VALID_DUTY_MODEL_SLOPE = 0.0003f;                // Min valid dI/dDC slope to predict linear current region
+const float MODEL_CORRECTION_WEIGHT = 0.35f;                    // Blend weight for duty model current delta vs measured delta
+const float EXPLORATION_TOLERANCE_CURRENT = 0.008f;             // 8mA exclusion distance for already-measured currents
 
 // --- Outlier and Error Distribution Constants ---
 const float DISTRIBUTE_ERROR_DEFAULT_SPACING = 0.05f;           // Default spacing threshold if data count is low (A)
@@ -133,6 +142,44 @@ const float MAX_TEMPERATURE_DERIVATIVE_C_PER_S = 0.5f;           // Max physical
 #define PLOT_WIDTH          240
 
 // --- Enums and Structs ---
+
+enum PairType {
+    PAIR_TYPE_GLOBAL,           // Large Delta I, high SNR, stable baseline/mean IR
+    PAIR_TYPE_LOCAL,            // Small Delta I, local accuracy & derivative variation
+    PAIR_TYPE_RANDOM_BLINDSPOT  // Target blind spots and random sampling for error distribution
+};
+
+struct DutyPair {
+    int lowDC;
+    int highDC;
+    PairType type;
+    float targetLowCurrent;
+    float targetHighCurrent;
+};
+
+struct IRPairRecord {
+    float current1;
+    float current2;
+    float ir;
+    uint32_t timestamp;
+};
+
+struct CandidatePoint {
+    float current;
+    int duty;
+    float score;
+    PairType type;
+};
+
+struct ElectrodeParams {
+    float R_ohmic = 0.05f;                 // Instantaneous Ohmic resistance (Ohms)
+    float R_ct = 0.13f;                    // Charge transfer resistance (Ohms)
+    float C_dl = 1.5f;                     // Double-layer capacitance (Farads)
+    float tau_rc = 0.195f;                 // RC time constant = R_ct * C_dl (seconds)
+    float activeSurfaceAreaProxy = 1.0f;   // Active electrochemically accessible surface area proxy
+    unsigned long adaptiveDelayMs = 1500;  // Dynamic stabilization delay based on C_dl (ms)
+    bool evaluated = false;
+};
 
 enum DisplayState {
     DISPLAY_STATE_IDLE,
@@ -300,6 +347,7 @@ extern SystemDataManager systemData;
 extern float recoveredAmbientTemp;
 extern float recoveredBatteryTemp;
 extern CurrentModel currentModel;
+extern ElectrodeParams g_electrode;
 extern AsyncMeasure meas;
 extern FindOptManager findOpt;
 extern RemeasureManager remeasure;

@@ -343,14 +343,25 @@ void getThermistorReadings(double& temp1, double& temp2, double& tempDiff, float
 }
 
 // --- Thermal Characterize variables ---
+static bool characterizationInitialized = false;
 static double tempStart = 0.0;
 static double tempAtShutoff = 0.0;
 static unsigned long startTime = 0;
 static unsigned long shutoffTime = 0;
 static double peakTempAfterShutoff = 0.0;
+static double peakAmbientTemp = 0.0;
 static unsigned long peakTimeAfterShutoff = 0;
 static int characPhase = 0; // 0: Heating, 1: Peak detection, 2: Cool-off
 static unsigned long cooloffStartTime = 0;
+
+struct ThermalSample {
+    float t_rel_s;
+    float tempDiff;
+};
+static std::vector<ThermalSample> cooloffSamples;
+static unsigned long lastCooloffSampleTime = 0;
+static double heatingPowerSum = 0.0;
+static unsigned int heatingPowerCount = 0;
 
 static int characIteration = 0; // Iterates 3 times
 static float sumTauThermal = 0.0f;
@@ -362,9 +373,13 @@ static unsigned long currentCooloffDurationMs = 30000;
 
 static int sweepStep = -1;
 static float sweepUnloadedV = 0.0f;
+static float sweepUnloadedI = 0.0f;
+static float sweepStepVoltInitial = 0.0f;
 static float sweepVoltages[15] = {0.0f};
 static float sweepCurrents[15] = {0.0f};
+static int sweepDutyCycles[15] = {0};
 static unsigned long sweepStepStartTime = 0;
+static std::vector<DutyPair> sweepCatPairs;
 
 // --- Non-blocking build current model ---
 void buildCurrentModelStep() {
@@ -385,11 +400,13 @@ void buildCurrentModelStep() {
             buildModelLastStepTime = now;
 
             // Reset thermal characterize variables
+            characterizationInitialized = false;
             tempStart = 0.0;
             tempAtShutoff = 0.0;
             startTime = 0;
             shutoffTime = 0;
             peakTempAfterShutoff = 0.0;
+            peakAmbientTemp = 0.0;
             peakTimeAfterShutoff = 0;
             characPhase = 0;
             cooloffStartTime = 0;
@@ -399,14 +416,22 @@ void buildCurrentModelStep() {
             sumTauSHT4x = 0.0f;
             currentHeatingDurationMs = 15000;
             currentCooloffDurationMs = 30000;
+            cooloffSamples.clear();
+            lastCooloffSampleTime = 0;
+            heatingPowerSum = 0.0;
+            heatingPowerCount = 0;
 
             sweepStep = -1;
             sweepUnloadedV = 0.0f;
+            sweepUnloadedI = 0.0f;
+            sweepStepVoltInitial = 0.0f;
             for (int k = 0; k < 15; k++) {
                 sweepVoltages[k] = 0.0f;
                 sweepCurrents[k] = 0.0f;
+                sweepDutyCycles[k] = 0;
             }
             sweepStepStartTime = 0;
+            sweepCatPairs.clear();
 
             setBuildModelPhase(BuildModelPhase::Settle);
             Serial.println("Building Current Model: Settling (2s)...");
@@ -505,16 +530,22 @@ void buildCurrentModelStep() {
                 // Dynamic Iterative Thermal and Sensor Lag Characterization (3-phase self-tuning loop):
                 // Runs 3 full cycles to verify measurements and self-tune parameters.
                 // Adjusts Heating and Cool-off durations for iterations 1 and 2 based on previous estimations.
-                if (tempStart == 0.0) {
+                if (!characterizationInitialized) {
                     double t1, t2, td; float tmv, v, c;
                     getThermistorReadings(t1, t2, td, tmv, v, c);
                     tempStart = t2;
                     startTime = now;
                     shutoffTime = 0;
                     peakTempAfterShutoff = 0.0;
+                    peakAmbientTemp = t1;
                     peakTimeAfterShutoff = 0;
                     characPhase = 0;
                     cooloffStartTime = 0;
+                    cooloffSamples.clear();
+                    lastCooloffSampleTime = 0;
+                    heatingPowerSum = 0.0;
+                    heatingPowerCount = 0;
+                    characterizationInitialized = true;
 
                     if (characIteration == 0) {
                         sumTauThermal = 0.0f;
@@ -525,7 +556,8 @@ void buildCurrentModelStep() {
                         sweepStep = -1;
                         sweepStepStartTime = now;
                         applyDuty(0); // Start sweep with unloaded point
-                        Serial.println("Thermal Characterize Iteration 1: Starting 15-point sweep...");
+                        generateCategorizedDutyPairs(sweepCatPairs, 15);
+                        Serial.printf("Thermal Characterize Iteration 1: Starting categorized %d-pair sweep with adaptive delays...\n", (int)sweepCatPairs.size());
                     } else {
                         float targetI = 0.90f * estimateCurrent(MAX_DUTY_CYCLE);
                         int characDuty = estimateDutyCycleForCurrent(targetI);
@@ -538,90 +570,139 @@ void buildCurrentModelStep() {
 
                 if (characPhase == 0) {
                     if (characIteration == 0) {
-                        // 15-point sweep state machine
+                        // Categorized sweep state machine with dynamic adaptive delays and electrode evaluation
+                        unsigned long requiredDelay = g_electrode.adaptiveDelayMs > 0 ? (unsigned long)g_electrode.adaptiveDelayMs : 1000UL;
+
                         if (sweepStep == -1) {
-                            if (now - startTime >= 2000) {
+                            if (now - startTime >= requiredDelay) {
                                 double t1, t2, td; float tmv, v, c;
                                 getThermistorReadings(t1, t2, td, tmv, v, c);
                                 sweepUnloadedV = v;
+                                sweepUnloadedI = c;
                                 sweepStep = 0;
 
-                                float maxC = estimateCurrent(MAX_DUTY_CYCLE);
-                                float minC = MEASURABLE_CURRENT_THRESHOLD > 0.01f ? MEASURABLE_CURRENT_THRESHOLD : 0.05f;
-                                float limitC = 0.90f * maxC;
-                                if (limitC <= minC) limitC = maxC;
+                                int targetDuty = 0;
+                                if (!sweepCatPairs.empty()) {
+                                    targetDuty = sweepCatPairs[0].highDC;
+                                } else {
+                                    float maxC = estimateCurrent(MAX_DUTY_CYCLE);
+                                    float minC = MEASURABLE_CURRENT_THRESHOLD > 0.01f ? MEASURABLE_CURRENT_THRESHOLD : 0.05f;
+                                    targetDuty = estimateDutyCycleForCurrent(minC);
+                                }
+                                float slope = 0.0f;
+                                if (!isDutyCycleLinearRegion(targetDuty, slope)) {
+                                    int minLinear = MIN_DUTY_CYCLE_START;
+                                    while (minLinear < MAX_DUTY_CYCLE && !isDutyCycleLinearRegion(minLinear, slope)) minLinear++;
+                                    targetDuty = minLinear;
+                                }
 
-                                float targetI = minC;
-                                int dCycle = estimateDutyCycleForCurrent(targetI);
-                                applyDuty(dCycle);
+                                applyDuty(targetDuty);
                                 sweepStepStartTime = now;
-                                Serial.printf("  Sweep Step %d/15: Applied Duty %d for target %.3f A (unloadedV = %.3f V)\n", sweepStep+1, dCycle, targetI, sweepUnloadedV);
+                                sweepStepVoltInitial = v;
+                                sweepDutyCycles[0] = targetDuty;
+                                Serial.printf("  Sweep Step 1/%d: Applied Duty %d (unloadedV = %.3f V, delay %lu ms)\n",
+                                              (int)(sweepCatPairs.empty() ? 15 : sweepCatPairs.size()), targetDuty, sweepUnloadedV, requiredDelay);
                             }
-                        } else if (sweepStep >= 0 && sweepStep <= 14) {
-                            if (now - sweepStepStartTime >= 1000) {
+                        } else if (sweepStep >= 0 && sweepStep < (int)(sweepCatPairs.empty() ? 15 : sweepCatPairs.size())) {
+                            if (now - sweepStepStartTime >= requiredDelay) {
                                 double t1, t2, td; float tmv, v, c;
                                 getThermistorReadings(t1, t2, td, tmv, v, c);
                                 sweepVoltages[sweepStep] = v;
                                 sweepCurrents[sweepStep] = c;
 
-                                if (sweepStep < 14) {
-                                    sweepStep++;
-                                    float maxC = estimateCurrent(MAX_DUTY_CYCLE);
-                                    float minC = MEASURABLE_CURRENT_THRESHOLD > 0.01f ? MEASURABLE_CURRENT_THRESHOLD : 0.05f;
-                                    float limitC = 0.90f * maxC;
-                                    if (limitC <= minC) limitC = maxC;
+                                // Perform transient electrode evaluation on step 0
+                                if (sweepStep == 0) {
+                                    evaluateElectrodeParameters(sweepUnloadedV, sweepStepVoltInitial, v, c, (float)requiredDelay / 1000.0f);
+                                }
 
-                                    float targetI = minC + (float)sweepStep * (limitC - minC) / 14.0f;
-                                    int dCycle = estimateDutyCycleForCurrent(targetI);
-                                    applyDuty(dCycle);
+                                int totalSteps = (int)(sweepCatPairs.empty() ? 15 : sweepCatPairs.size());
+                                if (sweepStep < totalSteps - 1) {
+                                    sweepStep++;
+                                    int nextDuty = 0;
+                                    if (!sweepCatPairs.empty()) {
+                                        nextDuty = sweepCatPairs[sweepStep].highDC;
+                                    } else {
+                                        float maxC = estimateCurrent(MAX_DUTY_CYCLE);
+                                        float minC = MEASURABLE_CURRENT_THRESHOLD > 0.01f ? MEASURABLE_CURRENT_THRESHOLD : 0.05f;
+                                        float limitC = 0.90f * maxC;
+                                        if (limitC <= minC) limitC = maxC;
+                                        float targetI = minC + (float)sweepStep * (limitC - minC) / 14.0f;
+                                        nextDuty = estimateDutyCycleForCurrent(targetI);
+                                    }
+                                    float slope = 0.0f;
+                                    if (!isDutyCycleLinearRegion(nextDuty, slope)) {
+                                        int minLinear = MIN_DUTY_CYCLE_START;
+                                        while (minLinear < MAX_DUTY_CYCLE && !isDutyCycleLinearRegion(minLinear, slope)) minLinear++;
+                                        nextDuty = minLinear;
+                                    }
+                                    sweepDutyCycles[sweepStep] = nextDuty;
+                                    applyDuty(nextDuty);
                                     sweepStepStartTime = now;
-                                    Serial.printf("  Sweep Step %d/15: Applied Duty %d for target %.3f A\n", sweepStep+1, dCycle, targetI);
+                                    Serial.printf("  Sweep Step %d/%d: Applied Duty %d\n", sweepStep + 1, totalSteps, nextDuty);
                                 } else {
-                                    // Finished 15 points
-                                    float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-                                    sumX += 0.0f;
-                                    sumY += sweepUnloadedV;
-                                    for (int k = 0; k < 15; k++) {
-                                        float I = sweepCurrents[k];
-                                        float V = sweepVoltages[k];
-                                        sumX += I;
-                                        sumY += V;
-                                        sumXY += I * V;
-                                        sumX2 += I * I;
-                                    }
-                                    float denom = (16 * sumX2 - sumX * sumX);
-                                    float calculatedIR = 0.15f;
-                                    if (std::abs(denom) > 1e-6f) {
-                                        float slope = (16 * sumXY - sumX * sumY) / denom;
-                                        calculatedIR = std::fabs(slope);
-                                    }
-                                    if (calculatedIR < MIN_VALID_RESISTANCE || calculatedIR > STRUCTURED_IR_SWEEP_MAX_LIMIT) {
-                                        calculatedIR = STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK;
+                                    // Finished all sweep points: Evaluate, filter, and store valid pairs
+                                    int validCount = 0;
+                                    float lastValidI = 0.0f;
+                                    float lastValidIR = STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK;
+
+                                    for (int k = 0; k < totalSteps; k++) {
+                                        int lowDC = (!sweepCatPairs.empty() && k < (int)sweepCatPairs.size()) ? sweepCatPairs[k].lowDC : 0;
+                                        int highDC = sweepDutyCycles[k];
+                                        float v1 = sweepUnloadedV;
+                                        float v2 = sweepVoltages[k];
+                                        float i1 = sweepUnloadedI;
+                                        float i2 = sweepCurrents[k];
+
+                                        float corrI = 0.0f, corrIR = 0.0f;
+                                        bool valid = evaluateAndCorrectPairData(lowDC, highDC, v1, v2, i1, i2, corrI, corrIR);
+                                        if (valid && corrIR >= MIN_VALID_RESISTANCE && corrIR <= STRUCTURED_IR_SWEEP_MAX_LIMIT) {
+                                            WEB_LOCK();
+                                            if (!sweepCatPairs.empty() && sweepCatPairs[k].type == PAIR_TYPE_GLOBAL) {
+                                                storeOrAverageResistanceData(corrI, corrIR, internalResistanceDataPairs, resistanceDataCountPairs);
+                                            } else {
+                                                storeOrAverageResistanceData(corrI, corrIR, internalResistanceData, resistanceDataCount);
+                                            }
+                                            WEB_UNLOCK();
+                                            validCount++;
+                                            lastValidI = corrI;
+                                            lastValidIR = corrIR;
+                                        }
                                     }
 
                                     WEB_LOCK();
-                                    regressedInternalResistancePairsIntercept = calculatedIR;
-                                    regressedInternalResistanceIntercept = calculatedIR;
-                                    storeOrAverageResistanceData(sweepCurrents[14], calculatedIR, internalResistanceDataPairs, resistanceDataCountPairs);
-                                    storeOrAverageResistanceData(sweepCurrents[14], calculatedIR, internalResistanceData, resistanceDataCount);
+                                    if (validCount > 0) {
+                                        regressedInternalResistancePairsIntercept = lastValidIR;
+                                        regressedInternalResistanceIntercept = lastValidIR;
+                                    } else {
+                                        regressedInternalResistancePairsIntercept = STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK;
+                                        regressedInternalResistanceIntercept = STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK;
+                                        storeOrAverageResistanceData(0.10f, STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK, internalResistanceData, resistanceDataCount);
+                                    }
                                     WEB_UNLOCK();
 
                                     tempAtShutoff = t2;
                                     peakTempAfterShutoff = t2;
+                                    peakAmbientTemp = t1;
                                     peakTimeAfterShutoff = now;
                                     shutoffTime = now;
                                     applyDuty(0);
                                     characPhase = 1;
-                                    Serial.printf("  Sweep IR Regression Complete: IR = %.4f Ohms. Transitioning to Peak Detection.\n", calculatedIR);
+                                    Serial.printf("  Sweep IR Evaluation Complete: %d/%d valid points, IR = %.4f Ohms. Transitioning to Peak Detection.\n",
+                                                  validCount, totalSteps, regressedInternalResistancePairsIntercept);
                                 }
                             }
                         }
                     } else {
+                        // Sample power during heating phase
+                        double t1_h, t2_h, td_h; float tmv_h, v_h, c_h;
+                        getThermistorReadings(t1_h, t2_h, td_h, tmv_h, v_h, c_h);
+                        heatingPowerSum += (v_h * c_h);
+                        heatingPowerCount++;
+
                         if (now - startTime >= currentHeatingDurationMs) {
-                            double t1, t2, td; float tmv, v, c;
-                            getThermistorReadings(t1, t2, td, tmv, v, c);
-                            tempAtShutoff = t2;
-                            peakTempAfterShutoff = t2;
+                            tempAtShutoff = t2_h;
+                            peakTempAfterShutoff = t2_h;
+                            peakAmbientTemp = t1_h;
                             peakTimeAfterShutoff = now;
                             shutoffTime = now;
                             applyDuty(0); // Shutoff load to observe sensor lag peak
@@ -637,6 +718,7 @@ void buildCurrentModelStep() {
 
                     if (t2 > peakTempAfterShutoff + 0.001) {
                         peakTempAfterShutoff = t2;
+                        peakAmbientTemp = t1;
                         peakTimeAfterShutoff = now;
                         consecutiveDeclineCount = 0;
                     } else if (t2 < peakTempAfterShutoff - 0.001) {
@@ -659,36 +741,77 @@ void buildCurrentModelStep() {
                 } else if (characPhase == 2) {
                     // Let temperature decay to fit battery thermal inertia (estimatedTauThermal) cleanly
                     applyDuty(0); // Guarantee zero load
+
+                    // Sample cool-off time series every 200ms
+                    if (now - lastCooloffSampleTime >= 200) {
+                        double t1_c, t2_c, td_c; float tmv_c, v_c, c_c;
+                        getThermistorReadings(t1_c, t2_c, td_c, tmv_c, v_c, c_c);
+                        float rel_t_s = (float)(now - peakTimeAfterShutoff) / 1000.0f;
+                        float diff = (float)(t2_c - t1_c);
+                        if (diff > 0.001f && rel_t_s >= 0.0f) {
+                            cooloffSamples.push_back({rel_t_s, diff});
+                        }
+                        lastCooloffSampleTime = now;
+                    }
+
                     if (now - cooloffStartTime >= currentCooloffDurationMs) {
                         double t1, t2, td; float tmv, v, c;
                         getThermistorReadings(t1, t2, td, tmv, v, c);
                         double tempEnd = t2;
 
-                        // Fit battery thermal time constant analytically:
-                        // theta_end = theta_peak * exp(-dt / tau_thermal)
-                        // tau_thermal = dt / ln(theta_peak / theta_end)
-                        double theta_peak = peakTempAfterShutoff - t1;
-                        double theta_end = tempEnd - t1;
-                        double computedTau = 300.0; // Default 5 minutes fallback
-
-                        double dt_cooloff_s = (double)currentCooloffDurationMs / 1000.0;
-                        if (theta_peak > 0.01 && theta_end > 0.005 && theta_peak > theta_end) {
-                            double ratio = theta_peak / theta_end;
-                            computedTau = dt_cooloff_s / log(ratio);
-                            if (computedTau < 45.0) computedTau = 45.0;
-                            if (computedTau > 450.0) computedTau = 450.0;
+                        // Log-linear regression over entire cool-off time series samples:
+                        // ln(T_b - T_a) = ln(A) - t / tau -> tau = -1 / slope
+                        double computedTau = 300.0; // Fallback
+                        if (cooloffSamples.size() >= 5) {
+                            double sumX = 0.0, sumY = 0.0, sumXY = 0.0, sumX2 = 0.0;
+                            size_t n = 0;
+                            for (const auto& s : cooloffSamples) {
+                                if (s.tempDiff > 0.002f) {
+                                    double x = s.t_rel_s;
+                                    double y = log((double)s.tempDiff);
+                                    sumX += x;
+                                    sumY += y;
+                                    sumXY += x * y;
+                                    sumX2 += x * x;
+                                    n++;
+                                }
+                            }
+                            if (n >= 5) {
+                                double denom = (n * sumX2 - sumX * sumX);
+                                if (std::abs(denom) > 1e-9) {
+                                    double slope = (n * sumXY - sumX * sumY) / denom;
+                                    if (slope < -1e-5) {
+                                        computedTau = -1.0 / slope;
+                                    }
+                                }
+                            }
                         }
+                        if (computedTau < 45.0) computedTau = 45.0;
+                        if (computedTau > 450.0) computedTau = 450.0;
 
-                        // Calculate Thermistor lag (Tau Thermistor)
-                        unsigned long thermistorLagMs = peakTimeAfterShutoff - shutoffTime;
-                        double computedTauTherm = (double)thermistorLagMs / 1000.0;
-                        if (computedTauTherm < 1.0) computedTauTherm = 1.0;
-                        if (computedTauTherm > 8.0) computedTauTherm = 8.0;
+                        // Solve sensor pole tau_s for two-pole thermal system where t_peak = (tau_b * tau_s / (tau_b - tau_s)) * ln(tau_b / tau_s)
+                        double obsPeakDelayS = (peakTimeAfterShutoff > shutoffTime) ? (double)(peakTimeAfterShutoff - shutoffTime) / 1000.0 : 1.0;
+                        if (obsPeakDelayS < 0.2) obsPeakDelayS = 0.2;
 
-                        // SHT4x typical lag can be scaled similarly
+                        double tau_b = computedTau;
+                        double low_s = 0.1, high_s = std::min(15.0, 0.45 * tau_b);
+                        for (int iter = 0; iter < 25; iter++) {
+                            double mid_s = 0.5 * (low_s + high_s);
+                            double theoPeak = (tau_b * mid_s / (tau_b - mid_s)) * log(tau_b / mid_s);
+                            if (theoPeak < obsPeakDelayS) {
+                                low_s = mid_s;
+                            } else {
+                                high_s = mid_s;
+                            }
+                        }
+                        double computedTauTherm = 0.5 * (low_s + high_s);
+                        if (computedTauTherm < 0.5) computedTauTherm = 0.5;
+                        if (computedTauTherm > 10.0) computedTauTherm = 10.0;
+
+                        // SHT4x typical sensor lag
                         double computedTauSHT = computedTauTherm * 2.0;
-                        if (computedTauSHT < 2.0) computedTauSHT = 2.0;
-                        if (computedTauSHT > 16.0) computedTauSHT = 16.0;
+                        if (computedTauSHT < 1.0) computedTauSHT = 1.0;
+                        if (computedTauSHT > 20.0) computedTauSHT = 20.0;
 
                         sumTauThermal += (float)computedTau;
                         sumTauThermistor += (float)computedTauTherm;
@@ -698,7 +821,7 @@ void buildCurrentModelStep() {
                                       characIteration + 1, (float)computedTau, (float)computedTauTherm, (float)computedTauSHT);
 
                         characIteration++;
-                        tempStart = 0.0; // Trigger restart of heating phase for next iteration
+                        characterizationInitialized = false; // Trigger restart of heating phase for next iteration
 
                         if (characIteration < 4) {
                             // Self-Tuning: Adjust next cycle Heating and Cool-off durations to the newly inferred result!

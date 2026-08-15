@@ -33,6 +33,7 @@ extern unsigned long lastLogTime;
 void startCharging();
 void stopCharging();
 bool chargeBattery();
+void updateDynamicMaximumCurrent();
 
 MHElectrodeData measureMHElectrodeVoltage(int testDutyCycle);
 int findOptimalChargingDutyCycle(int maxChargeDutyCycle, int suggestedStartDutyCycle);
