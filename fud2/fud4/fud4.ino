@@ -738,16 +738,29 @@ void buildCurrentModelStep() {
                             if (computedTau > 450.0) computedTau = 450.0;
                         }
 
-                        // Calculate Thermistor lag (Tau Thermistor)
-                        unsigned long thermistorLagMs = peakTimeAfterShutoff - shutoffTime;
-                        double computedTauTherm = (double)thermistorLagMs / 1000.0;
-                        if (computedTauTherm < 1.0) computedTauTherm = 1.0;
-                        if (computedTauTherm > 8.0) computedTauTherm = 8.0;
+                        // Solve sensor pole tau_s for two-pole thermal system where t_peak = (tau_b * tau_s / (tau_b - tau_s)) * ln(tau_b / tau_s)
+                        double obsPeakDelayS = (peakTimeAfterShutoff > shutoffTime) ? (double)(peakTimeAfterShutoff - shutoffTime) / 1000.0 : 1.0;
+                        if (obsPeakDelayS < 0.2) obsPeakDelayS = 0.2;
 
-                        // SHT4x typical lag can be scaled similarly
+                        double tau_b = computedTau;
+                        double low_s = 0.1, high_s = std::min(15.0, 0.45 * tau_b);
+                        for (int iter = 0; iter < 25; iter++) {
+                            double mid_s = 0.5 * (low_s + high_s);
+                            double theoPeak = (tau_b * mid_s / (tau_b - mid_s)) * log(tau_b / mid_s);
+                            if (theoPeak < obsPeakDelayS) {
+                                low_s = mid_s;
+                            } else {
+                                high_s = mid_s;
+                            }
+                        }
+                        double computedTauTherm = 0.5 * (low_s + high_s);
+                        if (computedTauTherm < 0.5) computedTauTherm = 0.5;
+                        if (computedTauTherm > 10.0) computedTauTherm = 10.0;
+
+                        // SHT4x typical sensor lag
                         double computedTauSHT = computedTauTherm * 2.0;
-                        if (computedTauSHT < 2.0) computedTauSHT = 2.0;
-                        if (computedTauSHT > 16.0) computedTauSHT = 16.0;
+                        if (computedTauSHT < 1.0) computedTauSHT = 1.0;
+                        if (computedTauSHT > 20.0) computedTauSHT = 20.0;
 
                         sumTauThermal += (float)computedTau;
                         sumTauThermistor += (float)computedTauTherm;
