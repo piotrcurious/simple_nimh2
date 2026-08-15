@@ -271,23 +271,157 @@ bool isDutyCycleLinearRegion(int dc, float& out_slope) {
     return true;
 }
 
-void findCurrentBlindSpots(float gaps[][2], int& gapCount, float maxOperatingCurrent) {
-    gapCount = 0;
-    if (resistanceDataCountPairs < 2) {
-        gaps[0][0] = MEASURABLE_CURRENT_THRESHOLD;
-        gaps[0][1] = maxOperatingCurrent;
-        gapCount = 1;
+bool isCurrentCovered(float current, float tolerance) {
+    for (int i = 0; i < resistanceDataCountPairs; ++i) {
+        if (std::fabs(internalResistanceDataPairs[i][0] - current) < tolerance) return true;
+    }
+    for (int i = 0; i < resistanceDataCount; ++i) {
+        if (std::fabs(internalResistanceData[i][0] - current) < tolerance) return true;
+    }
+    return false;
+}
+
+void computeIntervalMidpointsAndBlindSpots(std::vector<CandidatePoint>& candidates, float minI, float maxI, float activeCurrent) {
+    candidates.clear();
+    std::vector<float> uniqueCurrents;
+    uniqueCurrents.reserve(resistanceDataCountPairs + resistanceDataCount + 2);
+
+    WEB_LOCK();
+    for (int i = 0; i < resistanceDataCountPairs; ++i) {
+        float cur = internalResistanceDataPairs[i][0];
+        if (cur >= minI && cur <= maxI) uniqueCurrents.push_back(cur);
+    }
+    for (int i = 0; i < resistanceDataCount; ++i) {
+        float cur = internalResistanceData[i][0];
+        if (cur >= minI && cur <= maxI) uniqueCurrents.push_back(cur);
+    }
+    WEB_UNLOCK();
+
+    uniqueCurrents.push_back(minI);
+    uniqueCurrents.push_back(maxI);
+
+    std::sort(uniqueCurrents.begin(), uniqueCurrents.end());
+    uniqueCurrents.erase(std::unique(uniqueCurrents.begin(), uniqueCurrents.end(),
+        [](float a, float b) { return std::fabs(a - b) < 0.003f; }), uniqueCurrents.end());
+
+    if (uniqueCurrents.size() < 2) {
+        float mid = (minI + maxI) / 2.0f;
+        CandidatePoint cp;
+        cp.current = mid;
+        cp.duty = estimateDutyCycleForCurrent(mid);
+        cp.score = 1.0f;
+        cp.type = PAIR_TYPE_RANDOM_BLINDSPOT;
+        candidates.push_back(cp);
         return;
     }
 
-    for (int i = 0; i < resistanceDataCountPairs - 1; ++i) {
-        float i1 = internalResistanceDataPairs[i][0];
-        float i2 = internalResistanceDataPairs[i + 1][0];
-        float gapSize = i2 - i1;
-        if (gapSize > 0.08f && gapCount < 5) {
-            gaps[gapCount][0] = i1;
-            gaps[gapCount][1] = i2;
-            gapCount++;
+    for (size_t k = 0; k < uniqueCurrents.size() - 1; ++k) {
+        float i1 = uniqueCurrents[k];
+        float i2 = uniqueCurrents[k + 1];
+        float gapWidth = i2 - i1;
+        float midI = (i1 + i2) / 2.0f;
+
+        float dummySlope = 0.0f;
+        int dcMid = estimateDutyCycleForCurrent(midI);
+        if (!isDutyCycleLinearRegion(dcMid, dummySlope)) continue;
+
+        if (!isCurrentCovered(midI, EXPLORATION_TOLERANCE_CURRENT)) {
+            float distToActive = std::fabs(midI - activeCurrent);
+            float relevance = 1.0f / (1.0f + 5.0f * distToActive);
+            float score = gapWidth * relevance;
+
+            CandidatePoint cp;
+            cp.current = midI;
+            cp.duty = dcMid;
+            cp.score = score;
+            cp.type = PAIR_TYPE_RANDOM_BLINDSPOT;
+            candidates.push_back(cp);
+        }
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+        [](const CandidatePoint& a, const CandidatePoint& b) { return a.score > b.score; });
+}
+
+void findCurrentBlindSpots(float gaps[][2], int& gapCount, float maxOperatingCurrent) {
+    gapCount = 0;
+    std::vector<CandidatePoint> candidates;
+    computeIntervalMidpointsAndBlindSpots(candidates, MEASURABLE_CURRENT_THRESHOLD, maxOperatingCurrent, maximumCurrent);
+    for (const auto& cp : candidates) {
+        if (gapCount >= 5) break;
+        gaps[gapCount][0] = cp.current - 0.01f;
+        gaps[gapCount][1] = cp.current + 0.01f;
+        gapCount++;
+    }
+}
+
+void allocateReevaluationCandidates(std::vector<RePoint>& points, int budget) {
+    points.clear();
+    if (budget <= 0) return;
+
+    extern int minimalDutyCycle;
+    int minDC = minimalDutyCycle;
+    if (minDC < MIN_DUTY_CYCLE_START) minDC = MIN_DUTY_CYCLE_START;
+    int maxDC = MAX_DUTY_CYCLE;
+
+    float slopeMin = 0.0f, slopeMax = 0.0f;
+    while (minDC < maxDC && !isDutyCycleLinearRegion(minDC, slopeMin)) minDC++;
+    while (maxDC > minDC && !isDutyCycleLinearRegion(maxDC, slopeMax)) maxDC--;
+
+    float minI = estimateCurrent(minDC);
+    float maxI = estimateCurrent(maxDC);
+    float activeI = maximumCurrent;
+
+    int verificationQuota = std::max(1, (int)(0.25f * budget));
+
+    // 1. Exploitation / High-Value Verification Anchors
+    int dcActive = estimateDutyCycleForCurrent(activeI);
+    if (dcActive >= minDC && dcActive <= maxDC) {
+        RePoint pAct;
+        pAct.current = activeI;
+        pAct.duty = dcActive;
+        pAct.isPair = true;
+        points.push_back(pAct);
+    }
+
+    if ((int)points.size() < verificationQuota && (maxI - minI >= GLOBAL_PAIR_MIN_DELTA_I)) {
+        if (!isCurrentCovered(minI, EXPLORATION_TOLERANCE_CURRENT * 2.0f)) {
+            RePoint pMin; pMin.current = minI; pMin.duty = minDC; pMin.isPair = true;
+            points.push_back(pMin);
+        }
+        if ((int)points.size() < verificationQuota && !isCurrentCovered(maxI, EXPLORATION_TOLERANCE_CURRENT * 2.0f)) {
+            RePoint pMax; pMax.current = maxI; pMax.duty = maxDC; pMax.isPair = true;
+            points.push_back(pMax);
+        }
+    }
+
+    // 2. Exploration / Top-Scoring Interval Midpoints
+    std::vector<CandidatePoint> candidates;
+    computeIntervalMidpointsAndBlindSpots(candidates, minI, maxI, activeI);
+
+    for (const auto& cand : candidates) {
+        if ((int)points.size() >= budget) break;
+        if (!isCurrentCovered(cand.current, EXPLORATION_TOLERANCE_CURRENT)) {
+            RePoint pExpl;
+            pExpl.current = cand.current;
+            pExpl.duty = cand.duty;
+            pExpl.isPair = true;
+            points.push_back(pExpl);
+        }
+    }
+
+    // 3. Fallback: bisect intervals if candidates exhausted
+    while ((int)points.size() < budget) {
+        float randI = minI + (static_cast<float>(rand()) / static_cast<float>(RAND_MAX)) * std::max(0.01f, maxI - minI);
+        int dcRand = estimateDutyCycleForCurrent(randI);
+        if (dcRand >= minDC && dcRand <= maxDC && !isCurrentCovered(randI, EXPLORATION_TOLERANCE_CURRENT)) {
+            RePoint pRand;
+            pRand.current = randI;
+            pRand.duty = dcRand;
+            pRand.isPair = false;
+            points.push_back(pRand);
+        } else {
+            break;
         }
     }
 }

@@ -123,6 +123,7 @@ const float LOCAL_PAIR_MAX_DELTA_I = 0.18f;                     // Max current d
 const float LOCAL_PAIR_MIN_DELTA_I = 0.04f;                     // Min current delta for local pairs
 const float MIN_VALID_DUTY_MODEL_SLOPE = 0.0003f;                // Min valid dI/dDC slope to predict linear current region
 const float MODEL_CORRECTION_WEIGHT = 0.35f;                    // Blend weight for duty model current delta vs measured delta
+const float EXPLORATION_TOLERANCE_CURRENT = 0.008f;             // 8mA exclusion distance for already-measured currents
 
 // --- Outlier and Error Distribution Constants ---
 const float DISTRIBUTE_ERROR_DEFAULT_SPACING = 0.05f;           // Default spacing threshold if data count is low (A)
@@ -154,6 +155,20 @@ struct DutyPair {
     PairType type;
     float targetLowCurrent;
     float targetHighCurrent;
+};
+
+struct IRPairRecord {
+    float current1;
+    float current2;
+    float ir;
+    uint32_t timestamp;
+};
+
+struct CandidatePoint {
+    float current;
+    int duty;
+    float score;
+    PairType type;
 };
 
 struct ElectrodeParams {

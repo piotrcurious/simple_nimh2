@@ -264,7 +264,14 @@ bool findOptimalChargingDutyCycleStepAsync() {
         return true;
     }
     if (findOpt.phase == RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE) {
-        int dc = (findOpt.exploratory_measurement_phase == 0) ? std::max(MIN_CHARGE_DUTY_CYCLE, findOpt.lowDC - 10) : std::min(MAX_CHARGE_DUTY_CYCLE, findOpt.highDC + 10);
+        std::vector<RePoint> explPoints;
+        allocateReevaluationCandidates(explPoints, 2);
+        int dc = findOpt.lowDC;
+        if (!explPoints.empty()) {
+            dc = explPoints[findOpt.exploratory_measurement_phase % explPoints.size()].duty;
+        } else {
+            dc = (findOpt.exploratory_measurement_phase == 0) ? std::max(MIN_CHARGE_DUTY_CYCLE, findOpt.lowDC - 10) : std::min(MAX_CHARGE_DUTY_CYCLE, findOpt.highDC + 10);
+        }
         startMHElectrodeMeasurement(dc, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
         findOpt.phase = RE_EVAL_EXPLORATORY_MEASUREMENT_WAIT;
         return true;
@@ -519,12 +526,6 @@ static StructuredIRTest s_irTest;
 std::vector<ThermalStepResponse> s_thermalHistory;
 
 // Structured IR Re-measurement Subsystem Structures
-struct RePoint {
-    float current;
-    int duty;
-    bool isPair; // true: from internalResistanceDataPairs, false: from internalResistanceData
-};
-
 struct PulseIRRemeasure {
     bool active = false;
     int index = 0;
@@ -542,77 +543,7 @@ void selectRandomRePoints() {
     s_reMeasure.subStep = 0;
     s_reMeasure.active = false;
 
-    extern int minimalDutyCycle;
-    int minDC = minimalDutyCycle;
-    if (minDC < MIN_DUTY_CYCLE_START) minDC = MIN_DUTY_CYCLE_START;
-    int maxDC = MAX_DUTY_CYCLE;
-
-    float slopeMin = 0.0f, slopeMax = 0.0f;
-    while (minDC < maxDC && !isDutyCycleLinearRegion(minDC, slopeMin)) minDC++;
-    while (maxDC > minDC && !isDutyCycleLinearRegion(maxDC, slopeMax)) maxDC--;
-
-    float minI = estimateCurrent(minDC);
-    float maxI = estimateCurrent(maxDC);
-
-    // 1. Global Pairs (Large Delta I, high SNR, stable baseline/mean IR)
-    if (maxI - minI >= GLOBAL_PAIR_MIN_DELTA_I) {
-        RePoint pGlobalLow;
-        pGlobalLow.current = minI;
-        pGlobalLow.duty = minDC;
-        pGlobalLow.isPair = true;
-        s_reMeasure.points.push_back(pGlobalLow);
-
-        RePoint pGlobalHigh;
-        pGlobalHigh.current = maxI;
-        pGlobalHigh.duty = maxDC;
-        pGlobalHigh.isPair = true;
-        s_reMeasure.points.push_back(pGlobalHigh);
-    }
-
-    // 2. Local Pairs (Close currents around active charging current maximumCurrent)
-    float activeTarget = maximumCurrent;
-    float localDelta = std::min(LOCAL_PAIR_MAX_DELTA_I, std::max(LOCAL_PAIR_MIN_DELTA_I, (maxI - minI) * 0.15f));
-    float localI1 = std::max(minI, activeTarget - localDelta);
-    float localI2 = std::min(maxI, activeTarget + localDelta);
-
-    int dcLocal1 = estimateDutyCycleForCurrent(localI1);
-    int dcLocal2 = estimateDutyCycleForCurrent(localI2);
-
-    if (dcLocal1 >= minDC && dcLocal1 <= maxDC) {
-        RePoint pLocal1;
-        pLocal1.current = estimateCurrent(dcLocal1);
-        pLocal1.duty = dcLocal1;
-        pLocal1.isPair = true;
-        s_reMeasure.points.push_back(pLocal1);
-    }
-    if (dcLocal2 >= minDC && dcLocal2 <= maxDC && dcLocal2 != dcLocal1) {
-        RePoint pLocal2;
-        pLocal2.current = estimateCurrent(dcLocal2);
-        pLocal2.duty = dcLocal2;
-        pLocal2.isPair = true;
-        s_reMeasure.points.push_back(pLocal2);
-    }
-
-    // 3. Random / Blind-spot Points (Targeting largest current gaps in existing dataset)
-    float blindSpots[5][2];
-    int gapCount = 0;
-    findCurrentBlindSpots(blindSpots, gapCount, maxI);
-    for (int k = 0; k < gapCount && (int)s_reMeasure.points.size() < PULSE_REMEASURE_BUDGET; k++) {
-        float gapMid = (blindSpots[k][0] + blindSpots[k][1]) / 2.0f;
-        int dcGap = estimateDutyCycleForCurrent(gapMid);
-        if (dcGap >= minDC && dcGap <= maxDC) {
-            RePoint pBlind;
-            pBlind.current = estimateCurrent(dcGap);
-            pBlind.duty = dcGap;
-            pBlind.isPair = false;
-            s_reMeasure.points.push_back(pBlind);
-        }
-    }
-
-    // Strict budget cap
-    if ((int)s_reMeasure.points.size() > PULSE_REMEASURE_BUDGET) {
-        s_reMeasure.points.resize(PULSE_REMEASURE_BUDGET);
-    }
+    allocateReevaluationCandidates(s_reMeasure.points, PULSE_REMEASURE_BUDGET);
 
     if (!s_reMeasure.points.empty()) {
         s_reMeasure.active = true;
