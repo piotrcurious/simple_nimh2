@@ -56,6 +56,45 @@ float regressedInternalResistancePairsIntercept = 0.0f;
 
 bool isMeasuringResistance = false;
 
+ElectrodeParams g_electrode;
+
+void evaluateElectrodeParameters(float v_unloaded, float v_step_initial, float v_step_settled, float I_load, float stepTime_s) {
+    if (I_load < MEASURABLE_CURRENT_THRESHOLD || I_load <= 0.001f) return;
+
+    float deltaV_ohmic = std::fabs(v_unloaded - v_step_initial);
+    float R_ohmic = deltaV_ohmic / I_load;
+
+    float deltaV_total = std::fabs(v_unloaded - v_step_settled);
+    float R_total = deltaV_total / I_load;
+
+    float R_ct = std::max(0.01f, R_total - R_ohmic);
+    float tau_rc = std::max(0.05f, std::min(1.5f, stepTime_s * 0.25f));
+
+    float C_dl = tau_rc / std::max(0.001f, R_ct);
+    if (C_dl < 0.05f) C_dl = 0.05f;
+    if (C_dl > 50.0f) C_dl = 50.0f;
+
+    float surfaceProxy = C_dl / 1.0f;
+
+    float requiredDelayS = 3.5f * tau_rc;
+    unsigned long adaptiveDelayMs = static_cast<unsigned long>(requiredDelayS * 1000.0f);
+    if (adaptiveDelayMs < 600) adaptiveDelayMs = 600;
+    if (adaptiveDelayMs > 3500) adaptiveDelayMs = 3500;
+
+    WEB_LOCK();
+    g_electrode.R_ohmic = R_ohmic;
+    g_electrode.R_ct = R_ct;
+    g_electrode.C_dl = C_dl;
+    g_electrode.tau_rc = tau_rc;
+    g_electrode.activeSurfaceAreaProxy = surfaceProxy;
+    g_electrode.adaptiveDelayMs = adaptiveDelayMs;
+    g_electrode.evaluated = true;
+    WEB_UNLOCK();
+
+    Serial.printf("Electrode Params Evaluated: R_ohmic=%.4f, R_ct=%.4f, Tau_RC=%.3fs, C_dl=%.3fF, ActiveAreaProxy=%.2f, AdaptiveDelay=%lu ms\n",
+                  R_ohmic, R_ct, tau_rc, C_dl, surfaceProxy, adaptiveDelayMs);
+}
+
 // Helper function to initiate measurement
 void getSingleMeasurement(int dc, IRState nextState) {
     applyDuty(dc);
@@ -159,13 +198,16 @@ void measureInternalResistanceStep() {
             break;
 
         case IR_STATE_GET_MEASUREMENT:
-            if (now - irStateChangeTime >= STABILIZATION_DELAY_MS) {
-                getThermistorReadings(currentMeasurement.temp1, currentMeasurement.temp2,
-                                     currentMeasurement.tempDiff, currentMeasurement.t1_millivolts,
-                                     currentMeasurement.voltage, currentMeasurement.current);
-                currentMeasurement.dutyCycle = (uint8_t)dutyCycle;
-                currentMeasurement.timestamp = (uint32_t)millis();
-                currentIRState = nextIRState;
+            {
+                unsigned long reqDelay = g_electrode.evaluated ? g_electrode.adaptiveDelayMs : STABILIZATION_DELAY_MS;
+                if (now - irStateChangeTime >= reqDelay) {
+                    getThermistorReadings(currentMeasurement.temp1, currentMeasurement.temp2,
+                                         currentMeasurement.tempDiff, currentMeasurement.t1_millivolts,
+                                         currentMeasurement.voltage, currentMeasurement.current);
+                    currentMeasurement.dutyCycle = (uint8_t)dutyCycle;
+                    currentMeasurement.timestamp = (uint32_t)millis();
+                    currentIRState = nextIRState;
+                }
             }
             break;
 

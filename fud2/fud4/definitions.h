@@ -156,6 +156,16 @@ struct DutyPair {
     float targetHighCurrent;
 };
 
+struct ElectrodeParams {
+    float R_ohmic = 0.05f;                 // Instantaneous Ohmic resistance (Ohms)
+    float R_ct = 0.13f;                    // Charge transfer resistance (Ohms)
+    float C_dl = 1.5f;                     // Double-layer capacitance (Farads)
+    float tau_rc = 0.195f;                 // RC time constant = R_ct * C_dl (seconds)
+    float activeSurfaceAreaProxy = 1.0f;   // Active electrochemically accessible surface area proxy
+    unsigned long adaptiveDelayMs = 1500;  // Dynamic stabilization delay based on C_dl (ms)
+    bool evaluated = false;
+};
+
 enum DisplayState {
     DISPLAY_STATE_IDLE,
     DISPLAY_STATE_MAIN,
@@ -322,6 +332,7 @@ extern SystemDataManager systemData;
 extern float recoveredAmbientTemp;
 extern float recoveredBatteryTemp;
 extern CurrentModel currentModel;
+extern ElectrodeParams g_electrode;
 extern AsyncMeasure meas;
 extern FindOptManager findOpt;
 extern RemeasureManager remeasure;

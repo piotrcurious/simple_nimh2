@@ -16,5 +16,6 @@ bool isDutyCycleLinearRegion(int dc, float& out_slope);
 void generateCategorizedDutyPairs(std::vector<DutyPair>& pairs, int maxPairs);
 void findCurrentBlindSpots(float gaps[][2], int& gapCount, float maxOperatingCurrent);
 bool evaluateAndCorrectPairData(int dc1, int dc2, float v1, float v2, float i1, float i2, float& out_I, float& out_IR);
+void evaluateElectrodeParameters(float v_unloaded, float v_step_initial, float v_step_settled, float I_load, float stepTime_s);
 
 #endif

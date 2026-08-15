@@ -169,6 +169,9 @@ void startMHElectrodeMeasurement(int testDutyCycle, unsigned long stabilization_
     if (meas.active()) return;
     meas.reset();
     meas.testDuty = (uint8_t)testDutyCycle;
+    if (stabilization_delay == STABILIZATION_DELAY_MS && g_electrode.evaluated) {
+        stabilization_delay = g_electrode.adaptiveDelayMs;
+    }
     meas.stabilizationDelay = stabilization_delay;
     meas.unloadedDelay = unloaded_delay;
     applyDuty(0);
@@ -675,12 +678,13 @@ bool chargeBattery() {
                 unsigned long stepElapsed = now - s_irTest.stepStartTime;
                 double t1, t2, td; float tmv, v, cur; getThermistorReadings(t1, t2, td, tmv, v, cur);
 
+                unsigned long reqStepDelay = g_electrode.evaluated ? g_electrode.adaptiveDelayMs : 1000;
+
                 if (s_irTest.step == 0) {
                     if (stepElapsed >= 1000) {
                         s_irTest.unloadedVoltage = v;
                         s_irTest.step = 1;
                         s_irTest.stepStartTime = now;
-                        // Determine 4 duties to sweep
                         s_irTest.duties[0] = MIN_CHARGE_DUTY_CYCLE + 10;
                         s_irTest.duties[1] = MIN_CHARGE_DUTY_CYCLE + 40;
                         s_irTest.duties[2] = MIN_CHARGE_DUTY_CYCLE + 80;
@@ -688,9 +692,18 @@ bool chargeBattery() {
                         applyDuty(s_irTest.duties[0]);
                     }
                 } else if (s_irTest.step >= 1 && s_irTest.step <= 4) {
-                    if (stepElapsed >= 1000) {
+                    if (s_irTest.step == 1 && stepElapsed >= 50 && !g_electrode.evaluated) {
+                        // Sample initial step voltage at 50ms for Ohmic drop
+                        evaluateElectrodeParameters(s_irTest.unloadedVoltage, v, v, cur, 0.05f);
+                    }
+                    if (stepElapsed >= reqStepDelay) {
                         s_irTest.voltages[s_irTest.step - 1] = v;
                         s_irTest.currents[s_irTest.step - 1] = cur;
+
+                        if (s_irTest.step == 1) {
+                            // Update electrode parameters with full step response (initial vs settled)
+                            evaluateElectrodeParameters(s_irTest.unloadedVoltage, s_irTest.voltages[0], v, cur, (float)reqStepDelay / 1000.0f);
+                        }
                         if (s_irTest.step < 4) {
                             s_irTest.step++;
                             s_irTest.stepStartTime = now;
@@ -794,9 +807,11 @@ bool chargeBattery() {
                 double t1, t2, td; float tmv, v, cur; getThermistorReadings(t1, t2, td, tmv, v, cur);
                 const RePoint& pt = s_reMeasure.points[s_reMeasure.index];
 
+                unsigned long reqRemeasureDelay = g_electrode.evaluated ? g_electrode.adaptiveDelayMs : PULSE_IR_REMEASURE_STABILIZATION_MS;
+
                 if (s_reMeasure.subStep == 0) {
-                    // Unloaded step: wait for stabilization
-                    if (stepElapsed >= PULSE_IR_REMEASURE_STABILIZATION_MS) {
+                    // Unloaded step: wait for adaptive stabilization
+                    if (stepElapsed >= reqRemeasureDelay) {
                         s_reMeasure.unloadedVoltage = v;
                         s_reMeasure.unloadedCurrent = cur;
                         s_reMeasure.subStep = 1;
@@ -804,8 +819,8 @@ bool chargeBattery() {
                         applyDuty(pt.duty);
                     }
                 } else if (s_reMeasure.subStep == 1) {
-                    // Loaded step: measure and calculate IR
-                    if (stepElapsed >= PULSE_IR_REMEASURE_STABILIZATION_MS) {
+                    // Loaded step: measure and calculate IR using adaptive stabilization
+                    if (stepElapsed >= reqRemeasureDelay) {
                         extern int minimalDutyCycle;
                         int lowDC = pt.isPair ? minimalDutyCycle : 0;
                         float v1 = s_reMeasure.unloadedVoltage;
@@ -1229,8 +1244,8 @@ bool chargeBattery() {
                 }
 
                 // Safety and End of Charge checks: debounce both overtemperature and outgassing triggers
-                if (td_true > (MAX_DIFF_TEMP) || outgassingTriggered) {
-                    if (++overtemp_trip_counter >= OVERTEMP_TRIP_TRESHOLD || outgassingTriggered) {
+                if (td_true > (MAX_DIFF_TEMP)) {
+                    if (++overtemp_trip_counter >= OVERTEMP_TRIP_TRESHOLD) {
                         overtemp_trip_counter = 0;
                         outgassing_trip_counter = 0;
                         chargingState = CHARGE_STOPPED;
