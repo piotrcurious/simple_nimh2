@@ -51,6 +51,32 @@ float getAverageResistanceNearCurrent(float cur, float data[][2], int count) {
 static double pulseCurrentSum = 0.0;
 static uint32_t pulseCurrentSamples = 0;
 
+struct RePoint {
+    float current;
+    int duty;
+    bool isPair; // true: from internalResistanceDataPairs, false: from internalResistanceData
+};
+
+static bool currentAlreadyCovered(float current, float tolerance) {
+    for (int i = 0; i < resistanceDataCountPairs; ++i) {
+        if (std::fabs(internalResistanceDataPairs[i][0] - current) < tolerance)
+            return true;
+    }
+    for (int i = 0; i < resistanceDataCount; ++i) {
+        if (std::fabs(internalResistanceData[i][0] - current) < tolerance)
+            return true;
+    }
+    return false;
+}
+
+static bool candidateInList(float current, const std::vector<RePoint>& points, float tolerance) {
+    for (const auto& p : points) {
+        if (std::fabs(p.current - current) < tolerance)
+            return true;
+    }
+    return false;
+}
+
 // Global thermal tracking and derivative variables
 float recoveredAmbientTemp = 25.0f;
 float recoveredBatteryTemp = 25.0f;
@@ -261,7 +287,31 @@ bool findOptimalChargingDutyCycleStepAsync() {
         return true;
     }
     if (findOpt.phase == RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE) {
-        int dc = (findOpt.exploratory_measurement_phase == 0) ? std::max(MIN_CHARGE_DUTY_CYCLE, findOpt.lowDC - 10) : std::min(MAX_CHARGE_DUTY_CYCLE, findOpt.highDC + 10);
+        int dc;
+        float maxOperatingI = estimateCurrent(findOpt.maxDC);
+        float blindSpots[10][2];
+        int gapCount = 0;
+        findCurrentBlindSpots(blindSpots, gapCount, maxOperatingI);
+
+        if (findOpt.exploratory_measurement_phase == 0) {
+            float candI = estimateCurrent(std::max(MIN_CHARGE_DUTY_CYCLE, findOpt.lowDC - 10));
+            if (currentAlreadyCovered(candI, 0.015f) && gapCount > 0) {
+                float gapMid = (blindSpots[0][0] + blindSpots[0][1]) / 2.0f;
+                dc = estimateDutyCycleForCurrent(gapMid);
+            } else {
+                dc = estimateDutyCycleForCurrent(candI);
+            }
+        } else {
+            float candI = estimateCurrent(std::min(MAX_CHARGE_DUTY_CYCLE, findOpt.highDC + 10));
+            int gapIdx = (gapCount > 1) ? 1 : 0;
+            if (currentAlreadyCovered(candI, 0.015f) && gapCount > 0) {
+                float gapMid = (blindSpots[gapIdx][0] + blindSpots[gapIdx][1]) / 2.0f;
+                dc = estimateDutyCycleForCurrent(gapMid);
+            } else {
+                dc = estimateDutyCycleForCurrent(candI);
+            }
+        }
+        dc = std::max(MIN_CHARGE_DUTY_CYCLE, std::min(MAX_CHARGE_DUTY_CYCLE, dc));
         startMHElectrodeMeasurement(dc, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
         findOpt.phase = RE_EVAL_EXPLORATORY_MEASUREMENT_WAIT;
         return true;
@@ -516,12 +566,6 @@ static StructuredIRTest s_irTest;
 std::vector<ThermalStepResponse> s_thermalHistory;
 
 // Structured IR Re-measurement Subsystem Structures
-struct RePoint {
-    float current;
-    int duty;
-    bool isPair; // true: from internalResistanceDataPairs, false: from internalResistanceData
-};
-
 struct PulseIRRemeasure {
     bool active = false;
     int index = 0;
@@ -550,25 +594,28 @@ void selectRandomRePoints() {
 
     float minI = estimateCurrent(minDC);
     float maxI = estimateCurrent(maxDC);
+    float spanI = std::max(0.05f, maxI - minI);
 
-    // 1. Global Pairs (Large Delta I, high SNR, stable baseline/mean IR)
+    // Dynamic current tolerance for coverage checks (5% of operating span, clamped between 10mA and 30mA)
+    float coverageTolerance = std::min(0.030f, std::max(0.010f, spanI * 0.05f));
+
+    // Budget allocation:
+    // Exploitation cap: at most ~30% of total budget (e.g. max 3-4 points out of 12-16)
+    int maxExploitation = std::max(1, PULSE_REMEASURE_BUDGET * 3 / 10);
+
+    // 1. Exploitation Candidates (High-value anchor points & active target neighborhood)
+    std::vector<RePoint> exploitationCandidates;
+
     if (maxI - minI >= GLOBAL_PAIR_MIN_DELTA_I) {
-        RePoint pGlobalLow;
-        pGlobalLow.current = minI;
-        pGlobalLow.duty = minDC;
-        pGlobalLow.isPair = true;
-        s_reMeasure.points.push_back(pGlobalLow);
+        RePoint pGlobalLow; pGlobalLow.current = minI; pGlobalLow.duty = minDC; pGlobalLow.isPair = true;
+        exploitationCandidates.push_back(pGlobalLow);
 
-        RePoint pGlobalHigh;
-        pGlobalHigh.current = maxI;
-        pGlobalHigh.duty = maxDC;
-        pGlobalHigh.isPair = true;
-        s_reMeasure.points.push_back(pGlobalHigh);
+        RePoint pGlobalHigh; pGlobalHigh.current = maxI; pGlobalHigh.duty = maxDC; pGlobalHigh.isPair = true;
+        exploitationCandidates.push_back(pGlobalHigh);
     }
 
-    // 2. Local Pairs (Close currents around active charging current maximumCurrent)
     float activeTarget = maximumCurrent;
-    float localDelta = std::min(LOCAL_PAIR_MAX_DELTA_I, std::max(LOCAL_PAIR_MIN_DELTA_I, (maxI - minI) * 0.15f));
+    float localDelta = std::min(LOCAL_PAIR_MAX_DELTA_I, std::max(LOCAL_PAIR_MIN_DELTA_I, spanI * 0.15f));
     float localI1 = std::max(minI, activeTarget - localDelta);
     float localI2 = std::min(maxI, activeTarget + localDelta);
 
@@ -576,33 +623,76 @@ void selectRandomRePoints() {
     int dcLocal2 = estimateDutyCycleForCurrent(localI2);
 
     if (dcLocal1 >= minDC && dcLocal1 <= maxDC) {
-        RePoint pLocal1;
-        pLocal1.current = estimateCurrent(dcLocal1);
-        pLocal1.duty = dcLocal1;
-        pLocal1.isPair = true;
-        s_reMeasure.points.push_back(pLocal1);
+        RePoint pLocal1; pLocal1.current = estimateCurrent(dcLocal1); pLocal1.duty = dcLocal1; pLocal1.isPair = true;
+        exploitationCandidates.push_back(pLocal1);
     }
     if (dcLocal2 >= minDC && dcLocal2 <= maxDC && dcLocal2 != dcLocal1) {
-        RePoint pLocal2;
-        pLocal2.current = estimateCurrent(dcLocal2);
-        pLocal2.duty = dcLocal2;
-        pLocal2.isPair = true;
-        s_reMeasure.points.push_back(pLocal2);
+        RePoint pLocal2; pLocal2.current = estimateCurrent(dcLocal2); pLocal2.duty = dcLocal2; pLocal2.isPair = true;
+        exploitationCandidates.push_back(pLocal2);
     }
 
-    // 3. Random / Blind-spot Points (Targeting largest current gaps in existing dataset)
-    float blindSpots[5][2];
+    // Add exploitation candidates only if not already covered, up to maxExploitation
+    for (const auto& cand : exploitationCandidates) {
+        if ((int)s_reMeasure.points.size() >= maxExploitation) break;
+        if (!currentAlreadyCovered(cand.current, coverageTolerance) && !candidateInList(cand.current, s_reMeasure.points, coverageTolerance)) {
+            s_reMeasure.points.push_back(cand);
+        }
+    }
+
+    // Fallback if dataset is very sparse (< 2 points) and s_reMeasure.points is empty: include 1 global anchor
+    if (s_reMeasure.points.empty() && resistanceDataCountPairs < 2 && !exploitationCandidates.empty()) {
+        s_reMeasure.points.push_back(exploitationCandidates[0]);
+    }
+
+    // 2. Exploration Allocation (Midpoints of largest uncovered current gaps)
+    float blindSpots[10][2];
     int gapCount = 0;
     findCurrentBlindSpots(blindSpots, gapCount, maxI);
+
+    // Pass 1: Add gap midpoints that are not yet covered
     for (int k = 0; k < gapCount && (int)s_reMeasure.points.size() < PULSE_REMEASURE_BUDGET; k++) {
         float gapMid = (blindSpots[k][0] + blindSpots[k][1]) / 2.0f;
-        int dcGap = estimateDutyCycleForCurrent(gapMid);
-        if (dcGap >= minDC && dcGap <= maxDC) {
-            RePoint pBlind;
-            pBlind.current = estimateCurrent(dcGap);
-            pBlind.duty = dcGap;
-            pBlind.isPair = false;
-            s_reMeasure.points.push_back(pBlind);
+        if (!currentAlreadyCovered(gapMid, coverageTolerance) && !candidateInList(gapMid, s_reMeasure.points, coverageTolerance)) {
+            int dcGap = estimateDutyCycleForCurrent(gapMid);
+            if (dcGap >= minDC && dcGap <= maxDC) {
+                RePoint pBlind;
+                pBlind.current = estimateCurrent(dcGap);
+                pBlind.duty = dcGap;
+                pBlind.isPair = false;
+                s_reMeasure.points.push_back(pBlind);
+            }
+        }
+    }
+
+    // Pass 2: If budget is still not filled, reduce tolerance by half to allow finer sub-gap exploration
+    float relaxedTol = coverageTolerance * 0.5f;
+    for (int k = 0; k < gapCount && (int)s_reMeasure.points.size() < PULSE_REMEASURE_BUDGET; k++) {
+        float gapMid = (blindSpots[k][0] + blindSpots[k][1]) / 2.0f;
+        if (!candidateInList(gapMid, s_reMeasure.points, relaxedTol)) {
+            int dcGap = estimateDutyCycleForCurrent(gapMid);
+            if (dcGap >= minDC && dcGap <= maxDC) {
+                RePoint pBlind;
+                pBlind.current = estimateCurrent(dcGap);
+                pBlind.duty = dcGap;
+                pBlind.isPair = false;
+                s_reMeasure.points.push_back(pBlind);
+            }
+        }
+    }
+
+    // Pass 3: Fill remaining budget with sub-gap points if needed
+    for (int k = 0; k < gapCount && (int)s_reMeasure.points.size() < PULSE_REMEASURE_BUDGET; k++) {
+        float q1 = blindSpots[k][0] + (blindSpots[k][1] - blindSpots[k][0]) * 0.25f;
+        float q3 = blindSpots[k][0] + (blindSpots[k][1] - blindSpots[k][0]) * 0.75f;
+        float pts[2] = {q1, q3};
+        for (int p = 0; p < 2 && (int)s_reMeasure.points.size() < PULSE_REMEASURE_BUDGET; p++) {
+            if (!candidateInList(pts[p], s_reMeasure.points, relaxedTol)) {
+                int dcGap = estimateDutyCycleForCurrent(pts[p]);
+                if (dcGap >= minDC && dcGap <= maxDC) {
+                    RePoint pBlind; pBlind.current = estimateCurrent(dcGap); pBlind.duty = dcGap; pBlind.isPair = false;
+                    s_reMeasure.points.push_back(pBlind);
+                }
+            }
         }
     }
 

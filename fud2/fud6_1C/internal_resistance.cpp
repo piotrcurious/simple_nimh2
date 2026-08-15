@@ -231,22 +231,77 @@ bool isDutyCycleLinearRegion(int dc, float& out_slope) {
 
 void findCurrentBlindSpots(float gaps[][2], int& gapCount, float maxOperatingCurrent) {
     gapCount = 0;
-    if (resistanceDataCountPairs < 2) {
-        gaps[0][0] = MEASURABLE_CURRENT_THRESHOLD;
-        gaps[0][1] = maxOperatingCurrent;
+    float minI = MEASURABLE_CURRENT_THRESHOLD;
+    float maxI = maxOperatingCurrent;
+    if (maxI <= minI) maxI = minI + 0.10f;
+
+    float span = maxI - minI;
+    float minGapThreshold = std::max(0.010f, span * 0.04f); // Adaptive gap threshold based on operating current range
+
+    if (resistanceDataCountPairs < 1) {
+        gaps[0][0] = minI;
+        gaps[0][1] = maxI;
         gapCount = 1;
         return;
     }
 
+    struct GapInfo {
+        float low;
+        float high;
+        float width;
+    };
+    std::vector<GapInfo> allGaps;
+
+    // Low boundary gap
+    if (internalResistanceDataPairs[0][0] - minI > minGapThreshold) {
+        allGaps.push_back({minI, internalResistanceDataPairs[0][0], internalResistanceDataPairs[0][0] - minI});
+    }
+
+    // Internal gaps between adjacent measured points
     for (int i = 0; i < resistanceDataCountPairs - 1; ++i) {
         float i1 = internalResistanceDataPairs[i][0];
         float i2 = internalResistanceDataPairs[i + 1][0];
         float gapSize = i2 - i1;
-        if (gapSize > 0.08f && gapCount < 5) {
-            gaps[gapCount][0] = i1;
-            gaps[gapCount][1] = i2;
-            gapCount++;
+        if (gapSize > minGapThreshold) {
+            allGaps.push_back({i1, i2, gapSize});
         }
+    }
+
+    // High boundary gap
+    if (maxI - internalResistanceDataPairs[resistanceDataCountPairs - 1][0] > minGapThreshold) {
+        float lastI = internalResistanceDataPairs[resistanceDataCountPairs - 1][0];
+        allGaps.push_back({lastI, maxI, maxI - lastI});
+    }
+
+    // Fallback if no gaps exceeded threshold: find maximum interval
+    if (allGaps.empty()) {
+        float maxG = -1.0f;
+        int bestIdx = -1;
+        float prev = minI;
+        for (int i = 0; i < resistanceDataCountPairs; ++i) {
+            float g = internalResistanceDataPairs[i][0] - prev;
+            if (g > maxG) { maxG = g; bestIdx = i; }
+            prev = internalResistanceDataPairs[i][0];
+        }
+        if (maxI - prev > maxG && maxI - prev > 0.001f) {
+            allGaps.push_back({prev, maxI, maxI - prev});
+        } else if (bestIdx == 0 && internalResistanceDataPairs[0][0] - minI > 0.001f) {
+            allGaps.push_back({minI, internalResistanceDataPairs[0][0], internalResistanceDataPairs[0][0] - minI});
+        } else if (bestIdx > 0) {
+            allGaps.push_back({internalResistanceDataPairs[bestIdx-1][0], internalResistanceDataPairs[bestIdx][0], maxG});
+        }
+    }
+
+    // Sort gaps in descending order of gap size (largest gaps first)
+    std::sort(allGaps.begin(), allGaps.end(), [](const GapInfo& a, const GapInfo& b) {
+        return a.width > b.width;
+    });
+
+    int maxGapsToReturn = 10;
+    for (size_t i = 0; i < allGaps.size() && gapCount < maxGapsToReturn; ++i) {
+        gaps[gapCount][0] = allGaps[i].low;
+        gaps[gapCount][1] = allGaps[i].high;
+        gapCount++;
     }
 }
 
