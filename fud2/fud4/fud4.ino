@@ -362,9 +362,13 @@ static unsigned long currentCooloffDurationMs = 30000;
 
 static int sweepStep = -1;
 static float sweepUnloadedV = 0.0f;
+static float sweepUnloadedI = 0.0f;
+static float sweepStepVoltInitial = 0.0f;
 static float sweepVoltages[15] = {0.0f};
 static float sweepCurrents[15] = {0.0f};
+static int sweepDutyCycles[15] = {0};
 static unsigned long sweepStepStartTime = 0;
+static std::vector<DutyPair> sweepCatPairs;
 
 // --- Non-blocking build current model ---
 void buildCurrentModelStep() {
@@ -402,11 +406,15 @@ void buildCurrentModelStep() {
 
             sweepStep = -1;
             sweepUnloadedV = 0.0f;
+            sweepUnloadedI = 0.0f;
+            sweepStepVoltInitial = 0.0f;
             for (int k = 0; k < 15; k++) {
                 sweepVoltages[k] = 0.0f;
                 sweepCurrents[k] = 0.0f;
+                sweepDutyCycles[k] = 0;
             }
             sweepStepStartTime = 0;
+            sweepCatPairs.clear();
 
             setBuildModelPhase(BuildModelPhase::Settle);
             Serial.println("Building Current Model: Settling (2s)...");
@@ -525,7 +533,8 @@ void buildCurrentModelStep() {
                         sweepStep = -1;
                         sweepStepStartTime = now;
                         applyDuty(0); // Start sweep with unloaded point
-                        Serial.println("Thermal Characterize Iteration 1: Starting 15-point sweep...");
+                        generateCategorizedDutyPairs(sweepCatPairs, 15);
+                        Serial.printf("Thermal Characterize Iteration 1: Starting categorized %d-pair sweep with adaptive delays...\n", (int)sweepCatPairs.size());
                     } else {
                         float targetI = 0.90f * estimateCurrent(MAX_DUTY_CYCLE);
                         int characDuty = estimateDutyCycleForCurrent(targetI);
@@ -538,72 +547,114 @@ void buildCurrentModelStep() {
 
                 if (characPhase == 0) {
                     if (characIteration == 0) {
-                        // 15-point sweep state machine
+                        // Categorized sweep state machine with dynamic adaptive delays and electrode evaluation
+                        unsigned long requiredDelay = g_electrode.adaptiveDelayMs > 0 ? (unsigned long)g_electrode.adaptiveDelayMs : 1000UL;
+
                         if (sweepStep == -1) {
-                            if (now - startTime >= 2000) {
+                            if (now - startTime >= requiredDelay) {
                                 double t1, t2, td; float tmv, v, c;
                                 getThermistorReadings(t1, t2, td, tmv, v, c);
                                 sweepUnloadedV = v;
+                                sweepUnloadedI = c;
                                 sweepStep = 0;
 
-                                float maxC = estimateCurrent(MAX_DUTY_CYCLE);
-                                float minC = MEASURABLE_CURRENT_THRESHOLD > 0.01f ? MEASURABLE_CURRENT_THRESHOLD : 0.05f;
-                                float limitC = 0.90f * maxC;
-                                if (limitC <= minC) limitC = maxC;
+                                int targetDuty = 0;
+                                if (!sweepCatPairs.empty()) {
+                                    targetDuty = sweepCatPairs[0].highDC;
+                                } else {
+                                    float maxC = estimateCurrent(MAX_DUTY_CYCLE);
+                                    float minC = MEASURABLE_CURRENT_THRESHOLD > 0.01f ? MEASURABLE_CURRENT_THRESHOLD : 0.05f;
+                                    targetDuty = estimateDutyCycleForCurrent(minC);
+                                }
+                                float slope = 0.0f;
+                                if (!isDutyCycleLinearRegion(targetDuty, slope)) {
+                                    int minLinear = MIN_DUTY_CYCLE_START;
+                                    while (minLinear < MAX_DUTY_CYCLE && !isDutyCycleLinearRegion(minLinear, slope)) minLinear++;
+                                    targetDuty = minLinear;
+                                }
 
-                                float targetI = minC;
-                                int dCycle = estimateDutyCycleForCurrent(targetI);
-                                applyDuty(dCycle);
+                                applyDuty(targetDuty);
                                 sweepStepStartTime = now;
-                                Serial.printf("  Sweep Step %d/15: Applied Duty %d for target %.3f A (unloadedV = %.3f V)\n", sweepStep+1, dCycle, targetI, sweepUnloadedV);
+                                sweepStepVoltInitial = v;
+                                sweepDutyCycles[0] = targetDuty;
+                                Serial.printf("  Sweep Step 1/%d: Applied Duty %d (unloadedV = %.3f V, delay %lu ms)\n",
+                                              (int)(sweepCatPairs.empty() ? 15 : sweepCatPairs.size()), targetDuty, sweepUnloadedV, requiredDelay);
                             }
-                        } else if (sweepStep >= 0 && sweepStep <= 14) {
-                            if (now - sweepStepStartTime >= 1000) {
+                        } else if (sweepStep >= 0 && sweepStep < (int)(sweepCatPairs.empty() ? 15 : sweepCatPairs.size())) {
+                            if (now - sweepStepStartTime >= requiredDelay) {
                                 double t1, t2, td; float tmv, v, c;
                                 getThermistorReadings(t1, t2, td, tmv, v, c);
                                 sweepVoltages[sweepStep] = v;
                                 sweepCurrents[sweepStep] = c;
 
-                                if (sweepStep < 14) {
-                                    sweepStep++;
-                                    float maxC = estimateCurrent(MAX_DUTY_CYCLE);
-                                    float minC = MEASURABLE_CURRENT_THRESHOLD > 0.01f ? MEASURABLE_CURRENT_THRESHOLD : 0.05f;
-                                    float limitC = 0.90f * maxC;
-                                    if (limitC <= minC) limitC = maxC;
+                                // Perform transient electrode evaluation on step 0
+                                if (sweepStep == 0) {
+                                    evaluateElectrodeParameters(sweepUnloadedV, sweepStepVoltInitial, v, c, (float)requiredDelay / 1000.0f);
+                                }
 
-                                    float targetI = minC + (float)sweepStep * (limitC - minC) / 14.0f;
-                                    int dCycle = estimateDutyCycleForCurrent(targetI);
-                                    applyDuty(dCycle);
+                                int totalSteps = (int)(sweepCatPairs.empty() ? 15 : sweepCatPairs.size());
+                                if (sweepStep < totalSteps - 1) {
+                                    sweepStep++;
+                                    int nextDuty = 0;
+                                    if (!sweepCatPairs.empty()) {
+                                        nextDuty = sweepCatPairs[sweepStep].highDC;
+                                    } else {
+                                        float maxC = estimateCurrent(MAX_DUTY_CYCLE);
+                                        float minC = MEASURABLE_CURRENT_THRESHOLD > 0.01f ? MEASURABLE_CURRENT_THRESHOLD : 0.05f;
+                                        float limitC = 0.90f * maxC;
+                                        if (limitC <= minC) limitC = maxC;
+                                        float targetI = minC + (float)sweepStep * (limitC - minC) / 14.0f;
+                                        nextDuty = estimateDutyCycleForCurrent(targetI);
+                                    }
+                                    float slope = 0.0f;
+                                    if (!isDutyCycleLinearRegion(nextDuty, slope)) {
+                                        int minLinear = MIN_DUTY_CYCLE_START;
+                                        while (minLinear < MAX_DUTY_CYCLE && !isDutyCycleLinearRegion(minLinear, slope)) minLinear++;
+                                        nextDuty = minLinear;
+                                    }
+                                    sweepDutyCycles[sweepStep] = nextDuty;
+                                    applyDuty(nextDuty);
                                     sweepStepStartTime = now;
-                                    Serial.printf("  Sweep Step %d/15: Applied Duty %d for target %.3f A\n", sweepStep+1, dCycle, targetI);
+                                    Serial.printf("  Sweep Step %d/%d: Applied Duty %d\n", sweepStep + 1, totalSteps, nextDuty);
                                 } else {
-                                    // Finished 15 points
-                                    float sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-                                    sumX += 0.0f;
-                                    sumY += sweepUnloadedV;
-                                    for (int k = 0; k < 15; k++) {
-                                        float I = sweepCurrents[k];
-                                        float V = sweepVoltages[k];
-                                        sumX += I;
-                                        sumY += V;
-                                        sumXY += I * V;
-                                        sumX2 += I * I;
-                                    }
-                                    float denom = (16 * sumX2 - sumX * sumX);
-                                    float calculatedIR = 0.15f;
-                                    if (std::abs(denom) > 1e-6f) {
-                                        float slope = (16 * sumXY - sumX * sumY) / denom;
-                                        calculatedIR = std::fabs(slope);
-                                    }
-                                    if (calculatedIR < MIN_VALID_RESISTANCE || calculatedIR > STRUCTURED_IR_SWEEP_MAX_LIMIT) {
-                                        calculatedIR = STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK;
+                                    // Finished all sweep points: Evaluate, filter, and store valid pairs
+                                    int validCount = 0;
+                                    float lastValidI = 0.0f;
+                                    float lastValidIR = STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK;
+
+                                    for (int k = 0; k < totalSteps; k++) {
+                                        int lowDC = (!sweepCatPairs.empty() && k < (int)sweepCatPairs.size()) ? sweepCatPairs[k].lowDC : 0;
+                                        int highDC = sweepDutyCycles[k];
+                                        float v1 = sweepUnloadedV;
+                                        float v2 = sweepVoltages[k];
+                                        float i1 = sweepUnloadedI;
+                                        float i2 = sweepCurrents[k];
+
+                                        float corrI = 0.0f, corrIR = 0.0f;
+                                        bool valid = evaluateAndCorrectPairData(lowDC, highDC, v1, v2, i1, i2, corrI, corrIR);
+                                        if (valid && corrIR >= MIN_VALID_RESISTANCE && corrIR <= STRUCTURED_IR_SWEEP_MAX_LIMIT) {
+                                            WEB_LOCK();
+                                            if (!sweepCatPairs.empty() && sweepCatPairs[k].type == PAIR_TYPE_GLOBAL) {
+                                                storeOrAverageResistanceData(corrI, corrIR, internalResistanceDataPairs, resistanceDataCountPairs);
+                                            } else {
+                                                storeOrAverageResistanceData(corrI, corrIR, internalResistanceData, resistanceDataCount);
+                                            }
+                                            WEB_UNLOCK();
+                                            validCount++;
+                                            lastValidI = corrI;
+                                            lastValidIR = corrIR;
+                                        }
                                     }
 
                                     WEB_LOCK();
-                                    regressedInternalResistancePairsIntercept = calculatedIR;
-                                    regressedInternalResistanceIntercept = calculatedIR;
-                                    storeOrAverageResistanceData(sweepCurrents[14], calculatedIR, internalResistanceDataPairs, resistanceDataCountPairs);
-                                    storeOrAverageResistanceData(sweepCurrents[14], calculatedIR, internalResistanceData, resistanceDataCount);
+                                    if (validCount > 0) {
+                                        regressedInternalResistancePairsIntercept = lastValidIR;
+                                        regressedInternalResistanceIntercept = lastValidIR;
+                                    } else {
+                                        regressedInternalResistancePairsIntercept = STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK;
+                                        regressedInternalResistanceIntercept = STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK;
+                                        storeOrAverageResistanceData(0.10f, STRUCTURED_IR_SWEEP_DEFAULT_FALLBACK, internalResistanceData, resistanceDataCount);
+                                    }
                                     WEB_UNLOCK();
 
                                     tempAtShutoff = t2;
@@ -612,7 +663,8 @@ void buildCurrentModelStep() {
                                     shutoffTime = now;
                                     applyDuty(0);
                                     characPhase = 1;
-                                    Serial.printf("  Sweep IR Regression Complete: IR = %.4f Ohms. Transitioning to Peak Detection.\n", calculatedIR);
+                                    Serial.printf("  Sweep IR Evaluation Complete: %d/%d valid points, IR = %.4f Ohms. Transitioning to Peak Detection.\n",
+                                                  validCount, totalSteps, regressedInternalResistancePairsIntercept);
                                 }
                             }
                         }
