@@ -637,7 +637,9 @@ bool chargeBattery() {
                 t1_deriv = 0.0;
                 t2_deriv = 0.0;
                 ChargeLogData s; s.timestamp = (uint32_t)now; s.current = c; s.voltage = v; s.ambientTemperature = (float)t1; s.batteryTemperature = (float)t2;
-                s.dutyCycle = 0; s.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept; s.internalResistancePairs = regressedInternalResistancePairsIntercept;
+                s.dutyCycle = 0;
+                s.internalResistanceLoadedUnloaded = getAverageResistanceNearCurrent(c, internalResistanceData, resistanceDataCount);
+                s.internalResistancePairs = getAverageResistanceNearCurrent(c, internalResistanceDataPairs, resistanceDataCountPairs);
                 s.threshold = MAX_DIFF_TEMP;
                 logChargeData(s); pushRecentChargeLog(s);
             }
@@ -1229,12 +1231,17 @@ bool chargeBattery() {
                     e.ambientTemperature = (float)t1;
                     e.batteryTemperature = (float)t2;
                     e.dutyCycle = (uint8_t)dutyCycle;
-                    e.internalResistanceLoadedUnloaded = regressedInternalResistanceIntercept;
                     {
-                        float R_log = getAverageResistanceNearCurrent(cur, internalResistanceDataPairs, resistanceDataCountPairs);
-                        if (R_log < 0.01f) R_log = 0.01f;
-                        if (R_log > 5.0f) R_log = 5.0f;
-                        e.internalResistancePairs = R_log;
+                        float R_lu = getAverageResistanceNearCurrent(meanPulseCurrent, internalResistanceData, resistanceDataCount);
+                        if (R_lu < 0.01f) R_lu = 0.01f;
+                        if (R_lu > 5.0f) R_lu = 5.0f;
+                        e.internalResistanceLoadedUnloaded = R_lu;
+                    }
+                    {
+                        float R_pairs = getAverageResistanceNearCurrent(meanPulseCurrent, internalResistanceDataPairs, resistanceDataCountPairs);
+                        if (R_pairs < 0.01f) R_pairs = 0.01f;
+                        if (R_pairs > 5.0f) R_pairs = 5.0f;
+                        e.internalResistancePairs = R_pairs;
                     }
                     e.threshold = MAX_DIFF_TEMP;
                     logChargeData(e);
