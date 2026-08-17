@@ -559,11 +559,11 @@ void buildCurrentModelStep() {
                     getThermistorReadings(t1, t2, td, tmv, v, c);
                     static int consecutiveDeclineCount = 0;
 
-                    if (t2 > peakTempAfterShutoff + 0.005) {
+                    if (t2 > peakTempAfterShutoff + 0.020) {
                         peakTempAfterShutoff = t2;
                         peakTimeAfterShutoff = now;
                         consecutiveDeclineCount = 0;
-                    } else if (t2 < peakTempAfterShutoff - 0.005) {
+                    } else if (t2 < peakTempAfterShutoff - 0.020) {
                         consecutiveDeclineCount++;
                     } else {
                         consecutiveDeclineCount = 0;
@@ -633,6 +633,9 @@ void buildCurrentModelStep() {
                         float G_conv = std::max(0.0001f, computedGTotal - G_rad);
                         float computedConvectiveH = G_conv / DEFAULT_SURFACE_AREA_M2;
 
+                        float G_reconstructed = computedConvectiveH * DEFAULT_SURFACE_AREA_M2 + G_rad;
+                        float G_rel_err = std::fabs(computedGTotal - G_reconstructed) / std::max(1e-4f, computedGTotal);
+
                         sumTauThermal += (float)computedTau;
                         sumTauThermistor += (float)computedTauTherm;
                         sumTauSHT4x += (float)computedTauSHT;
@@ -641,7 +644,7 @@ void buildCurrentModelStep() {
                         sumThermalCapacitance += computedCTheta;
                         sumThermalConductance += computedGTotal;
 
-                        std::cout << "  Iteration " << (characIteration + 1) << " Complete: TauThermal = " << computedTau << " s, TauThermistor = " << computedTauTherm << " s, TauSHT = " << computedTauSHT << " s, ConvectiveH = " << computedConvectiveH << " W/(m^2 K)" << std::endl;
+                        std::cout << "  Iteration " << (characIteration + 1) << " Complete: TauThermal = " << computedTau << " s, TauThermistor = " << computedTauTherm << " s, TauSHT = " << computedTauSHT << " s, ConvectiveH = " << computedConvectiveH << " W/(m^2 K), G_fitted = " << computedGTotal << " W/K, G_recon = " << G_reconstructed << " W/K (RelErr: " << (G_rel_err * 100.0f) << "%)" << std::endl;
 
                         characIteration++;
                         tempStart = 0.0; // Trigger restart of heating phase for next iteration

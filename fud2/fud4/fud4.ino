@@ -789,12 +789,12 @@ void buildCurrentModelStep() {
                     getThermistorReadings(t1, t2, td, tmv, v, c);
                     static int consecutiveDeclineCount = 0;
 
-                    if (t2 > peakTempAfterShutoff + 0.005) {
+                    if (t2 > peakTempAfterShutoff + 0.020) {
                         peakTempAfterShutoff = t2;
                         peakAmbientTemp = t1;
                         peakTimeAfterShutoff = now;
                         consecutiveDeclineCount = 0;
-                    } else if (t2 < peakTempAfterShutoff - 0.005) {
+                    } else if (t2 < peakTempAfterShutoff - 0.020) {
                         consecutiveDeclineCount++;
                     } else {
                         consecutiveDeclineCount = 0;
@@ -909,6 +909,9 @@ void buildCurrentModelStep() {
                         float G_conv = std::max(0.0001f, computedGTotal - G_rad);
                         float computedConvectiveH = G_conv / DEFAULT_SURFACE_AREA_M2;
 
+                        float G_reconstructed = computedConvectiveH * DEFAULT_SURFACE_AREA_M2 + G_rad;
+                        float G_rel_err = std::fabs(computedGTotal - G_reconstructed) / std::max(1e-4f, computedGTotal);
+
                         sumTauThermal += (float)computedTau;
                         sumTauThermistor += (float)computedTauTherm;
                         sumTauSHT4x += (float)computedTauSHT;
@@ -917,9 +920,9 @@ void buildCurrentModelStep() {
                         sumThermalCapacitance += computedCTheta;
                         sumThermalConductance += computedGTotal;
 
-                        Serial.printf("Iteration %d Complete: TauThermal = %.2f s, TauThermistor = %.2f s, TauSHT = %.2f s, ConvectiveH = %.4f W/(m^2 K), R_theta = %.2f K/W, C_theta = %.2f J/K, G_total = %.6f W/K\n",
+                        Serial.printf("Iteration %d Complete: TauThermal = %.2f s, TauThermistor = %.2f s, TauSHT = %.2f s, ConvectiveH = %.4f W/(m^2 K), R_theta = %.2f K/W, C_theta = %.2f J/K, G_total = %.6f W/K (G_recon = %.6f, RelErr = %.2f%%)\n",
                                       characIteration + 1, (float)computedTau, (float)computedTauTherm, (float)computedTauSHT,
-                                      computedConvectiveH, computedRTheta, computedCTheta, computedGTotal);
+                                      computedConvectiveH, computedRTheta, computedCTheta, computedGTotal, G_reconstructed, G_rel_err * 100.0f);
 
                         characIteration++;
                         characterizationInitialized = false; // Trigger restart of heating phase for next iteration

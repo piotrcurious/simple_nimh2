@@ -490,7 +490,9 @@ float estimateTempDiff(float vL, float vN, float cur, float Rp, float ambC, uint
 
   float P = computeDissipatedPower(vL, vN, cur, Rp);
   float G = thermalConductance_W_per_K(area, convH, emiss, ambC + 273.15f);
-  float Cth = mass * spec;
+  float Cth = (mass == DEFAULT_CELL_MASS_KG && spec == DEFAULT_SPECIFIC_HEAT && std::isfinite(estimatedThermalCapacitance) && estimatedThermalCapacitance >= 5.0f && estimatedThermalCapacitance <= 50.0f)
+              ? (float)estimatedThermalCapacitance
+              : mass * spec;
   float theta0 = bC - ambC;
   float E_gen = P * dt_s;
   float E_rel = 0.0f;
@@ -967,7 +969,9 @@ bool chargeBattery() {
                 dD_dt_smooth = 0.85 * dD_dt_smooth + 0.15 * raw_div_deriv;
                 prev_divergence_m = D_m;
 
-                float Cth = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+                float Cth = (std::isfinite(estimatedThermalCapacitance) && estimatedThermalCapacitance >= 5.0f && estimatedThermalCapacitance <= 50.0f)
+                            ? (float)estimatedThermalCapacitance
+                            : DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
                 float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, estimatedConvectiveH, DEFAULT_EMISSIVITY, t1_true + 273.15f);
                 float P_inst = Cth * dD_dt_smooth + G * D_m;
 
