@@ -462,7 +462,7 @@ void updateDynamicMaximumCurrent() {
     double t1, t2, td; float tmv, v, c;
     getThermistorReadings(t1, t2, td, tmv, v, c);
     float ambK = (float)t1 + 273.15f;
-    float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY, ambK);
+    float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, estimatedConvectiveH, DEFAULT_EMISSIVITY, ambK);
 
     float R_int = regressedInternalResistancePairsIntercept;
     if (R_int < 0.01f) R_int = regressedInternalResistanceIntercept;
@@ -483,6 +483,10 @@ float estimateTempDiff(float vL, float vN, float cur, float Rp, float ambC, uint
 
   // Numerical Stability Clamping: Guard against extremely tiny positive dt_s causing division blow-ups
   if (dt_s < 1e-4f) dt_s = 1e-4f;
+
+  if (convH == DEFAULT_CONVECTIVE_H) {
+    convH = estimatedConvectiveH;
+  }
 
   float P = computeDissipatedPower(vL, vN, cur, Rp);
   float G = thermalConductance_W_per_K(area, convH, emiss, ambC + 273.15f);
@@ -964,7 +968,7 @@ bool chargeBattery() {
                 prev_divergence_m = D_m;
 
                 float Cth = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
-                float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY, (float)t1 + 273.15f);
+                float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, estimatedConvectiveH, DEFAULT_EMISSIVITY, (float)t1 + 273.15f);
                 float P_inst = Cth * dD_dt_smooth + G * D_m;
 
                 // Estimate P_residual slowly with a 20s time constant to damp high-frequency thermistor noise

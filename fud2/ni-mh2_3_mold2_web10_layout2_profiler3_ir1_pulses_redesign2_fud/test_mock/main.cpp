@@ -272,6 +272,10 @@ volatile float noiseFloorMv = 5.0f;
 volatile float estimatedTauThermal = 45.0f;
 volatile float estimatedTauSHT = 10.0f;
 volatile float estimatedTauTherm = 5.0f;
+volatile float estimatedConvectiveH = DEFAULT_CONVECTIVE_H;
+volatile float estimatedThermalResistance = 1.0f / (DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT / 45.0f);
+volatile float estimatedThermalCapacitance = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+volatile float estimatedThermalConductance = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT / 45.0f;
 std::vector<float> mock_dutyCycles;
 std::vector<float> mock_currents;
 
@@ -289,6 +293,10 @@ static int characIteration = 0; // Iterates 3 times
 static float sumTauThermal = 0.0f;
 static float sumTauThermistor = 0.0f;
 static float sumTauSHT4x = 0.0f;
+static float sumConvectiveH = 0.0f;
+static float sumThermalResistance = 0.0f;
+static float sumThermalCapacitance = 0.0f;
+static float sumThermalConductance = 0.0f;
 
 static unsigned long currentHeatingDurationMs = 15000;
 static unsigned long currentCooloffDurationMs = 30000;
@@ -320,6 +328,10 @@ void buildCurrentModelStep() {
             sumTauThermal = 0.0f;
             sumTauThermistor = 0.0f;
             sumTauSHT4x = 0.0f;
+            sumConvectiveH = 0.0f;
+            sumThermalResistance = 0.0f;
+            sumThermalCapacitance = 0.0f;
+            sumThermalConductance = 0.0f;
             currentHeatingDurationMs = 15000;
             currentCooloffDurationMs = 30000;
 
@@ -412,6 +424,10 @@ void buildCurrentModelStep() {
                         sumTauThermal = 0.0f;
                         sumTauThermistor = 0.0f;
                         sumTauSHT4x = 0.0f;
+                        sumConvectiveH = 0.0f;
+                        sumThermalResistance = 0.0f;
+                        sumThermalCapacitance = 0.0f;
+                        sumThermalConductance = 0.0f;
                         currentHeatingDurationMs = 15000;
                         currentCooloffDurationMs = 30000;
                         sweepStep = -1;
@@ -575,11 +591,24 @@ void buildCurrentModelStep() {
                         if (computedTauSHT < 2.0) computedTauSHT = 2.0;
                         if (computedTauSHT > 16.0) computedTauSHT = 16.0;
 
+                        float Cth = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+                        float computedGTotal = Cth / std::max(1.0f, (float)computedTau);
+                        float computedRTheta = 1.0f / std::max(1e-6f, computedGTotal);
+                        float computedCTheta = Cth;
+                        float ambK = (float)t1 + 273.15f;
+                        float G_rad = 4.0f * DEFAULT_EMISSIVITY * STEFAN_BOLTZMANN * DEFAULT_SURFACE_AREA_M2 * powf(ambK, 3.0f);
+                        float G_conv = std::max(0.0001f, computedGTotal - G_rad);
+                        float computedConvectiveH = G_conv / DEFAULT_SURFACE_AREA_M2;
+
                         sumTauThermal += (float)computedTau;
                         sumTauThermistor += (float)computedTauTherm;
                         sumTauSHT4x += (float)computedTauSHT;
+                        sumConvectiveH += computedConvectiveH;
+                        sumThermalResistance += computedRTheta;
+                        sumThermalCapacitance += computedCTheta;
+                        sumThermalConductance += computedGTotal;
 
-                        std::cout << "  Iteration " << (characIteration + 1) << " Complete: TauThermal = " << computedTau << " s, TauThermistor = " << computedTauTherm << " s, TauSHT = " << computedTauSHT << " s" << std::endl;
+                        std::cout << "  Iteration " << (characIteration + 1) << " Complete: TauThermal = " << computedTau << " s, TauThermistor = " << computedTauTherm << " s, TauSHT = " << computedTauSHT << " s, ConvectiveH = " << computedConvectiveH << " W/(m^2 K)" << std::endl;
 
                         characIteration++;
                         tempStart = 0.0; // Trigger restart of heating phase for next iteration
@@ -601,6 +630,10 @@ void buildCurrentModelStep() {
                             estimatedTauThermal = sumTauThermal / (float)characIteration;
                             estimatedTauTherm = sumTauThermistor / (float)characIteration;
                             estimatedTauSHT = sumTauSHT4x / (float)characIteration;
+                            estimatedConvectiveH = sumConvectiveH / (float)characIteration;
+                            estimatedThermalResistance = sumThermalResistance / (float)characIteration;
+                            estimatedThermalCapacitance = sumThermalCapacitance / (float)characIteration;
+                            estimatedThermalConductance = sumThermalConductance / (float)characIteration;
 
                             applyDuty(0);
                             if (postModelAppState == APP_STATE_CHARGING) {
@@ -618,6 +651,10 @@ void buildCurrentModelStep() {
                             std::cout << "    Estimated Tau Thermal: " << estimatedTauThermal << " s" << std::endl;
                             std::cout << "    Estimated Tau Thermistor: " << estimatedTauTherm << " s" << std::endl;
                             std::cout << "    Estimated Tau SHT4x: " << estimatedTauSHT << " s" << std::endl;
+                            std::cout << "    Estimated Convective H: " << estimatedConvectiveH << " W/(m^2 K)" << std::endl;
+                            std::cout << "    Estimated Thermal Resistance: " << estimatedThermalResistance << " K/W" << std::endl;
+                            std::cout << "    Estimated Thermal Capacitance: " << estimatedThermalCapacitance << " J/K" << std::endl;
+                            std::cout << "    Estimated Thermal Conductance: " << estimatedThermalConductance << " W/K" << std::endl;
 
                             characIteration = 0;
                             characPhase = 0;
@@ -715,6 +752,10 @@ void reset_globals() {
     dD_dt_smooth = 0.0;
     P_residual_slow = 0.0;
     g_unappliedEnergy_J = 0.0f;
+    estimatedConvectiveH = DEFAULT_CONVECTIVE_H;
+    estimatedThermalResistance = 1.0f / (DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT / 45.0f);
+    estimatedThermalCapacitance = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+    estimatedThermalConductance = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT / 45.0f;
     sht4Sensor.setTemperature(22.0f);
     mock_millis = 0; mock_boot_pin_state = 1; voltage_mv = 1000.0f; current_ma = 0.0f; mAh_charged = 0.0;
     dutyCycle = 0; chargingState = CHARGE_IDLE; chargeLog.clear();

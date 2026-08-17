@@ -97,6 +97,10 @@ volatile float noiseFloorMv = 0;
 volatile float estimatedTauThermal = 45.0f; // Default thermal time constant in seconds
 volatile float estimatedTauSHT = 10.0f;    // SHT4x typical thermal response lag in seconds
 volatile float estimatedTauTherm = 5.0f;   // Thermistor 1 typical thermal response lag in seconds
+volatile float estimatedConvectiveH = DEFAULT_CONVECTIVE_H;
+volatile float estimatedThermalResistance = 1.0f / (DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT / 45.0f);
+volatile float estimatedThermalCapacitance = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+volatile float estimatedThermalConductance = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT / 45.0f;
 std::vector<float> dutyCycles;
 std::vector<float> currents;
 
@@ -367,6 +371,10 @@ static int characIteration = 0; // Iterates 3 times
 static float sumTauThermal = 0.0f;
 static float sumTauThermistor = 0.0f;
 static float sumTauSHT4x = 0.0f;
+static float sumConvectiveH = 0.0f;
+static float sumThermalResistance = 0.0f;
+static float sumThermalCapacitance = 0.0f;
+static float sumThermalConductance = 0.0f;
 
 static unsigned long currentHeatingDurationMs = 15000;
 static unsigned long currentCooloffDurationMs = 30000;
@@ -423,6 +431,10 @@ void buildCurrentModelStep() {
             sumTauThermal = 0.0f;
             sumTauThermistor = 0.0f;
             sumTauSHT4x = 0.0f;
+            sumConvectiveH = 0.0f;
+            sumThermalResistance = 0.0f;
+            sumThermalCapacitance = 0.0f;
+            sumThermalConductance = 0.0f;
             currentHeatingDurationMs = 15000;
             currentCooloffDurationMs = 30000;
             cooloffSamples.clear();
@@ -560,6 +572,10 @@ void buildCurrentModelStep() {
                         sumTauThermal = 0.0f;
                         sumTauThermistor = 0.0f;
                         sumTauSHT4x = 0.0f;
+                        sumConvectiveH = 0.0f;
+                        sumThermalResistance = 0.0f;
+                        sumThermalCapacitance = 0.0f;
+                        sumThermalConductance = 0.0f;
                         currentHeatingDurationMs = 15000;
                         currentCooloffDurationMs = 30000;
                         sweepStep = -1;
@@ -848,12 +864,26 @@ void buildCurrentModelStep() {
                         if (computedTauSHT < 1.0) computedTauSHT = 1.0;
                         if (computedTauSHT > 20.0) computedTauSHT = 20.0;
 
+                        float Cth = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+                        float computedGTotal = Cth / std::max(1.0f, (float)computedTau);
+                        float computedRTheta = 1.0f / std::max(1e-6f, computedGTotal);
+                        float computedCTheta = Cth;
+                        float ambK = (float)peakAmbientTemp + 273.15f;
+                        float G_rad = 4.0f * DEFAULT_EMISSIVITY * STEFAN_BOLTZMANN * DEFAULT_SURFACE_AREA_M2 * powf(ambK, 3.0f);
+                        float G_conv = std::max(0.0001f, computedGTotal - G_rad);
+                        float computedConvectiveH = G_conv / DEFAULT_SURFACE_AREA_M2;
+
                         sumTauThermal += (float)computedTau;
                         sumTauThermistor += (float)computedTauTherm;
                         sumTauSHT4x += (float)computedTauSHT;
+                        sumConvectiveH += computedConvectiveH;
+                        sumThermalResistance += computedRTheta;
+                        sumThermalCapacitance += computedCTheta;
+                        sumThermalConductance += computedGTotal;
 
-                        Serial.printf("Iteration %d Complete: TauThermal = %.2f s, TauThermistor = %.2f s, TauSHT = %.2f s\n",
-                                      characIteration + 1, (float)computedTau, (float)computedTauTherm, (float)computedTauSHT);
+                        Serial.printf("Iteration %d Complete: TauThermal = %.2f s, TauThermistor = %.2f s, TauSHT = %.2f s, ConvectiveH = %.4f W/(m^2 K), R_theta = %.2f K/W, C_theta = %.2f J/K, G_total = %.6f W/K\n",
+                                      characIteration + 1, (float)computedTau, (float)computedTauTherm, (float)computedTauSHT,
+                                      computedConvectiveH, computedRTheta, computedCTheta, computedGTotal);
 
                         characIteration++;
                         characterizationInitialized = false; // Trigger restart of heating phase for next iteration
@@ -877,6 +907,10 @@ void buildCurrentModelStep() {
                             estimatedTauThermal = sumTauThermal / 3.0f;
                             estimatedTauTherm = sumTauThermistor / 3.0f;
                             estimatedTauSHT = sumTauSHT4x / 3.0f;
+                            estimatedConvectiveH = sumConvectiveH / 3.0f;
+                            estimatedThermalResistance = sumThermalResistance / 3.0f;
+                            estimatedThermalCapacitance = sumThermalCapacitance / 3.0f;
+                            estimatedThermalConductance = sumThermalConductance / 3.0f;
 
                             applyDuty(0);
                             if (postModelAppState == APP_STATE_CHARGING) {
@@ -895,6 +929,10 @@ void buildCurrentModelStep() {
                             Serial.printf("  Estimated Tau Thermal: %.2f s (Fitted & Averaged)\n", (float)estimatedTauThermal);
                             Serial.printf("  Estimated Tau Thermistor: %.2f s\n", (float)estimatedTauTherm);
                             Serial.printf("  Estimated Tau SHT4x: %.2f s\n", (float)estimatedTauSHT);
+                            Serial.printf("  Estimated Convective H: %.4f W/(m^2 K)\n", (float)estimatedConvectiveH);
+                            Serial.printf("  Estimated Thermal Resistance: %.2f K/W\n", (float)estimatedThermalResistance);
+                            Serial.printf("  Estimated Thermal Capacitance: %.2f J/K\n", (float)estimatedThermalCapacitance);
+                            Serial.printf("  Estimated Thermal Conductance: %.6f W/K\n", (float)estimatedThermalConductance);
 
                             characIteration = 0;
                             characPhase = 0;
