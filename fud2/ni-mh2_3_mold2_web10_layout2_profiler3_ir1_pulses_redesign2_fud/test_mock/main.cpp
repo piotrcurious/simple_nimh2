@@ -289,7 +289,10 @@ static unsigned long peakTimeAfterShutoff = 0;
 static int characPhase = 0; // 0: Heating, 1: Peak detection, 2: Cool-off
 static unsigned long cooloffStartTime = 0;
 
-static int characIteration = 0; // Iterates 3 times
+static const int CHARACTERIZATION_ITERATIONS = 3;
+static int characIteration = 0;
+static bool mock_characSweepDone = false;
+static unsigned long mock_characSettleStartTime = 0;
 static float sumTauThermal = 0.0f;
 static float sumTauThermistor = 0.0f;
 static float sumTauSHT4x = 0.0f;
@@ -333,7 +336,10 @@ void buildCurrentModelStep() {
             sumThermalCapacitance = 0.0f;
             sumThermalConductance = 0.0f;
             currentHeatingDurationMs = 15000;
-            currentCooloffDurationMs = 30000;
+            currentCooloffDurationMs = 60000;
+
+            mock_characSweepDone = false;
+            mock_characSettleStartTime = 0;
 
             sweepStep = -1;
             sweepUnloadedV = 0.0f;
@@ -405,22 +411,24 @@ void buildCurrentModelStep() {
             break;
         case BuildModelPhase::ThermalCharacterize:
             {
-                // Dynamic Thermal and Sensor Lag Characterization (3-phase tracking):
-                // 1. Heating (15s): Apply half-load. Observe initial heat rise.
-                // 2. Overshoot & Peak detection: Shut off load. Find exact peak timestamp to estimate sensor lags.
-                // 3. Dedicated Cool-off (30s): Let temperature decay under zero load to fit battery thermal inertia (Tau Thermal) accurately.
-                if (tempStart == 0.0) {
-                    double t1, t2, td; float tmv, v, c;
-                    getThermistorReadings(t1, t2, td, tmv, v, c);
-                    tempStart = t2;
-                    startTime = now;
-                    shutoffTime = 0;
-                    peakTempAfterShutoff = 0.0;
-                    peakTimeAfterShutoff = 0;
-                    characPhase = 0;
-                    cooloffStartTime = 0;
-
-                    if (characIteration == 0) {
+                if (!mock_characSweepDone) {
+                    if (tempStart == 0.0) {
+                        double t1, t2, td; float tmv, v, c;
+                        getThermistorReadings(t1, t2, td, tmv, v, c);
+                        startTime = now;
+                        sweepStep = -1;
+                        sweepStepStartTime = now;
+                        applyDuty(0);
+                        characPhase = 0;
+                        tempStart = t2;
+                        std::cout << "  Starting 15-point sweep before thermal characterization..." << std::endl;
+                    }
+                } else if (characPhase == 3) {
+                    applyDuty(0);
+                    if (now - mock_characSettleStartTime >= 5000) {
+                        characPhase = 0;
+                        characIteration = 0;
+                        tempStart = 0.0;
                         sumTauThermal = 0.0f;
                         sumTauThermistor = 0.0f;
                         sumTauSHT4x = 0.0f;
@@ -429,22 +437,32 @@ void buildCurrentModelStep() {
                         sumThermalCapacitance = 0.0f;
                         sumThermalConductance = 0.0f;
                         currentHeatingDurationMs = 15000;
-                        currentCooloffDurationMs = 30000;
-                        sweepStep = -1;
-                        sweepStepStartTime = now;
-                        applyDuty(0); // Start sweep with unloaded point
-                        std::cout << "  Thermal Characterize Iteration 1: Starting 15-point sweep..." << std::endl;
-                    } else {
+                        currentCooloffDurationMs = 60000;
+                        std::cout << "  Thermal Settling Complete. Starting thermal characterization..." << std::endl;
+                    }
+                    break;
+                } else {
+                    if (tempStart == 0.0) {
+                        double t1, t2, td; float tmv, v, c;
+                        getThermistorReadings(t1, t2, td, tmv, v, c);
+                        tempStart = t2;
+                        startTime = now;
+                        shutoffTime = 0;
+                        peakTempAfterShutoff = 0.0;
+                        peakTimeAfterShutoff = 0;
+                        characPhase = 0;
+                        cooloffStartTime = 0;
+
                         float targetI = 0.90f * estimateCurrent(MAX_DUTY_CYCLE);
                         int characDuty = estimateDutyCycleForCurrent(targetI);
                         if (characDuty < MIN_CHARGE_DUTY_CYCLE) characDuty = MIN_CHARGE_DUTY_CYCLE;
                         applyDuty(characDuty);
-                        std::cout << "  Thermal Characterize [Iteration " << (characIteration + 1) << "/3] Phase 1 (Heating, " << currentHeatingDurationMs << " ms): applied 90% load (Duty " << characDuty << ", Target " << targetI << " A), initial temp: " << tempStart << " C" << std::endl;
+                        std::cout << "  Thermal Characterize [Run " << (characIteration + 1) << "/1] Phase 1 (Heating, " << currentHeatingDurationMs << " ms): applied 90% load (Duty " << characDuty << ", Target " << targetI << " A), initial temp: " << tempStart << " C" << std::endl;
                     }
                 }
 
                 if (characPhase == 0) {
-                    if (characIteration == 0) {
+                    if (!mock_characSweepDone) {
                         // 15-point sweep state machine
                         if (sweepStep == -1) {
                             if (now - startTime >= 2000) {
@@ -516,8 +534,10 @@ void buildCurrentModelStep() {
                                     peakTimeAfterShutoff = now;
                                     shutoffTime = now;
                                     applyDuty(0);
-                                    characPhase = 1;
-                                    std::cout << "    Sweep IR Regression Complete: IR = " << calculatedIR << " Ohms. Transitioning to Peak Detection." << std::endl;
+                                    mock_characSweepDone = true;
+                                    mock_characSettleStartTime = now;
+                                    characPhase = 3; // Settling phase
+                                    std::cout << "    Sweep IR Regression Complete: IR = " << calculatedIR << " Ohms. Transitioning to Thermal Settling Phase." << std::endl;
                                 }
                             }
                         }
@@ -539,11 +559,11 @@ void buildCurrentModelStep() {
                     getThermistorReadings(t1, t2, td, tmv, v, c);
                     static int consecutiveDeclineCount = 0;
 
-                    if (t2 > peakTempAfterShutoff + 0.001) {
+                    if (t2 > peakTempAfterShutoff + 0.005) {
                         peakTempAfterShutoff = t2;
                         peakTimeAfterShutoff = now;
                         consecutiveDeclineCount = 0;
-                    } else if (t2 < peakTempAfterShutoff - 0.001) {
+                    } else if (t2 < peakTempAfterShutoff - 0.005) {
                         consecutiveDeclineCount++;
                     } else {
                         consecutiveDeclineCount = 0;
