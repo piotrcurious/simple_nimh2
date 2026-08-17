@@ -520,6 +520,17 @@ struct StructuredIRTest {
     float currents[4] = {0.0f};
     int duties[4] = {0};
     float calculatedIR = 0.15f;
+
+    // Transient recording buffer for electrode parameter fitting
+    static constexpr size_t TRANSIENT_MAX_SAMPLES = 64;
+    float transient_time_s[TRANSIENT_MAX_SAMPLES];
+    float transient_voltage_V[TRANSIENT_MAX_SAMPLES];
+    float transient_current_A[TRANSIENT_MAX_SAMPLES];
+    size_t transient_count = 0;
+    unsigned long transient_start_ms = 0;
+    float transient_unloaded_V = 0.0f;
+    float transient_i_before = 0.0f;
+    unsigned long last_sample_ms = 0;
 };
 static StructuredIRTest s_irTest;
 
@@ -621,19 +632,40 @@ bool chargeBattery() {
                         s_irTest.duties[2] = MIN_CHARGE_DUTY_CYCLE + 80;
                         s_irTest.duties[3] = MAX_CHARGE_DUTY_CYCLE / 2;
                         applyDuty(s_irTest.duties[0]);
+
+                        // Initialize transient recording for step 1
+                        s_irTest.transient_count = 0;
+                        s_irTest.transient_start_ms = now;
+                        s_irTest.transient_unloaded_V = v;
+                        s_irTest.transient_i_before = cur;
+                        s_irTest.last_sample_ms = 0;
                     }
                 } else if (s_irTest.step >= 1 && s_irTest.step <= 4) {
-                    if (s_irTest.step == 1 && stepElapsed >= 50 && !g_electrode.evaluated) {
-                        // Sample initial step voltage at 50ms for Ohmic drop
-                        evaluateElectrodeParameters(s_irTest.unloadedVoltage, v, v, cur, 0.05f);
+                    // Collect transient samples during step 1 for RC fitting
+                    if (s_irTest.step == 1 && s_irTest.transient_count < StructuredIRTest::TRANSIENT_MAX_SAMPLES) {
+                        if (s_irTest.last_sample_ms == 0 || now - s_irTest.last_sample_ms >= 10) {
+                            s_irTest.transient_time_s[s_irTest.transient_count] = (now - s_irTest.transient_start_ms) * 0.001f;
+                            s_irTest.transient_voltage_V[s_irTest.transient_count] = v;
+                            s_irTest.transient_current_A[s_irTest.transient_count] = cur;
+                            s_irTest.transient_count++;
+                            s_irTest.last_sample_ms = now;
+                        }
                     }
+
                     if (stepElapsed >= reqStepDelay) {
                         s_irTest.voltages[s_irTest.step - 1] = v;
                         s_irTest.currents[s_irTest.step - 1] = cur;
 
                         if (s_irTest.step == 1) {
-                            // Update electrode parameters with full step response (initial vs settled)
-                            evaluateElectrodeParameters(s_irTest.unloadedVoltage, s_irTest.voltages[0], v, cur, (float)reqStepDelay / 1000.0f);
+                            // Update electrode parameters with full step response transient data
+                            evaluateElectrodeParameters(
+                                s_irTest.transient_time_s,
+                                s_irTest.transient_voltage_V,
+                                s_irTest.transient_current_A,
+                                s_irTest.transient_count,
+                                s_irTest.transient_unloaded_V,
+                                s_irTest.transient_i_before
+                            );
                         }
                         if (s_irTest.step < 4) {
                             s_irTest.step++;

@@ -8,6 +8,7 @@
 #include <algorithm>
 
 #include "dummy_esp32.h"
+#include "internal_resistance.h"
 
 // Math helpers
 using std::isnan;
@@ -1320,7 +1321,68 @@ void test_stress_web_requests() {
     std::cout << "test_stress_web_requests PASSED" << std::endl << std::endl;
 }
 
+void test_electrode_characterization() {
+    std::cout << "Running test_electrode_characterization (Randles first-order transient fit)..." << std::endl;
+
+    reset_globals();
+
+    constexpr size_t N = 21;
+    float time_s[N];
+    float voltage_V[N];
+    float current_A[N];
+
+    const float v_unloaded = 1.20f;
+    const float i_before = 0.0f;
+    const float deltaI = 0.50f;
+    const float true_R_ohmic = 0.05f;
+    const float true_R_ct = 0.15f;
+    const float true_tau = 0.50f;
+    const float true_Cdl = true_tau / true_R_ct; // 3.3333 F
+
+    const float V0 = v_unloaded + deltaI * true_R_ohmic; // 1.225 V
+    const float Vinf = v_unloaded + deltaI * (true_R_ohmic + true_R_ct); // 1.30 V
+    const float A = V0 - Vinf; // -0.075 V
+
+    for (size_t i = 0; i < N; ++i) {
+        time_s[i] = (float)i * 0.125f; // 0.0s to 2.5s (5 * tau)
+        voltage_V[i] = Vinf + A * expf(-time_s[i] / true_tau);
+        current_A[i] = deltaI;
+    }
+
+    bool valid = evaluateElectrodeParameters(
+        time_s, voltage_V, current_A, N,
+        v_unloaded, i_before, 0.2f
+    );
+
+    assert(valid);
+    assert(g_electrode.evaluated);
+    assert(g_electrode.fitValid);
+    assert(g_electrode.physicallyValid);
+    assert(g_electrode.fitR2 > 0.99f);
+    assert(std::fabs(g_electrode.R_ohmic - true_R_ohmic) < 0.005f);
+    assert(std::fabs(g_electrode.R_ct - true_R_ct) < 0.005f);
+    assert(std::fabs(g_electrode.tau_rc - true_tau) < 0.02f);
+    assert(std::fabs(g_electrode.C_dl - true_Cdl) < 0.10f);
+
+    // Verify rejection on flat/insufficient transient
+    float flat_voltage_V[N];
+    for (size_t i = 0; i < N; ++i) flat_voltage_V[i] = 1.25f;
+    bool bad_fit = evaluateElectrodeParameters(
+        time_s, flat_voltage_V, current_A, N,
+        v_unloaded, i_before, -1.0f
+    );
+    assert(!bad_fit);
+
+    std::cout << "  Randles model fitted R_ohmic: " << g_electrode.R_ohmic
+              << " Ohm, R_ct: " << g_electrode.R_ct
+              << " Ohm, Tau: " << g_electrode.tau_rc
+              << " s, C_dl: " << g_electrode.C_dl
+              << " F, R2: " << g_electrode.fitR2 << std::endl;
+    std::cout << "test_electrode_characterization PASSED" << std::endl << std::endl;
+}
+
 int main() {
+    test_electrode_characterization();
     test_model_accuracy();
     test_dead_region_detection();
     test_ir_measurement();

@@ -171,14 +171,64 @@ struct CandidatePoint {
     PairType type;
 };
 
-struct ElectrodeParams {
-    float R_ohmic = 0.05f;                 // Instantaneous Ohmic resistance (Ohms)
-    float R_ct = 0.13f;                    // Charge transfer resistance (Ohms)
-    float C_dl = 1.5f;                     // Double-layer capacitance (Farads)
-    float tau_rc = 0.195f;                 // RC time constant = R_ct * C_dl (seconds)
-    float activeSurfaceAreaProxy = 1.0f;   // Active electrochemically accessible surface area proxy
-    unsigned long adaptiveDelayMs = 1500;  // Dynamic stabilization delay based on C_dl (ms)
+struct ElectrodeParameters
+{
+    // Electrical parameters.
+    float R_ohmic = NAN;
+    float R_ct = NAN;
+    float C_dl = NAN;
+    float tau_rc = NAN;
+
+    // Optional physically meaningful active-area estimate.
+    // NAN means that no specific capacitance was supplied.
+    float activeSurfaceAreaM2 = NAN;
+
+    // Legacy/proxy field retained if existing UI expects it.
+    // This is Cdl only when no area calibration exists.
+    float activeSurfaceAreaProxy = NAN;
+
+    // Adaptive settling delay.
+    uint32_t adaptiveDelayMs = 0;
+
+    // Fit information.
+    float fitR2 = NAN;
+    float fitRMSE_V = NAN;
+
+    // Fitted voltage terms.
+    float fittedVInfinity = NAN;
+    float fittedAmplitude = NAN;
+    float fittedV0 = NAN;
+
+    // Measured current step.
+    float deltaI_A = NAN;
+
+    // Quality indicators.
+    bool currentStable = false;
+    bool sufficientTime = false;
+    bool fitValid = false;
+    bool physicallyValid = false;
+    bool delayLimited = false;
     bool evaluated = false;
+};
+
+typedef ElectrodeParameters ElectrodeParams;
+
+struct ElectrodeTransient
+{
+    const float *time_s;
+    const float *voltage_V;
+    const float *current_A;
+
+    size_t count;
+
+    // Voltage immediately before the current step.
+    float v_unloaded;
+
+    // Current immediately before the current step.
+    float i_before_A;
+
+    // Optional specific double-layer capacitance.
+    float specificCdl_F_per_m2 = -1.0f;
 };
 
 enum DisplayState {
@@ -347,7 +397,7 @@ extern SystemDataManager systemData;
 extern float recoveredAmbientTemp;
 extern float recoveredBatteryTemp;
 extern CurrentModel currentModel;
-extern ElectrodeParams g_electrode;
+extern ElectrodeParameters g_electrode;
 extern AsyncMeasure meas;
 extern FindOptManager findOpt;
 extern RemeasureManager remeasure;
