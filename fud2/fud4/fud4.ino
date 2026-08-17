@@ -367,7 +367,8 @@ static unsigned long lastCooloffSampleTime = 0;
 static double heatingPowerSum = 0.0;
 static unsigned int heatingPowerCount = 0;
 
-static int characIteration = 0; // Iterates 3 times
+static const int CHARACTERIZATION_ITERATIONS = 3;
+static int characIteration = 0;
 static float sumTauThermal = 0.0f;
 static float sumTauThermistor = 0.0f;
 static float sumTauSHT4x = 0.0f;
@@ -377,7 +378,7 @@ static float sumThermalCapacitance = 0.0f;
 static float sumThermalConductance = 0.0f;
 
 static unsigned long currentHeatingDurationMs = 15000;
-static unsigned long currentCooloffDurationMs = 30000;
+static unsigned long currentCooloffDurationMs = 60000;
 
 static int sweepStep = -1;
 static float sweepUnloadedV = 0.0f;
@@ -436,7 +437,7 @@ void buildCurrentModelStep() {
             sumThermalCapacitance = 0.0f;
             sumThermalConductance = 0.0f;
             currentHeatingDurationMs = 15000;
-            currentCooloffDurationMs = 30000;
+            currentCooloffDurationMs = 60000;
             cooloffSamples.clear();
             lastCooloffSampleTime = 0;
             heatingPowerSum = 0.0;
@@ -577,7 +578,7 @@ void buildCurrentModelStep() {
                         sumThermalCapacitance = 0.0f;
                         sumThermalConductance = 0.0f;
                         currentHeatingDurationMs = 15000;
-                        currentCooloffDurationMs = 30000;
+                        currentCooloffDurationMs = 60000;
                         sweepStep = -1;
                         sweepStepStartTime = now;
                         applyDuty(0); // Start sweep with unloaded point
@@ -837,7 +838,7 @@ void buildCurrentModelStep() {
                                 }
                             }
                         }
-                        if (computedTau < 45.0) computedTau = 45.0;
+                        if (computedTau < 10.0) computedTau = 10.0;
                         if (computedTau > 450.0) computedTau = 450.0;
 
                         // Solve sensor pole tau_s for two-pole thermal system where t_peak = (tau_b * tau_s / (tau_b - tau_s)) * ln(tau_b / tau_s)
@@ -864,10 +865,24 @@ void buildCurrentModelStep() {
                         if (computedTauSHT < 1.0) computedTauSHT = 1.0;
                         if (computedTauSHT > 20.0) computedTauSHT = 20.0;
 
-                        float Cth = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
-                        float computedGTotal = Cth / std::max(1.0f, (float)computedTau);
-                        float computedRTheta = 1.0f / std::max(1e-6f, computedGTotal);
-                        float computedCTheta = Cth;
+                        // Characterize conductance and heat capacity from measured electrical heating power and temperature rise
+                        float computedGTotal = 0.0f;
+                        float computedCTheta = 0.0f;
+                        float deltaTempHeat = (float)(tempAtShutoff - tempStart);
+                        float heatDurationS = (shutoffTime > startTime) ? (float)(shutoffTime - startTime) / 1000.0f : 0.0f;
+                        float avgHeatingP = (heatingPowerCount > 0) ? (float)(heatingPowerSum / heatingPowerCount) : 0.0f;
+
+                        if (avgHeatingP > 0.01f && deltaTempHeat > 0.05f && heatDurationS > 1.0f) {
+                            computedGTotal = (avgHeatingP / deltaTempHeat) * (1.0f - expf(-heatDurationS / (float)computedTau));
+                            computedCTheta = computedGTotal * (float)computedTau;
+                        } else {
+                            computedCTheta = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+                            computedGTotal = computedCTheta / std::max(1.0f, (float)computedTau);
+                        }
+                        if (computedGTotal < 0.001f) computedGTotal = 0.001f;
+                        if (computedCTheta < 1.0f) computedCTheta = 1.0f;
+
+                        float computedRTheta = 1.0f / computedGTotal;
                         float ambK = (float)peakAmbientTemp + 273.15f;
                         float G_rad = 4.0f * DEFAULT_EMISSIVITY * STEFAN_BOLTZMANN * DEFAULT_SURFACE_AREA_M2 * powf(ambK, 3.0f);
                         float G_conv = std::max(0.0001f, computedGTotal - G_rad);
@@ -888,29 +903,28 @@ void buildCurrentModelStep() {
                         characIteration++;
                         characterizationInitialized = false; // Trigger restart of heating phase for next iteration
 
-                        if (characIteration < 4) {
+                        if (characIteration < CHARACTERIZATION_ITERATIONS) {
                             // Self-Tuning: Adjust next cycle Heating and Cool-off durations to the newly inferred result!
-                            // Heating duration target: computedTau * 0.1 (clamped between 8s and 30s)
                             currentHeatingDurationMs = (unsigned long)(computedTau * 0.8f * 1000.0f);
                             if (currentHeatingDurationMs < 8000) currentHeatingDurationMs = 8000;
                             if (currentHeatingDurationMs > 60000) currentHeatingDurationMs = 60000;
 
-                            // Cooloff duration target: computedTau * 0.2 (clamped between 15s and 60s)
                             currentCooloffDurationMs = (unsigned long)(computedTau * 0.9f * 1000.0f);
-                            if (currentCooloffDurationMs < 15000) currentCooloffDurationMs = 15000;
+                            if (currentCooloffDurationMs < 30000) currentCooloffDurationMs = 30000;
                             if (currentCooloffDurationMs > 120000) currentCooloffDurationMs = 120000;
 
                             characPhase = 0;
                         } else {
-                            // Average results across all 3 iterations to get verified robust constants
+                            // Average results across all completed iterations
+                            float countDiv = (float)CHARACTERIZATION_ITERATIONS;
                             WEB_LOCK();
-                            estimatedTauThermal = sumTauThermal / 3.0f;
-                            estimatedTauTherm = sumTauThermistor / 3.0f;
-                            estimatedTauSHT = sumTauSHT4x / 3.0f;
-                            estimatedConvectiveH = sumConvectiveH / 3.0f;
-                            estimatedThermalResistance = sumThermalResistance / 3.0f;
-                            estimatedThermalCapacitance = sumThermalCapacitance / 3.0f;
-                            estimatedThermalConductance = sumThermalConductance / 3.0f;
+                            estimatedTauThermal = sumTauThermal / countDiv;
+                            estimatedTauTherm = sumTauThermistor / countDiv;
+                            estimatedTauSHT = sumTauSHT4x / countDiv;
+                            estimatedConvectiveH = sumConvectiveH / countDiv;
+                            estimatedThermalResistance = sumThermalResistance / countDiv;
+                            estimatedThermalCapacitance = sumThermalCapacitance / countDiv;
+                            estimatedThermalConductance = sumThermalConductance / countDiv;
 
                             applyDuty(0);
                             if (postModelAppState == APP_STATE_CHARGING) {
