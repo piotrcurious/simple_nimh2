@@ -44,12 +44,18 @@ private:
     int _vccPin;
     double _therm1Offset;
 
+#ifdef MOCK_TEST
+public:
+#endif
     SystemData _currentData;
     SystemData _lastValidData;
+    AdcSnapshot _lastSnapshots[ADC_CH_COUNT];
+#ifdef MOCK_TEST
+private:
+#endif
     float _currentZeroOffsetMv;
     SemaphoreHandle_t _dataMutex;
 
-    AdcSnapshot _lastSnapshots[ADC_CH_COUNT];
     uint32_t _lastVoltageUpdateMs;
     uint32_t _lastMahUpdateMs;
 

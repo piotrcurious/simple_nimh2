@@ -381,6 +381,15 @@ static int sweepDutyCycles[15] = {0};
 static unsigned long sweepStepStartTime = 0;
 static std::vector<DutyPair> sweepCatPairs;
 
+// Transient recording buffer for thermal characterize sweep step 0
+static constexpr size_t SWEEP_TRANSIENT_MAX_SAMPLES = 64;
+static float sweep_transient_time_s[SWEEP_TRANSIENT_MAX_SAMPLES];
+static float sweep_transient_voltage_V[SWEEP_TRANSIENT_MAX_SAMPLES];
+static float sweep_transient_current_A[SWEEP_TRANSIENT_MAX_SAMPLES];
+static size_t sweep_transient_count = 0;
+static unsigned long sweep_transient_start_ms = 0;
+static unsigned long sweep_last_sample_ms = 0;
+
 // --- Non-blocking build current model ---
 void buildCurrentModelStep() {
     const unsigned long now = millis();
@@ -600,10 +609,29 @@ void buildCurrentModelStep() {
                                 sweepStepStartTime = now;
                                 sweepStepVoltInitial = v;
                                 sweepDutyCycles[0] = targetDuty;
+
+                                // Initialize transient buffer for sweep step 0
+                                sweep_transient_count = 0;
+                                sweep_transient_start_ms = now;
+                                sweep_last_sample_ms = 0;
+
                                 Serial.printf("  Sweep Step 1/%d: Applied Duty %d (unloadedV = %.3f V, delay %lu ms)\n",
                                               (int)(sweepCatPairs.empty() ? 15 : sweepCatPairs.size()), targetDuty, sweepUnloadedV, requiredDelay);
                             }
                         } else if (sweepStep >= 0 && sweepStep < (int)(sweepCatPairs.empty() ? 15 : sweepCatPairs.size())) {
+                            // Record transient data during step 0
+                            if (sweepStep == 0 && sweep_transient_count < SWEEP_TRANSIENT_MAX_SAMPLES) {
+                                if (sweep_last_sample_ms == 0 || now - sweep_last_sample_ms >= 10) {
+                                    double t1, t2, td; float tmv, v, c;
+                                    getThermistorReadings(t1, t2, td, tmv, v, c);
+                                    sweep_transient_time_s[sweep_transient_count] = (now - sweep_transient_start_ms) * 0.001f;
+                                    sweep_transient_voltage_V[sweep_transient_count] = v;
+                                    sweep_transient_current_A[sweep_transient_count] = c;
+                                    sweep_transient_count++;
+                                    sweep_last_sample_ms = now;
+                                }
+                            }
+
                             if (now - sweepStepStartTime >= requiredDelay) {
                                 double t1, t2, td; float tmv, v, c;
                                 getThermistorReadings(t1, t2, td, tmv, v, c);
@@ -612,7 +640,14 @@ void buildCurrentModelStep() {
 
                                 // Perform transient electrode evaluation on step 0
                                 if (sweepStep == 0) {
-                                    evaluateElectrodeParameters(sweepUnloadedV, sweepStepVoltInitial, v, c, (float)requiredDelay / 1000.0f);
+                                    evaluateElectrodeParameters(
+                                        sweep_transient_time_s,
+                                        sweep_transient_voltage_V,
+                                        sweep_transient_current_A,
+                                        sweep_transient_count,
+                                        sweepUnloadedV,
+                                        sweepUnloadedI
+                                    );
                                 }
 
                                 int totalSteps = (int)(sweepCatPairs.empty() ? 15 : sweepCatPairs.size());

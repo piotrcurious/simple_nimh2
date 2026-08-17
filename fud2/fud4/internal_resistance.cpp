@@ -56,43 +56,932 @@ float regressedInternalResistancePairsIntercept = 0.0f;
 
 bool isMeasuringResistance = false;
 
-ElectrodeParams g_electrode;
+ElectrodeParameters g_electrode;
 
-void evaluateElectrodeParameters(float v_unloaded, float v_step_initial, float v_step_settled, float I_load, float stepTime_s) {
-    if (I_load < MEASURABLE_CURRENT_THRESHOLD || I_load <= 0.001f) return;
+// Minimum useful number of samples.
+static constexpr size_t MIN_ELECTRODE_SAMPLES = 12;
 
-    float deltaV_ohmic = std::fabs(v_unloaded - v_step_initial);
-    float R_ohmic = deltaV_ohmic / I_load;
+// The first samples represent the immediate post-step region.
+static constexpr size_t INITIAL_SAMPLE_COUNT = 4;
 
-    float deltaV_total = std::fabs(v_unloaded - v_step_settled);
-    float R_total = deltaV_total / I_load;
+// Number of samples used to characterize settled current.
+static constexpr size_t FINAL_SAMPLE_COUNT = 8;
 
-    float R_ct = std::max(0.01f, R_total - R_ohmic);
-    float tau_rc = std::max(0.05f, std::min(1.5f, stepTime_s * 0.25f));
+// Current stability requirement in the final region (0.02 = 2%).
+static constexpr float MAX_FINAL_CURRENT_RELATIVE_SPREAD = 0.02f;
 
-    float C_dl = tau_rc / std::max(0.001f, R_ct);
-    if (C_dl < 0.05f) C_dl = 0.05f;
-    if (C_dl > 50.0f) C_dl = 50.0f;
+// Minimum acceptable coefficient of determination.
+static constexpr float MIN_FIT_R2 = 0.95f;
 
-    float surfaceProxy = C_dl / 1.0f;
+// Require enough measurement duration to observe most of the RC transient.
+static constexpr float MIN_TIME_SPAN_TO_TAU = 4.0f;
 
-    float requiredDelayS = 3.5f * tau_rc;
-    unsigned long adaptiveDelayMs = static_cast<unsigned long>(requiredDelayS * 1000.0f);
-    if (adaptiveDelayMs < 600) adaptiveDelayMs = 600;
-    if (adaptiveDelayMs > 3500) adaptiveDelayMs = 3500;
+// Search limits for tau.
+static constexpr float MIN_TAU_S = 0.001f;
+static constexpr float MAX_TAU_S = 100.0f;
+
+// Physical sanity limits.
+static constexpr float MIN_RESISTANCE_OHM = 1.0e-6f;
+static constexpr float MAX_RESISTANCE_OHM = 1.0e6f;
+
+static constexpr float MIN_CAPACITANCE_F = 1.0e-9f;
+static constexpr float MAX_CAPACITANCE_F = 1.0e9f;
+
+// Use 3.5 tau for ~97% settling.
+static constexpr float SETTLING_TAU_MULTIPLIER = 3.5f;
+
+// Maximum delay allowed for the caller.
+static constexpr uint32_t MAX_ADAPTIVE_DELAY_MS = 600000UL;
+
+// Number of points in the initial logarithmic tau search.
+static constexpr int TAU_GRID_POINTS = 80;
+
+static bool finiteFloat(float x)
+{
+    return std::isfinite(x);
+}
+
+static bool rangeMean(
+    const float *values,
+    size_t begin,
+    size_t end,
+    float &result)
+{
+    if (!values || end <= begin)
+        return false;
+
+    double sum = 0.0;
+
+    for (size_t i = begin; i < end; ++i)
+    {
+        if (!finiteFloat(values[i]))
+            return false;
+
+        sum += values[i];
+    }
+
+    result = (float)(sum / (double)(end - begin));
+    return finiteFloat(result);
+}
+
+static bool checkFinalCurrentStability(
+    const float *current,
+    size_t count,
+    float &finalCurrent)
+{
+    if (!current || count < FINAL_SAMPLE_COUNT)
+        return false;
+
+    const size_t begin = count - FINAL_SAMPLE_COUNT;
+
+    float mean = 0.0f;
+
+    if (!rangeMean(current, begin, count, mean))
+        return false;
+
+    float minI = current[begin];
+    float maxI = current[begin];
+
+    for (size_t i = begin; i < count; ++i)
+    {
+        if (!finiteFloat(current[i]))
+            return false;
+
+        if (current[i] < minI)
+            minI = current[i];
+
+        if (current[i] > maxI)
+            maxI = current[i];
+    }
+
+    const float denominator = fmaxf(fabsf(mean), 1.0e-6f);
+    const float relativeSpread =
+        (maxI - minI) / denominator;
+
+    finalCurrent = mean;
+
+    return relativeSpread <= MAX_FINAL_CURRENT_RELATIVE_SPREAD;
+}
+
+static bool fitForTau(
+    const float *t,
+    const float *v,
+    size_t n,
+    float tau,
+    float &c,
+    float &A,
+    float &sse)
+{
+    if (!t || !v || n < MIN_ELECTRODE_SAMPLES)
+        return false;
+
+    if (!finiteFloat(tau) || tau <= 0.0f)
+        return false;
+
+    double sumX = 0.0;
+    double sumY = 0.0;
+    double sumXX = 0.0;
+    double sumXY = 0.0;
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        const float dt = t[i] - t[0];
+
+        if (!finiteFloat(dt) || !finiteFloat(v[i]) || dt < 0.0f)
+            return false;
+
+        const float exponent = -dt / tau;
+
+        float x;
+
+        if (exponent < -80.0f)
+            x = 0.0f;
+        else
+            x = expf(exponent);
+
+        if (!finiteFloat(x))
+            return false;
+
+        const double xd = x;
+        const double yd = v[i];
+
+        sumX += xd;
+        sumY += yd;
+        sumXX += xd * xd;
+        sumXY += xd * yd;
+    }
+
+    const double nd = (double)n;
+
+    const double denominator =
+        nd * sumXX - sumX * sumX;
+
+    if (fabs(denominator) < 1.0e-15)
+        return false;
+
+    const double Ad =
+        (nd * sumXY - sumX * sumY) / denominator;
+
+    const double cd =
+        (sumY - Ad * sumX) / nd;
+
+    if (!std::isfinite(Ad) || !std::isfinite(cd))
+        return false;
+
+    double error = 0.0;
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        const float dt = t[i] - t[0];
+        const float exponent = -dt / tau;
+
+        float x =
+            (exponent < -80.0f)
+            ? 0.0f
+            : expf(exponent);
+
+        const double predicted =
+            cd + Ad * (double)x;
+
+        const double residual =
+            (double)v[i] - predicted;
+
+        error += residual * residual;
+    }
+
+    if (!std::isfinite(error))
+        return false;
+
+    c = (float)cd;
+    A = (float)Ad;
+    sse = (float)error;
+
+    return finiteFloat(c) &&
+           finiteFloat(A) &&
+           finiteFloat(sse);
+}
+
+static bool findBestTau(
+    const float *t,
+    const float *v,
+    size_t n,
+    float minTau,
+    float maxTau,
+    float &bestTau,
+    float &bestSSE)
+{
+    if (minTau <= 0.0f ||
+        maxTau <= minTau)
+        return false;
+
+    const float logMin = logf(minTau);
+    const float logMax = logf(maxTau);
+
+    bestSSE = INFINITY;
+    bestTau = NAN;
+
+    for (int k = 0; k < TAU_GRID_POINTS; ++k)
+    {
+        const float fraction =
+            (float)k / (float)(TAU_GRID_POINTS - 1);
+
+        const float logTau =
+            logMin + fraction * (logMax - logMin);
+
+        const float tau = expf(logTau);
+
+        float c, A, sse;
+
+        if (!fitForTau(
+                t,
+                v,
+                n,
+                tau,
+                c,
+                A,
+                sse))
+        {
+            continue;
+        }
+
+        if (sse < bestSSE)
+        {
+            bestSSE = sse;
+            bestTau = tau;
+        }
+    }
+
+    return finiteFloat(bestTau) &&
+           finiteFloat(bestSSE);
+}
+
+static bool refineTau(
+    const float *t,
+    const float *v,
+    size_t n,
+    float lowerTau,
+    float upperTau,
+    float &bestTau,
+    float &bestSSE)
+{
+    if (lowerTau <= 0.0f ||
+        upperTau <= lowerTau)
+        return false;
+
+    float a = logf(lowerTau);
+    float b = logf(upperTau);
+
+    const float phi =
+        0.6180339887498948482f;
+
+    float c = b - phi * (b - a);
+    float d = a + phi * (b - a);
+
+    auto evaluateLogTau =
+        [&](float logTau, float &sse) -> bool
+    {
+        const float tau = expf(logTau);
+
+        float fitC, fitA;
+
+        return fitForTau(
+            t,
+            v,
+            n,
+            tau,
+            fitC,
+            fitA,
+            sse);
+    };
+
+    float fc, fd;
+
+    if (!evaluateLogTau(c, fc) ||
+        !evaluateLogTau(d, fd))
+    {
+        return false;
+    }
+
+    for (int iteration = 0;
+         iteration < 48;
+         ++iteration)
+    {
+        if (fc < fd)
+        {
+            b = d;
+            d = c;
+            fd = fc;
+
+            c = b - phi * (b - a);
+
+            if (!evaluateLogTau(c, fc))
+                return false;
+        }
+        else
+        {
+            a = c;
+            c = d;
+            fc = fd;
+
+            d = a + phi * (b - a);
+
+            if (!evaluateLogTau(d, fd))
+                return false;
+        }
+    }
+
+    const float logTau =
+        0.5f * (a + b);
+
+    const float tau =
+        expf(logTau);
+
+    float finalC, finalA, finalSSE;
+
+    if (!fitForTau(
+            t,
+            v,
+            n,
+            tau,
+            finalC,
+            finalA,
+            finalSSE))
+    {
+        return false;
+    }
+
+    bestTau = tau;
+    bestSSE = finalSSE;
+
+    return finiteFloat(bestTau) &&
+           finiteFloat(bestSSE);
+}
+
+static bool calculateFitQuality(
+    const float *t,
+    const float *v,
+    size_t n,
+    float tau,
+    float &c,
+    float &A,
+    float &r2,
+    float &rmse)
+{
+    float sse;
+
+    if (!fitForTau(
+            t,
+            v,
+            n,
+            tau,
+            c,
+            A,
+            sse))
+    {
+        return false;
+    }
+
+    double meanV = 0.0;
+
+    for (size_t i = 0; i < n; ++i)
+        meanV += v[i];
+
+    meanV /= (double)n;
+
+    double sst = 0.0;
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        const double d =
+            (double)v[i] - meanV;
+
+        sst += d * d;
+    }
+
+    if (sst <= 1.0e-20)
+        return false;
+
+    r2 =
+        1.0f - sse / (float)sst;
+
+    rmse =
+        sqrtf(sse / (float)n);
+
+    return finiteFloat(r2) &&
+           finiteFloat(rmse);
+}
+
+bool evaluateElectrodeParameters(
+    const ElectrodeTransient &measurement)
+{
+    ElectrodeParameters result;
+
+    if (!measurement.time_s ||
+        !measurement.voltage_V ||
+        !measurement.current_A)
+    {
+        Serial.println(
+            "Electrode characterization: null data pointer.");
+        return false;
+    }
+
+    if (measurement.count < MIN_ELECTRODE_SAMPLES)
+    {
+        Serial.println(
+            "Electrode characterization: insufficient samples.");
+        return false;
+    }
+
+    if (!finiteFloat(measurement.v_unloaded) ||
+        !finiteFloat(measurement.i_before_A))
+    {
+        Serial.println(
+            "Electrode characterization: invalid baseline.");
+        return false;
+    }
+
+    for (size_t i = 0;
+         i < measurement.count;
+         ++i)
+    {
+        if (!finiteFloat(measurement.time_s[i]) ||
+            !finiteFloat(measurement.voltage_V[i]) ||
+            !finiteFloat(measurement.current_A[i]))
+        {
+            Serial.printf(
+                "Electrode characterization: invalid sample %u.\n",
+                (unsigned)i);
+
+            return false;
+        }
+
+        if (i > 0 &&
+            measurement.time_s[i] <=
+            measurement.time_s[i - 1])
+        {
+            Serial.println(
+                "Electrode characterization: timestamps are not strictly increasing.");
+            return false;
+        }
+    }
+
+    const float measurementDuration =
+        measurement.time_s[measurement.count - 1] -
+        measurement.time_s[0];
+
+    if (!finiteFloat(measurementDuration) ||
+        measurementDuration <= 0.0f)
+    {
+        Serial.println(
+            "Electrode characterization: invalid time span.");
+        return false;
+    }
+
+    float finalCurrent = NAN;
+
+    const bool currentStable =
+        checkFinalCurrentStability(
+            measurement.current_A,
+            measurement.count,
+            finalCurrent);
+
+    result.currentStable = currentStable;
+
+    if (!currentStable)
+    {
+        Serial.println(
+            "Electrode characterization: final current is not stable.");
+        return false;
+    }
+
+    const float deltaI =
+        finalCurrent -
+        measurement.i_before_A;
+
+    result.deltaI_A = deltaI;
+
+    if (!finiteFloat(deltaI) ||
+        fabsf(deltaI) < MEASURABLE_CURRENT_THRESHOLD)
+    {
+        Serial.printf(
+            "Electrode characterization: current step too small: %.6f A\n",
+            deltaI);
+
+        return false;
+    }
+
+    const size_t initialCount =
+        (measurement.count < INITIAL_SAMPLE_COUNT)
+        ? measurement.count
+        : INITIAL_SAMPLE_COUNT;
+
+    float V0Measured = NAN;
+
+    if (!rangeMean(
+            measurement.voltage_V,
+            0,
+            initialCount,
+            V0Measured))
+    {
+        Serial.println(
+            "Electrode characterization: failed initial voltage calculation.");
+        return false;
+    }
+
+    const float maximumIdentifiableTau =
+        measurementDuration / MIN_TIME_SPAN_TO_TAU;
+
+    result.sufficientTime =
+        maximumIdentifiableTau >= MIN_TAU_S;
+
+    if (!result.sufficientTime)
+    {
+        Serial.printf(
+            "Electrode characterization: measurement too short: %.6f s\n",
+            measurementDuration);
+
+        return false;
+    }
+
+    const float tauUpper =
+        fminf(
+            MAX_TAU_S,
+            maximumIdentifiableTau);
+
+    const float tauLower =
+        MIN_TAU_S;
+
+    if (tauUpper <= tauLower)
+    {
+        Serial.println(
+            "Electrode characterization: invalid tau search interval.");
+        return false;
+    }
+
+    float coarseTau = NAN;
+    float coarseSSE = NAN;
+
+    if (!findBestTau(
+            measurement.time_s,
+            measurement.voltage_V,
+            measurement.count,
+            tauLower,
+            tauUpper,
+            coarseTau,
+            coarseSSE))
+    {
+        Serial.println(
+            "Electrode characterization: tau search failed.");
+        return false;
+    }
+
+    const float gridRatio =
+        expf(
+            (logf(tauUpper) - logf(tauLower)) /
+            (float)(TAU_GRID_POINTS - 1));
+
+    float refineLower =
+        coarseTau / gridRatio;
+
+    float refineUpper =
+        coarseTau * gridRatio;
+
+    refineLower =
+        fmaxf(tauLower, refineLower);
+
+    refineUpper =
+        fminf(tauUpper, refineUpper);
+
+    float fittedTau = NAN;
+    float fittedSSE = NAN;
+
+    if (!refineTau(
+            measurement.time_s,
+            measurement.voltage_V,
+            measurement.count,
+            refineLower,
+            refineUpper,
+            fittedTau,
+            fittedSSE))
+    {
+        fittedTau = coarseTau;
+        fittedSSE = coarseSSE;
+    }
+
+    float VInfinity = NAN;
+    float amplitude = NAN;
+    float fitR2 = NAN;
+    float fitRMSE = NAN;
+
+    if (!calculateFitQuality(
+            measurement.time_s,
+            measurement.voltage_V,
+            measurement.count,
+            fittedTau,
+            VInfinity,
+            amplitude,
+            fitR2,
+            fitRMSE))
+    {
+        Serial.println(
+            "Electrode characterization: final fit quality calculation failed.");
+        return false;
+    }
+
+    result.fitR2 = fitR2;
+    result.fitRMSE_V = fitRMSE;
+    result.fittedVInfinity = VInfinity;
+    result.fittedAmplitude = amplitude;
+    result.tau_rc = fittedTau;
+
+    if (fitR2 < MIN_FIT_R2)
+    {
+        Serial.printf(
+            "Electrode characterization: poor RC fit, R2=%.5f\n",
+            fitR2);
+
+        return false;
+    }
+
+    result.fitValid = true;
+
+    const float fittedV0 =
+        VInfinity + amplitude;
+
+    if (!finiteFloat(fittedV0))
+    {
+        Serial.println(
+            "Electrode characterization: invalid fitted initial voltage.");
+        return false;
+    }
+
+    result.fittedV0 = fittedV0;
+
+    const float deltaVOhmic =
+        fittedV0 -
+        measurement.v_unloaded;
+
+    const float RohmicSigned =
+        deltaVOhmic /
+        deltaI;
+
+    const float Rohmic =
+        fabsf(RohmicSigned);
+
+    if (!finiteFloat(Rohmic) ||
+        Rohmic < MIN_RESISTANCE_OHM ||
+        Rohmic > MAX_RESISTANCE_OHM)
+    {
+        Serial.printf(
+            "Electrode characterization: invalid Rohmic=%.9f Ohm\n",
+            Rohmic);
+
+        return false;
+    }
+
+    result.R_ohmic = Rohmic;
+
+    const float Rct =
+        fabsf(amplitude / deltaI);
+
+    if (!finiteFloat(Rct) ||
+        Rct < MIN_RESISTANCE_OHM ||
+        Rct > MAX_RESISTANCE_OHM)
+    {
+        Serial.printf(
+            "Electrode characterization: invalid Rct=%.9f Ohm\n",
+            Rct);
+
+        return false;
+    }
+
+    result.R_ct = Rct;
+
+    const float Cdl =
+        fittedTau / Rct;
+
+    if (!finiteFloat(Cdl) ||
+        Cdl < MIN_CAPACITANCE_F ||
+        Cdl > MAX_CAPACITANCE_F)
+    {
+        Serial.printf(
+            "Electrode characterization: invalid Cdl=%.9e F\n",
+            Cdl);
+
+        return false;
+    }
+
+    result.C_dl = Cdl;
+
+    if (measurement.specificCdl_F_per_m2 > 0.0f &&
+        finiteFloat(measurement.specificCdl_F_per_m2))
+    {
+        const float area =
+            Cdl /
+            measurement.specificCdl_F_per_m2;
+
+        if (finiteFloat(area) &&
+            area > 0.0f &&
+            area < 1.0e9f)
+        {
+            result.activeSurfaceAreaM2 = area;
+        }
+
+        result.activeSurfaceAreaProxy =
+            result.activeSurfaceAreaM2;
+    }
+    else
+    {
+        result.activeSurfaceAreaM2 = NAN;
+        result.activeSurfaceAreaProxy = Cdl;
+    }
+
+    const float requiredDelayS =
+        SETTLING_TAU_MULTIPLIER *
+        fittedTau;
+
+    if (!finiteFloat(requiredDelayS) ||
+        requiredDelayS <= 0.0f)
+    {
+        Serial.println(
+            "Electrode characterization: invalid settling delay.");
+        return false;
+    }
+
+    const double delayMsDouble =
+        (double)requiredDelayS *
+        1000.0;
+
+    result.delayLimited =
+        delayMsDouble >
+        (double)MAX_ADAPTIVE_DELAY_MS;
+
+    if (result.delayLimited)
+    {
+        result.adaptiveDelayMs =
+            MAX_ADAPTIVE_DELAY_MS;
+    }
+    else
+    {
+        result.adaptiveDelayMs =
+            (uint32_t)ceil(delayMsDouble);
+    }
+
+    bool physicalOK = true;
+
+    const float totalPolarization =
+        fabsf(amplitude);
+
+    if (!finiteFloat(totalPolarization))
+        physicalOK = false;
+
+    if (totalPolarization < 1.0e-6f)
+        physicalOK = false;
+
+    const float signalSpan =
+        fmaxf(
+            fabsf(V0Measured - VInfinity),
+            1.0e-6f);
+
+    if (fitRMSE > signalSpan * 0.25f)
+        physicalOK = false;
+
+    if (!physicalOK)
+    {
+        Serial.println(
+            "Electrode characterization: physical consistency check failed.");
+        return false;
+    }
+
+    result.physicallyValid = true;
 
     WEB_LOCK();
-    g_electrode.R_ohmic = R_ohmic;
-    g_electrode.R_ct = R_ct;
-    g_electrode.C_dl = C_dl;
-    g_electrode.tau_rc = tau_rc;
-    g_electrode.activeSurfaceAreaProxy = surfaceProxy;
-    g_electrode.adaptiveDelayMs = adaptiveDelayMs;
+
+    g_electrode = result;
     g_electrode.evaluated = true;
+
     WEB_UNLOCK();
 
-    Serial.printf("Electrode Params Evaluated: R_ohmic=%.4f, R_ct=%.4f, Tau_RC=%.3fs, C_dl=%.3fF, ActiveAreaProxy=%.2f, AdaptiveDelay=%lu ms\n",
-                  R_ohmic, R_ct, tau_rc, C_dl, surfaceProxy, adaptiveDelayMs);
+    Serial.println("");
+    Serial.println("========== ELECTRODE CHARACTERIZATION ==========");
+
+    Serial.printf(
+        "Samples              : %u\n",
+        (unsigned)measurement.count);
+
+    Serial.printf(
+        "Measurement span     : %.6f s\n",
+        measurementDuration);
+
+    Serial.printf(
+        "Initial voltage      : %.6f V\n",
+        measurement.v_unloaded);
+
+    Serial.printf(
+        "Fitted V(0+)         : %.6f V\n",
+        fittedV0);
+
+    Serial.printf(
+        "Fitted V(infinity)   : %.6f V\n",
+        VInfinity);
+
+    Serial.printf(
+        "Fitted amplitude     : %.6f V\n",
+        amplitude);
+
+    Serial.printf(
+        "Current before       : %.6f A\n",
+        measurement.i_before_A);
+
+    Serial.printf(
+        "Current final        : %.6f A\n",
+        finalCurrent);
+
+    Serial.printf(
+        "Delta I              : %.6f A\n",
+        deltaI);
+
+    Serial.printf(
+        "R_ohmic              : %.9f Ohm\n",
+        result.R_ohmic);
+
+    Serial.printf(
+        "R_ct / R_pol         : %.9f Ohm\n",
+        result.R_ct);
+
+    Serial.printf(
+        "Tau                  : %.6f s\n",
+        result.tau_rc);
+
+    Serial.printf(
+        "C_dl                 : %.9e F\n",
+        result.C_dl);
+
+    if (finiteFloat(result.activeSurfaceAreaM2))
+    {
+        Serial.printf(
+            "Active area          : %.9e m^2\n",
+            result.activeSurfaceAreaM2);
+    }
+    else
+    {
+        Serial.println(
+            "Active area          : not calibrated");
+    }
+
+    Serial.printf(
+        "Fit R2               : %.6f\n",
+        result.fitR2);
+
+    Serial.printf(
+        "Fit RMSE             : %.9f V\n",
+        result.fitRMSE_V);
+
+    Serial.printf(
+        "Adaptive delay       : %lu ms%s\n",
+        (unsigned long)result.adaptiveDelayMs,
+        result.delayLimited ? " (LIMITED)" : "");
+
+    Serial.printf(
+        "Current stable       : %s\n",
+        result.currentStable ? "YES" : "NO");
+
+    Serial.printf(
+        "RC fit valid         : %s\n",
+        result.fitValid ? "YES" : "NO");
+
+    Serial.printf(
+        "Physical validity    : %s\n",
+        result.physicallyValid ? "YES" : "NO");
+
+    Serial.println(
+        "================================================");
+    Serial.println("");
+
+    return true;
+}
+
+bool evaluateElectrodeParameters(
+    const float *time_s,
+    const float *voltage_V,
+    const float *current_A,
+    size_t count,
+    float v_unloaded,
+    float i_before_A,
+    float specificCdl_F_per_m2)
+{
+    ElectrodeTransient measurement;
+
+    measurement.time_s = time_s;
+    measurement.voltage_V = voltage_V;
+    measurement.current_A = current_A;
+    measurement.count = count;
+    measurement.v_unloaded = v_unloaded;
+    measurement.i_before_A = i_before_A;
+    measurement.specificCdl_F_per_m2 =
+        specificCdl_F_per_m2;
+
+    return evaluateElectrodeParameters(measurement);
 }
 
 // Helper function to initiate measurement
