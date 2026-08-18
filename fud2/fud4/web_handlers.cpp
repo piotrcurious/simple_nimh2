@@ -22,34 +22,73 @@ extern AsyncWebSocket ws;
 extern void setAppState(AppState s);
 extern void setBuildModelPhase(BuildModelPhase p);
 
-#ifndef MOCK_TEST
-inline AsyncWebSocketClient* resolve_client(AsyncWebSocketClient* c) { return c; }
-inline AsyncWebSocketClient* resolve_client(AsyncWebSocketClient& c) { return &c; }
-#endif
+template <typename T>
+inline AsyncWebSocketClient* resolve_client(T* c) { return c; }
+
+template <typename T>
+inline AsyncWebSocketClient* resolve_client(T& c) { return &c; }
+
+constexpr size_t WS_STATE_HIGH_WATER     = 8;
+constexpr size_t WS_TELEMETRY_HIGH_WATER = 4;
+constexpr size_t WS_LOG_HIGH_WATER       = 4;
+constexpr size_t MAX_COMMAND_LENGTH      = 32;
 
 // Helper to check if a client is healthy enough to receive data
-static bool canSend(AsyncWebSocketClient *client) {
+static bool clientReadyForMessage(AsyncWebSocketClient *client, size_t maxQueueLen = WS_STATE_HIGH_WATER) {
     if (!client || client->status() != WS_CONNECTED) return false;
-    return client->queueLen() < 16;
+    return client->queueLen() < maxQueueLen;
 }
 
-struct CborWriter {
-    std::vector<uint8_t> data;
-    bool overflow = false;
+class CborWriter {
+private:
+    uint8_t* buffer_;
+    size_t capacity_;
+    size_t pos_;
+    bool overflow_;
+    std::vector<uint8_t>* vec_owned_;
 
-    bool ok() const { return !overflow; }
+public:
+    CborWriter(uint8_t* buf, size_t cap)
+        : buffer_(buf), capacity_(cap), pos_(0), overflow_(false), vec_owned_(nullptr) {}
 
-    void reserve(size_t n) {
-        data.reserve(n);
+    CborWriter(std::vector<uint8_t>& vec)
+        : buffer_(nullptr), capacity_(0), pos_(0), overflow_(false), vec_owned_(&vec) {}
+
+    bool ok() const { return !overflow_; }
+    size_t size() const { return vec_owned_ ? vec_owned_->size() : pos_; }
+    const uint8_t* data() const { return vec_owned_ ? vec_owned_->data() : buffer_; }
+
+    bool put(uint8_t b) {
+        if (overflow_) return false;
+        if (vec_owned_) {
+            vec_owned_->push_back(b);
+            return true;
+        }
+        if (pos_ >= capacity_) {
+            overflow_ = true;
+            return false;
+        }
+        buffer_[pos_++] = b;
+        return true;
     }
-    void put(uint8_t b) {
-        data.push_back(b);
+
+    bool putBytes(const void* p, size_t n) {
+        if (overflow_) return false;
+        if (!p || n == 0) return true;
+        if (vec_owned_) {
+            const uint8_t* b = static_cast<const uint8_t*>(p);
+            vec_owned_->insert(vec_owned_->end(), b, b + n);
+            return true;
+        }
+        if (n > capacity_ - pos_) {
+            overflow_ = true;
+            return false;
+        }
+        memcpy(buffer_ + pos_, p, n);
+        pos_ += n;
+        return true;
     }
-    void putBytes(const void* p, size_t n) {
-        if (!p || n == 0) return;
-        const uint8_t* b = static_cast<const uint8_t*>(p);
-        data.insert(data.end(), b, b + n);
-    }
+
     void addTypeVal(uint8_t major, uint64_t val) {
         if (val < 24) put((major << 5) | (uint8_t)val);
         else if (val <= 0xFF) { put((major << 5) | 24); put((uint8_t)val); }
@@ -68,6 +107,7 @@ struct CborWriter {
             for (int i = 7; i >= 0; i--) put((uint8_t)(val >> (8 * i)));
         }
     }
+
     void addUInt(uint64_t v) { addTypeVal(0, v); }
     void addInt(int64_t v) {
         if (v >= 0) addUInt((uint64_t)v);
@@ -104,6 +144,10 @@ static void cborAddFloatArray(CborWriter& w, const float* arr, int len) {
 }
 
 static void cborAddXYPairs(CborWriter& w, const float data[][2], int count) {
+    if (!data || count <= 0) {
+        w.startArray(0);
+        return;
+    }
     w.startArray(count);
     for (int i = 0; i < count; i++) {
         w.startArray(2);
@@ -213,11 +257,11 @@ struct IRSnapshot {
 
 static void getSnapshotIR(IRSnapshot& ir) {
     WEB_LOCK();
-    ir.luCount = std::min(resistanceDataCount, (int)MAX_RESISTANCE_POINTS);
+    ir.luCount = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
     if (ir.luCount > 0) {
         memcpy(ir.lu, internalResistanceData, sizeof(float) * 2 * ir.luCount);
     }
-    ir.pairsCount = std::min(resistanceDataCountPairs, (int)MAX_RESISTANCE_POINTS);
+    ir.pairsCount = std::clamp(resistanceDataCountPairs, 0, (int)MAX_RESISTANCE_POINTS);
     if (ir.pairsCount > 0) {
         memcpy(ir.pairs, internalResistanceDataPairs, sizeof(float) * 2 * ir.pairsCount);
     }
@@ -231,64 +275,69 @@ static void appendCborIR(CborWriter& w, const IRSnapshot& ir) {
 }
 
 static void sendCborState(AsyncWebSocketClient *client) {
-    if (!canSend(client)) return;
+    if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
     StateSnapshot state = getSnapshotState();
-    CborWriter w;
-    w.reserve(256);
+    uint8_t buffer[256];
+    CborWriter w(buffer, sizeof(buffer));
     appendCborState(w, state);
-    if (w.ok() && !w.data.empty()) {
-        client->binary(w.data.data(), w.data.size());
+    if (w.ok() && w.size() > 0) {
+        client->binary(w.data(), w.size());
     }
 }
 
 static void sendCborHistory(AsyncWebSocketClient *client) {
-    if (!canSend(client)) return;
+    if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
     HistorySnapshot history;
     getSnapshotHistory(history);
-    CborWriter w;
-    w.reserve(PLOT_WIDTH * 5 * 8 + 32);
+    std::vector<uint8_t> vec;
+    vec.reserve(PLOT_WIDTH * 5 * 8 + 32);
+    CborWriter w(vec);
     appendCborHistory(w, history);
-    if (w.ok() && !w.data.empty()) {
-        client->binary(w.data.data(), w.data.size());
+    if (w.ok() && w.size() > 0) {
+        client->binary(w.data(), w.size());
     }
 }
 
 static void sendCborAmbient(AsyncWebSocketClient *client) {
-    if (!canSend(client)) return;
+    if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
     AmbientSnapshot ambient;
     getSnapshotAmbient(ambient);
-    CborWriter w;
-    w.reserve(PLOT_WIDTH * 3 * 8 + 32);
+    std::vector<uint8_t> vec;
+    vec.reserve(PLOT_WIDTH * 3 * 8 + 32);
+    CborWriter w(vec);
     appendCborAmbient(w, ambient);
-    if (w.ok() && !w.data.empty()) {
-        client->binary(w.data.data(), w.data.size());
+    if (w.ok() && w.size() > 0) {
+        client->binary(w.data(), w.size());
     }
 }
 
 static void sendCborIR(AsyncWebSocketClient *client) {
-    if (!canSend(client)) return;
+    if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
     IRSnapshot ir;
     getSnapshotIR(ir);
-    CborWriter w;
-    w.reserve(256 + (ir.luCount + ir.pairsCount) * 24);
+    std::vector<uint8_t> vec;
+    vec.reserve(256 + (ir.luCount + ir.pairsCount) * 24);
+    CborWriter w(vec);
     appendCborIR(w, ir);
-    if (w.ok() && !w.data.empty()) {
-        client->binary(w.data.data(), w.data.size());
+    if (w.ok() && w.size() > 0) {
+        client->binary(w.data(), w.size());
     }
 }
 
 static void sendCborChargeLog(AsyncWebSocketClient *client) {
-    if (!canSend(client)) return;
+    if (!clientReadyForMessage(client, WS_LOG_HIGH_WATER)) return;
 
     size_t total = 0;
     WEB_LOCK();
     total = chargeLog.size();
     WEB_UNLOCK();
 
+    if (total == 0) return;
+
     const size_t batchSize = 100;
 
     for (size_t i = 0; i < total; i += batchSize) {
-        if (client->queueLen() > 8) {
+        if (client->queueLen() >= WS_LOG_HIGH_WATER) {
             Serial.printf("Aborting CBOR log stream for client %u due to backed up queue.\n", client->id());
             break;
         }
@@ -298,15 +347,17 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
 
         WEB_LOCK();
         size_t currentSize = chargeLog.size();
-        for (size_t j = 0; j < batchSize && (i + j) < currentSize; j++) {
+        size_t batchTotal = std::min(total, currentSize);
+        for (size_t j = 0; j < batchSize && (i + j) < batchTotal; j++) {
             batchEntries.push_back(chargeLog[i + j]);
         }
         WEB_UNLOCK();
 
         if (batchEntries.empty()) break;
 
-        CborWriter w;
-        w.reserve(batchEntries.size() * 150 + 64);
+        std::vector<uint8_t> vec;
+        vec.reserve(batchEntries.size() * 150 + 64);
+        CborWriter w(vec);
         w.startMap(3);
         w.addText("offset"); w.addUInt(i);
         w.addText("batch"); w.startArray(batchEntries.size());
@@ -328,25 +379,26 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
             w.addText("th");   w.addFloat(thresholdValue);
         }
         w.addText("total"); w.addUInt(total);
-        if (w.ok() && !w.data.empty()) {
-            client->binary(w.data.data(), w.data.size());
+        if (w.ok() && w.size() > 0) {
+            client->binary(w.data(), w.size());
         }
     }
 }
 
 static void sendCborRoot(AsyncWebSocketClient *client) {
-    if (!canSend(client)) return;
+    if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
     StateSnapshot state = getSnapshotState();
     AmbientSnapshot ambient;
     getSnapshotAmbient(ambient);
 
-    CborWriter w;
-    w.reserve(1024);
+    std::vector<uint8_t> vec;
+    vec.reserve(PLOT_WIDTH * 3 * 8 + 384);
+    CborWriter w(vec);
     w.startMap(2);
     w.addText("state");   appendCborState(w, state);
     w.addText("ambient"); appendCborAmbient(w, ambient);
-    if (w.ok() && !w.data.empty()) {
-        client->binary(w.data.data(), w.data.size());
+    if (w.ok() && w.size() > 0) {
+        client->binary(w.data(), w.size());
     }
 }
 
@@ -367,7 +419,7 @@ static bool cmdMatch(const char* data, size_t len, const char* target) {
 }
 
 static void processCommandRaw(const char* data, size_t len, AsyncWebSocketClient *client = nullptr) {
-    if (!data || len == 0) return;
+    if (!data || len == 0 || len > MAX_COMMAND_LENGTH) return;
 
     if (cmdMatch(data, len, "REQ_STATE")) { sendCborState(client); return; }
     if (cmdMatch(data, len, "REQ_HISTORY")) { sendCborHistory(client); return; }
@@ -418,8 +470,7 @@ void handleCommand(AsyncWebServerRequest *request) {
 void handleWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
     if (type == WS_EVT_CONNECT) {
         Serial.printf("WS Client connected [%u]\n", client->id());
-        sendCborState(client);
-        sendCborAmbient(client);
+        sendCborRoot(client);
     } else if (type == WS_EVT_DISCONNECT) {
         uint16_t reason = 0;
         if (arg != nullptr) {
@@ -428,7 +479,7 @@ void handleWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, 
         Serial.printf("WS Disconnect [%u] Reason: %u\n", client->id(), reason);
     } else if (type == WS_EVT_DATA) {
         AwsFrameInfo *info = (AwsFrameInfo*)arg;
-        if (info && info->final && info->index == 0 && info->len == len) {
+        if (info && info->final && info->index == 0 && info->len == len && len <= MAX_COMMAND_LENGTH) {
             if (info->opcode == WS_TEXT) {
                 processCommandRaw((const char*)data, len, client);
             }
@@ -442,23 +493,22 @@ void broadcastLiveTelemetry() {
     if ((uint32_t)(now - lastBroadcast) < 1000U) return;
     lastBroadcast = now;
 
-    if (ws.count() == 0) return;
-
     ws.cleanupClients();
+    if (ws.count() == 0) return;
 
     StateSnapshot state = getSnapshotState();
 
-    CborWriter w;
-    w.reserve(256);
+    uint8_t buffer[256];
+    CborWriter w(buffer, sizeof(buffer));
     appendCborState(w, state);
 
-    if (!w.ok() || w.data.empty()) return;
+    if (!w.ok() || w.size() == 0) return;
 
     for (auto & c : ws.getClients()) {
         AsyncWebSocketClient* client = resolve_client(c);
         if (client && client->status() == WS_CONNECTED) {
-            if (client->queueLen() < 4) {
-                client->binary(w.data.data(), w.data.size());
+            if (client->queueLen() < WS_TELEMETRY_HIGH_WATER) {
+                client->binary(w.data(), w.size());
             }
         }
     }
