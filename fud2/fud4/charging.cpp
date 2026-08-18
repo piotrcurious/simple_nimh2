@@ -1104,7 +1104,7 @@ bool chargeBattery() {
 
                 auto get_lagged_overpotential = [](size_t i, uint32_t target_time) -> float {
                     if (i == 0 || s_thermalHistory.empty()) return -1.0f;
-                    if (s_thermalHistory[0].timestamp > target_time + 3000) return -1.0f;
+                    if (s_thermalHistory[0].timestamp > target_time) return -1.0f;
                     for (size_t j = i; j > 0; --j) {
                         size_t idx = j - 1;
                         uint32_t ts_curr = s_thermalHistory[idx].timestamp;
@@ -1125,7 +1125,7 @@ bool chargeBattery() {
 
                 // Pass 1: compute averages for the lagged samples in the 5-minute window
                 for (size_t i = 1; i < s_thermalHistory.size(); ++i) {
-                    if (now - s_thermalHistory[i].timestamp < 300000) {
+                    if (now - s_thermalHistory[i].timestamp < 300000 && s_thermalHistory[i].timestamp >= 10000) {
                         float div = s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp;
                         float over = get_lagged_overpotential(i, s_thermalHistory[i].timestamp - 10000);
                         if (over >= 0.0f) {
@@ -1141,7 +1141,7 @@ bool chargeBattery() {
 
                 // Pass 2: compute covariance and variances
                 for (size_t i = 1; i < s_thermalHistory.size(); ++i) {
-                    if (now - s_thermalHistory[i].timestamp < 300000) {
+                    if (now - s_thermalHistory[i].timestamp < 300000 && s_thermalHistory[i].timestamp >= 10000) {
                         float over = get_lagged_overpotential(i, s_thermalHistory[i].timestamp - 10000);
                         if (over >= 0.0f) {
                             float devDiv = (s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp) - avgLaggedDivergence;
