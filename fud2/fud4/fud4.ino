@@ -97,6 +97,10 @@ volatile float noiseFloorMv = 0;
 volatile float estimatedTauThermal = 45.0f; // Default thermal time constant in seconds
 volatile float estimatedTauSHT = 10.0f;    // SHT4x typical thermal response lag in seconds
 volatile float estimatedTauTherm = 5.0f;   // Thermistor 1 typical thermal response lag in seconds
+volatile float estimatedConvectiveH = DEFAULT_CONVECTIVE_H;
+volatile float estimatedThermalResistance = 1.0f / (DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT / 45.0f);
+volatile float estimatedThermalCapacitance = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+volatile float estimatedThermalConductance = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT / 45.0f;
 std::vector<float> dutyCycles;
 std::vector<float> currents;
 
@@ -363,13 +367,20 @@ static unsigned long lastCooloffSampleTime = 0;
 static double heatingPowerSum = 0.0;
 static unsigned int heatingPowerCount = 0;
 
-static int characIteration = 0; // Iterates 3 times
+static const int CHARACTERIZATION_ITERATIONS = 3;
+static int characIteration = 0;
+static bool characSweepDone = false;
+static unsigned long characSettleStartTime = 0;
 static float sumTauThermal = 0.0f;
 static float sumTauThermistor = 0.0f;
 static float sumTauSHT4x = 0.0f;
+static float sumConvectiveH = 0.0f;
+static float sumThermalResistance = 0.0f;
+static float sumThermalCapacitance = 0.0f;
+static float sumThermalConductance = 0.0f;
 
 static unsigned long currentHeatingDurationMs = 15000;
-static unsigned long currentCooloffDurationMs = 30000;
+static unsigned long currentCooloffDurationMs = 60000;
 
 static int sweepStep = -1;
 static float sweepUnloadedV = 0.0f;
@@ -423,12 +434,19 @@ void buildCurrentModelStep() {
             sumTauThermal = 0.0f;
             sumTauThermistor = 0.0f;
             sumTauSHT4x = 0.0f;
+            sumConvectiveH = 0.0f;
+            sumThermalResistance = 0.0f;
+            sumThermalCapacitance = 0.0f;
+            sumThermalConductance = 0.0f;
             currentHeatingDurationMs = 15000;
-            currentCooloffDurationMs = 30000;
+            currentCooloffDurationMs = 60000;
             cooloffSamples.clear();
             lastCooloffSampleTime = 0;
             heatingPowerSum = 0.0;
             heatingPowerCount = 0;
+
+            characSweepDone = false;
+            characSettleStartTime = 0;
 
             sweepStep = -1;
             sweepUnloadedV = 0.0f;
@@ -536,49 +554,67 @@ void buildCurrentModelStep() {
             break;
         case BuildModelPhase::ThermalCharacterize:
             {
-                // Dynamic Iterative Thermal and Sensor Lag Characterization (3-phase self-tuning loop):
-                // Runs 3 full cycles to verify measurements and self-tune parameters.
-                // Adjusts Heating and Cool-off durations for iterations 1 and 2 based on previous estimations.
-                if (!characterizationInitialized) {
-                    double t1, t2, td; float tmv, v, c;
-                    getThermistorReadings(t1, t2, td, tmv, v, c);
-                    tempStart = t2;
-                    startTime = now;
-                    shutoffTime = 0;
-                    peakTempAfterShutoff = 0.0;
-                    peakAmbientTemp = t1;
-                    peakTimeAfterShutoff = 0;
-                    characPhase = 0;
-                    cooloffStartTime = 0;
-                    cooloffSamples.clear();
-                    lastCooloffSampleTime = 0;
-                    heatingPowerSum = 0.0;
-                    heatingPowerCount = 0;
-                    characterizationInitialized = true;
-
-                    if (characIteration == 0) {
+                if (!characSweepDone) {
+                    if (!characterizationInitialized) {
+                        double t1, t2, td; float tmv, v, c;
+                        getThermistorReadings(t1, t2, td, tmv, v, c);
+                        startTime = now;
+                        sweepStep = -1;
+                        sweepStepStartTime = now;
+                        applyDuty(0);
+                        generateCategorizedDutyPairs(sweepCatPairs, 15);
+                        characterizationInitialized = true;
+                        characPhase = 0;
+                        Serial.printf("Starting categorized %d-pair IR sweep before thermal characterization...\n", (int)sweepCatPairs.size());
+                    }
+                } else if (characPhase == 3) {
+                    // Thermal Settling Phase: ensure battery thermally settles after IR sweep before starting Thermal Run 1
+                    applyDuty(0);
+                    if (now - characSettleStartTime >= 5000) {
+                        characPhase = 0;
+                        characIteration = 0;
+                        characterizationInitialized = false;
                         sumTauThermal = 0.0f;
                         sumTauThermistor = 0.0f;
                         sumTauSHT4x = 0.0f;
+                        sumConvectiveH = 0.0f;
+                        sumThermalResistance = 0.0f;
+                        sumThermalCapacitance = 0.0f;
+                        sumThermalConductance = 0.0f;
                         currentHeatingDurationMs = 15000;
-                        currentCooloffDurationMs = 30000;
-                        sweepStep = -1;
-                        sweepStepStartTime = now;
-                        applyDuty(0); // Start sweep with unloaded point
-                        generateCategorizedDutyPairs(sweepCatPairs, 15);
-                        Serial.printf("Thermal Characterize Iteration 1: Starting categorized %d-pair sweep with adaptive delays...\n", (int)sweepCatPairs.size());
-                    } else {
+                        currentCooloffDurationMs = 60000;
+                        Serial.println("  Thermal Settling Complete. Starting 3-iteration thermal characterization...");
+                    }
+                    break;
+                } else {
+                    if (!characterizationInitialized) {
+                        double t1, t2, td; float tmv, v, c;
+                        getThermistorReadings(t1, t2, td, tmv, v, c);
+                        tempStart = t2;
+                        startTime = now;
+                        shutoffTime = 0;
+                        peakTempAfterShutoff = 0.0;
+                        peakAmbientTemp = t1;
+                        peakTimeAfterShutoff = 0;
+                        characPhase = 0;
+                        cooloffStartTime = 0;
+                        cooloffSamples.clear();
+                        lastCooloffSampleTime = 0;
+                        heatingPowerSum = 0.0;
+                        heatingPowerCount = 0;
+                        characterizationInitialized = true;
+
                         float targetI = 0.90f * estimateCurrent(MAX_DUTY_CYCLE);
                         int characDuty = estimateDutyCycleForCurrent(targetI);
                         if (characDuty < MIN_CHARGE_DUTY_CYCLE) characDuty = MIN_CHARGE_DUTY_CYCLE;
                         applyDuty(characDuty);
-                        Serial.printf("Thermal Characterize [Iteration %d/3] Phase 1 (Heating, %lu ms): applied 90%% load (Duty %d, Target %.3f A), initial temp: %.2f C\n",
-                                      characIteration + 1, currentHeatingDurationMs, characDuty, targetI, tempStart);
+                        Serial.printf("Thermal Characterize [Run %d/%d] Phase 1 (Heating, %lu ms): applied 90%% load (Duty %d, Target %.3f A), initial temp: %.2f C\n",
+                                      characIteration + 1, CHARACTERIZATION_ITERATIONS, currentHeatingDurationMs, characDuty, targetI, tempStart);
                     }
                 }
 
                 if (characPhase == 0) {
-                    if (characIteration == 0) {
+                    if (!characSweepDone) {
                         // Categorized sweep state machine with dynamic adaptive delays and electrode evaluation
                         unsigned long requiredDelay = g_electrode.adaptiveDelayMs > 0 ? (unsigned long)g_electrode.adaptiveDelayMs : 1000UL;
 
@@ -721,8 +757,10 @@ void buildCurrentModelStep() {
                                     peakTimeAfterShutoff = now;
                                     shutoffTime = now;
                                     applyDuty(0);
-                                    characPhase = 1;
-                                    Serial.printf("  Sweep IR Evaluation Complete: %d/%d valid points, IR = %.4f Ohms. Transitioning to Peak Detection.\n",
+                                    characSweepDone = true;
+                                    characSettleStartTime = now;
+                                    characPhase = 3; // Thermal settling phase
+                                    Serial.printf("  Sweep IR Evaluation Complete: %d/%d valid points, IR = %.4f Ohms. Transitioning to Thermal Settling Phase.\n",
                                                   validCount, totalSteps, regressedInternalResistancePairsIntercept);
                                 }
                             }
@@ -751,12 +789,12 @@ void buildCurrentModelStep() {
                     getThermistorReadings(t1, t2, td, tmv, v, c);
                     static int consecutiveDeclineCount = 0;
 
-                    if (t2 > peakTempAfterShutoff + 0.001) {
+                    if (t2 > peakTempAfterShutoff + 0.020) {
                         peakTempAfterShutoff = t2;
                         peakAmbientTemp = t1;
                         peakTimeAfterShutoff = now;
                         consecutiveDeclineCount = 0;
-                    } else if (t2 < peakTempAfterShutoff - 0.001) {
+                    } else if (t2 < peakTempAfterShutoff - 0.020) {
                         consecutiveDeclineCount++;
                     } else {
                         consecutiveDeclineCount = 0;
@@ -821,8 +859,8 @@ void buildCurrentModelStep() {
                                 }
                             }
                         }
-                        if (computedTau < 45.0) computedTau = 45.0;
-                        if (computedTau > 450.0) computedTau = 450.0;
+                        if (computedTau < 5.0) computedTau = 5.0;
+                        if (computedTau > 600.0) computedTau = 600.0;
 
                         // Solve sensor pole tau_s for two-pole thermal system where t_peak = (tau_b * tau_s / (tau_b - tau_s)) * ln(tau_b / tau_s)
                         double obsPeakDelayS = (peakTimeAfterShutoff > shutoffTime) ? (double)(peakTimeAfterShutoff - shutoffTime) / 1000.0 : 1.0;
@@ -848,35 +886,70 @@ void buildCurrentModelStep() {
                         if (computedTauSHT < 1.0) computedTauSHT = 1.0;
                         if (computedTauSHT > 20.0) computedTauSHT = 20.0;
 
+                        // Characterize conductance and heat capacity from measured electrical heating power and temperature rise
+                        float computedGTotal = 0.0f;
+                        float computedCTheta = 0.0f;
+                        float deltaTempHeat = (float)(tempAtShutoff - tempStart);
+                        float heatDurationS = (shutoffTime > startTime) ? (float)(shutoffTime - startTime) / 1000.0f : 0.0f;
+                        float avgHeatingP = (heatingPowerCount > 0) ? (float)(heatingPowerSum / heatingPowerCount) : 0.0f;
+
+                        if (avgHeatingP > 0.01f && deltaTempHeat > 0.05f && heatDurationS > 1.0f) {
+                            computedGTotal = (avgHeatingP / deltaTempHeat) * (1.0f - expf(-heatDurationS / (float)computedTau));
+                            computedCTheta = computedGTotal * (float)computedTau;
+                        } else {
+                            computedCTheta = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+                            computedGTotal = computedCTheta / std::max(1.0f, (float)computedTau);
+                        }
+                        if (computedGTotal < 0.001f) computedGTotal = 0.001f;
+                        if (computedCTheta < 1.0f) computedCTheta = 1.0f;
+
+                        float computedRTheta = 1.0f / computedGTotal;
+                        float ambK = (float)peakAmbientTemp + 273.15f;
+                        float G_rad = 4.0f * DEFAULT_EMISSIVITY * STEFAN_BOLTZMANN * DEFAULT_SURFACE_AREA_M2 * powf(ambK, 3.0f);
+                        float G_conv = std::max(0.0001f, computedGTotal - G_rad);
+                        float computedConvectiveH = G_conv / DEFAULT_SURFACE_AREA_M2;
+
+                        float G_reconstructed = computedConvectiveH * DEFAULT_SURFACE_AREA_M2 + G_rad;
+                        float G_rel_err = std::fabs(computedGTotal - G_reconstructed) / std::max(1e-4f, computedGTotal);
+
                         sumTauThermal += (float)computedTau;
                         sumTauThermistor += (float)computedTauTherm;
                         sumTauSHT4x += (float)computedTauSHT;
+                        sumConvectiveH += computedConvectiveH;
+                        sumThermalResistance += computedRTheta;
+                        sumThermalCapacitance += computedCTheta;
+                        sumThermalConductance += computedGTotal;
 
-                        Serial.printf("Iteration %d Complete: TauThermal = %.2f s, TauThermistor = %.2f s, TauSHT = %.2f s\n",
-                                      characIteration + 1, (float)computedTau, (float)computedTauTherm, (float)computedTauSHT);
+                        Serial.printf("Iteration %d Complete: TauThermal = %.2f s, TauThermistor = %.2f s, TauSHT = %.2f s, ConvectiveH = %.4f W/(m^2 K), R_theta = %.2f K/W, C_theta = %.2f J/K, G_total = %.6f W/K (G_recon = %.6f, RelErr = %.2f%%)\n",
+                                      characIteration + 1, (float)computedTau, (float)computedTauTherm, (float)computedTauSHT,
+                                      computedConvectiveH, computedRTheta, computedCTheta, computedGTotal, G_reconstructed, G_rel_err * 100.0f);
 
                         characIteration++;
                         characterizationInitialized = false; // Trigger restart of heating phase for next iteration
 
-                        if (characIteration < 4) {
+                        if (characIteration < CHARACTERIZATION_ITERATIONS) {
                             // Self-Tuning: Adjust next cycle Heating and Cool-off durations to the newly inferred result!
-                            // Heating duration target: computedTau * 0.1 (clamped between 8s and 30s)
                             currentHeatingDurationMs = (unsigned long)(computedTau * 0.8f * 1000.0f);
                             if (currentHeatingDurationMs < 8000) currentHeatingDurationMs = 8000;
                             if (currentHeatingDurationMs > 60000) currentHeatingDurationMs = 60000;
 
-                            // Cooloff duration target: computedTau * 0.2 (clamped between 15s and 60s)
-                            currentCooloffDurationMs = (unsigned long)(computedTau * 0.9f * 1000.0f);
+                            // Set cooloff duration target to 2.5 * Tau (clamped between 15s and 300s) to guarantee >90% decay dynamic range
+                            currentCooloffDurationMs = (unsigned long)(computedTau * 2.5f * 1000.0f);
                             if (currentCooloffDurationMs < 15000) currentCooloffDurationMs = 15000;
-                            if (currentCooloffDurationMs > 120000) currentCooloffDurationMs = 120000;
+                            if (currentCooloffDurationMs > 300000) currentCooloffDurationMs = 300000;
 
                             characPhase = 0;
                         } else {
-                            // Average results across all 3 iterations to get verified robust constants
+                            // Average results across all completed iterations
+                            float countDiv = (float)CHARACTERIZATION_ITERATIONS;
                             WEB_LOCK();
-                            estimatedTauThermal = sumTauThermal / 3.0f;
-                            estimatedTauTherm = sumTauThermistor / 3.0f;
-                            estimatedTauSHT = sumTauSHT4x / 3.0f;
+                            estimatedTauThermal = sumTauThermal / countDiv;
+                            estimatedTauTherm = sumTauThermistor / countDiv;
+                            estimatedTauSHT = sumTauSHT4x / countDiv;
+                            estimatedConvectiveH = sumConvectiveH / countDiv;
+                            estimatedThermalResistance = sumThermalResistance / countDiv;
+                            estimatedThermalCapacitance = sumThermalCapacitance / countDiv;
+                            estimatedThermalConductance = sumThermalConductance / countDiv;
 
                             applyDuty(0);
                             if (postModelAppState == APP_STATE_CHARGING) {
@@ -895,6 +968,10 @@ void buildCurrentModelStep() {
                             Serial.printf("  Estimated Tau Thermal: %.2f s (Fitted & Averaged)\n", (float)estimatedTauThermal);
                             Serial.printf("  Estimated Tau Thermistor: %.2f s\n", (float)estimatedTauTherm);
                             Serial.printf("  Estimated Tau SHT4x: %.2f s\n", (float)estimatedTauSHT);
+                            Serial.printf("  Estimated Convective H: %.4f W/(m^2 K)\n", (float)estimatedConvectiveH);
+                            Serial.printf("  Estimated Thermal Resistance: %.2f K/W\n", (float)estimatedThermalResistance);
+                            Serial.printf("  Estimated Thermal Capacitance: %.2f J/K\n", (float)estimatedThermalCapacitance);
+                            Serial.printf("  Estimated Thermal Conductance: %.6f W/K\n", (float)estimatedThermalConductance);
 
                             characIteration = 0;
                             characPhase = 0;

@@ -73,7 +73,7 @@
 static const float DEFAULT_CELL_MASS_KG       = 0.014f;
 static const float DEFAULT_SPECIFIC_HEAT      = 1000.0f;
 static const float DEFAULT_SURFACE_AREA_M2    = 0.001477f;
-static const float DEFAULT_CONVECTIVE_H       = 0.09f;
+static const float DEFAULT_CONVECTIVE_H       = 0.08f;
 static const float DEFAULT_EMISSIVITY         = 0.9f;
 static const float STEFAN_BOLTZMANN           = 5.670374419e-8f;
 
@@ -452,6 +452,10 @@ extern volatile float noiseFloorMv;
 extern volatile float estimatedTauThermal;
 extern volatile float estimatedTauSHT;
 extern volatile float estimatedTauTherm;
+extern volatile float estimatedConvectiveH;
+extern volatile float estimatedThermalResistance;
+extern volatile float estimatedThermalCapacitance;
+extern volatile float estimatedThermalConductance;
 extern DisplayState currentDisplayState;
 extern uint8_t overtemp_trip_counter;
 extern unsigned long chargePhaseStartTime;

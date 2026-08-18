@@ -462,7 +462,7 @@ void updateDynamicMaximumCurrent() {
     double t1, t2, td; float tmv, v, c;
     getThermistorReadings(t1, t2, td, tmv, v, c);
     float ambK = (float)t1 + 273.15f;
-    float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY, ambK);
+    float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, estimatedConvectiveH, DEFAULT_EMISSIVITY, ambK);
 
     float R_int = regressedInternalResistancePairsIntercept;
     if (R_int < 0.01f) R_int = regressedInternalResistanceIntercept;
@@ -484,9 +484,15 @@ float estimateTempDiff(float vL, float vN, float cur, float Rp, float ambC, uint
   // Numerical Stability Clamping: Guard against extremely tiny positive dt_s causing division blow-ups
   if (dt_s < 1e-4f) dt_s = 1e-4f;
 
+  if (convH == DEFAULT_CONVECTIVE_H) {
+    convH = estimatedConvectiveH;
+  }
+
   float P = computeDissipatedPower(vL, vN, cur, Rp);
   float G = thermalConductance_W_per_K(area, convH, emiss, ambC + 273.15f);
-  float Cth = mass * spec;
+  float Cth = (mass == DEFAULT_CELL_MASS_KG && spec == DEFAULT_SPECIFIC_HEAT && std::isfinite(estimatedThermalCapacitance) && estimatedThermalCapacitance >= 5.0f && estimatedThermalCapacitance <= 50.0f)
+              ? (float)estimatedThermalCapacitance
+              : mass * spec;
   float theta0 = bC - ambC;
   float E_gen = P * dt_s;
   float E_rel = 0.0f;
@@ -604,7 +610,7 @@ bool chargeBattery() {
                 s.dutyCycle = 0;
                 s.internalResistanceLoadedUnloaded = getAverageResistanceNearCurrent(c, internalResistanceData, resistanceDataCount);
                 s.internalResistancePairs = getAverageResistanceNearCurrent(c, internalResistanceDataPairs, resistanceDataCountPairs);
-                s.threshold = MAX_DIFF_TEMP;
+                s.threshold = predictedTempTrack - (float)t1;
                 logChargeData(s); pushRecentChargeLog(s);
             }
             chargingState = CHARGE_PULSE_IR_TEST;
@@ -963,49 +969,53 @@ bool chargeBattery() {
                 dD_dt_smooth = 0.85 * dD_dt_smooth + 0.15 * raw_div_deriv;
                 prev_divergence_m = D_m;
 
-                float Cth = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
-                float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, DEFAULT_CONVECTIVE_H, DEFAULT_EMISSIVITY, (float)t1 + 273.15f);
+                float Cth = (std::isfinite(estimatedThermalCapacitance) && estimatedThermalCapacitance >= 5.0f && estimatedThermalCapacitance <= 50.0f)
+                            ? (float)estimatedThermalCapacitance
+                            : DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+                float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, estimatedConvectiveH, DEFAULT_EMISSIVITY, t1_true + 273.15f);
                 float P_inst = Cth * dD_dt_smooth + G * D_m;
 
-                // Estimate P_residual slowly with a 20s time constant to damp high-frequency thermistor noise
-                P_residual_slow = 0.9877 * P_residual_slow + 0.0123 * P_inst;
+                // Estimate P_residual slowly with a true 20s continuous time constant independent of sample rate
+                float alpha_p = 1.0f - expf(-dt_s / 20.0f);
+                P_residual_slow += (double)alpha_p * ((double)P_inst - P_residual_slow);
                 float p_residual = (float)P_residual_slow;
 
                 // Integrate unexplained thermal power using a leaky integrator (relaxation time constant = 60s)
-                // This ensures transient modeling errors do not accumulate indefinitely (decaying old residuals naturally),
-                // while still letting persistent outgassing heat build up to trip the safety limit.
                 residualEnergy_J = std::max(0.0f, residualEnergy_J * expf(-dt_s / 60.0f) + p_residual * dt_s);
 
-                // Self-tune baseline during first 30 seconds of active charging pulse cycle (120 samples)
+                // Self-tune baseline during first 30 seconds of active charging pulse cycle (based on elapsed time)
                 if (!baseline_calibrated) {
-                    if (baseline_pres_count < 120) {
-                        baseline_pres_samples[baseline_pres_count++] = p_residual;
-                    }
-                    if (baseline_pres_count == 120) {
-                        float sum = 0.0f;
-                        for (int i = 0; i < 120; i++) sum += baseline_pres_samples[i];
-                        baseline_mean = sum / 120.0f;
-
-                        float var = 0.0f;
-                        for (int i = 0; i < 120; i++) {
-                            float diff = baseline_pres_samples[i] - baseline_mean;
-                            var += diff * diff;
+                    if (now - pulseCycleStartTime <= 30000) {
+                        if (p_residual < 0.25f && baseline_pres_count < 120) {
+                            baseline_pres_samples[baseline_pres_count++] = p_residual;
                         }
-                        baseline_std = std::sqrt(var / 120.0f);
+                    } else {
+                        if (baseline_pres_count > 5) {
+                            float sum = 0.0f;
+                            for (int i = 0; i < baseline_pres_count; i++) sum += baseline_pres_samples[i];
+                            baseline_mean = sum / (float)baseline_pres_count;
 
-                        // Derive dynamic thresholds: P_threshold = mean + 5 * std_dev (clamped to physical bounds)
-                        dynamicP_threshold = baseline_mean + 5.0f * baseline_std;
-                        if (dynamicP_threshold < 0.05f) dynamicP_threshold = 0.05f;
-                        if (dynamicP_threshold > 0.5f) dynamicP_threshold = 0.5f;
+                            float var = 0.0f;
+                            for (int i = 0; i < baseline_pres_count; i++) {
+                                float diff = baseline_pres_samples[i] - baseline_mean;
+                                var += diff * diff;
+                            }
+                            baseline_std = std::sqrt(var / (float)baseline_pres_count);
 
-                        // E_threshold = P_threshold * 60 seconds (accumulated over 1 minute of persistent heat)
-                        dynamicE_threshold = dynamicP_threshold * 60.0f;
-                        if (dynamicE_threshold < 5.0f) dynamicE_threshold = 5.0f;
-                        if (dynamicE_threshold > 30.0f) dynamicE_threshold = 30.0f;
+                            dynamicP_threshold = baseline_mean + 5.0f * baseline_std;
+                            if (dynamicP_threshold < 0.05f) dynamicP_threshold = 0.05f;
+                            if (dynamicP_threshold > 0.5f) dynamicP_threshold = 0.5f;
 
-                        baseline_calibrated = true;
-                        Serial.printf("Dynamic Outgassing Thresholds Calibrated: Mean=%.4fW, Std=%.4fW -> P_thresh=%.4fW, E_thresh=%.4fJ\n",
-                                      baseline_mean, baseline_std, dynamicP_threshold, dynamicE_threshold);
+                            dynamicE_threshold = dynamicP_threshold * 60.0f;
+                            if (dynamicE_threshold < 5.0f) dynamicE_threshold = 5.0f;
+                            if (dynamicE_threshold > 30.0f) dynamicE_threshold = 30.0f;
+
+                            baseline_calibrated = true;
+                            Serial.printf("Dynamic Outgassing Thresholds Calibrated (30s elapsed): Mean=%.4fW, Std=%.4fW -> P_thresh=%.4fW, E_thresh=%.4fJ\n",
+                                          baseline_mean, baseline_std, dynamicP_threshold, dynamicE_threshold);
+                        } else {
+                            baseline_calibrated = true;
+                        }
                     }
                 }
 
@@ -1093,27 +1103,29 @@ bool chargeBattery() {
                 float sumLaggedOverpotential = 0.0f;
 
                 auto get_lagged_overpotential = [](size_t i, uint32_t target_time) -> float {
-                    if (i == 0) return -1.0f;
-                    size_t best_j = 0;
-                    uint32_t best_diff = 0xFFFFFFFF;
-                    for (size_t j = 0; j < i; ++j) {
-                        uint32_t ts = s_thermalHistory[j].timestamp;
-                        uint32_t diff = (ts > target_time) ? (ts - target_time) : (target_time - ts);
-                        if (diff < best_diff) {
-                            best_diff = diff;
-                            best_j = j;
+                    if (i == 0 || s_thermalHistory.empty()) return -1.0f;
+                    if (s_thermalHistory[0].timestamp > target_time) return -1.0f;
+                    for (size_t j = i; j > 0; --j) {
+                        size_t idx = j - 1;
+                        uint32_t ts_curr = s_thermalHistory[idx].timestamp;
+                        if (ts_curr <= target_time) {
+                            if (idx + 1 < i) {
+                                uint32_t ts_next = s_thermalHistory[idx + 1].timestamp;
+                                if (ts_next > ts_curr) {
+                                    float frac = (float)(target_time - ts_curr) / (float)(ts_next - ts_curr);
+                                    return s_thermalHistory[idx].overpotential + frac * (s_thermalHistory[idx + 1].overpotential - s_thermalHistory[idx].overpotential);
+                                }
+                            }
+                            uint32_t diff = target_time - ts_curr;
+                            return (diff <= 3000) ? s_thermalHistory[idx].overpotential : -1.0f;
                         }
-                    }
-                    // Only return if the closest timestamp is within a reasonable 3-second window of target 10s lag
-                    if (best_diff <= 3000) {
-                        return s_thermalHistory[best_j].overpotential;
                     }
                     return -1.0f;
                 };
 
                 // Pass 1: compute averages for the lagged samples in the 5-minute window
                 for (size_t i = 1; i < s_thermalHistory.size(); ++i) {
-                    if (now - s_thermalHistory[i].timestamp < 300000) {
+                    if (now - s_thermalHistory[i].timestamp < 300000 && s_thermalHistory[i].timestamp >= 10000) {
                         float div = s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp;
                         float over = get_lagged_overpotential(i, s_thermalHistory[i].timestamp - 10000);
                         if (over >= 0.0f) {
@@ -1129,7 +1141,7 @@ bool chargeBattery() {
 
                 // Pass 2: compute covariance and variances
                 for (size_t i = 1; i < s_thermalHistory.size(); ++i) {
-                    if (now - s_thermalHistory[i].timestamp < 300000) {
+                    if (now - s_thermalHistory[i].timestamp < 300000 && s_thermalHistory[i].timestamp >= 10000) {
                         float over = get_lagged_overpotential(i, s_thermalHistory[i].timestamp - 10000);
                         if (over >= 0.0f) {
                             float devDiv = (s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp) - avgLaggedDivergence;
@@ -1193,13 +1205,11 @@ bool chargeBattery() {
                 MAX_DIFF_TEMP = tempDiffThreshold + predictedDiff;
                 WEB_UNLOCK();
 
-                // Static trip counter for outgassing debounce protection
-                static uint8_t outgassing_trip_counter = 0;
                 if (!outgassingDiverged) {
                     outgassing_trip_counter = 0;
                 }
 
-                bool outgassingTriggered = false;
+                outgassingTriggered = false;
                 if (outgassingDiverged) {
                     if (++outgassing_trip_counter >= OUTGASSING_TRIP_THRESHOLD) {
                         outgassingTriggered = true;
@@ -1242,7 +1252,7 @@ bool chargeBattery() {
                         if (R_pairs > 5.0f) R_pairs = 5.0f;
                         e.internalResistancePairs = R_pairs;
                     }
-                    e.threshold = MAX_DIFF_TEMP;
+                    e.threshold = predictedDiff;
                     logChargeData(e);
                     pushRecentChargeLog(e);
 

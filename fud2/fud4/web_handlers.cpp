@@ -315,9 +315,7 @@ static void handleJsonChargeLog(AsyncWebServerRequest *request) {
     WEB_UNLOCK();
 
     AsyncWebServerResponse *response = request->beginChunkedResponse("application/json",
-        [total, currentRParam](uint8_t *buffer, size_t maxLen, size_t index) -> size_t {
-            static size_t currentEntry = 0;
-            static uint32_t lastTimestamp = 0;
+        [total, currentRParam, currentEntry = size_t(0), lastTimestamp = uint32_t(0)](uint8_t *buffer, size_t maxLen, size_t index) mutable -> size_t {
             if (index == 0) {
                 currentEntry = 0;
                 lastTimestamp = 0;
