@@ -596,8 +596,8 @@ void buildCurrentModelStep() {
                         if (theta_peak > 0.01 && theta_end > 0.005 && theta_peak > theta_end) {
                             double ratio = theta_peak / theta_end;
                             computedTau = 30.0 / log(ratio);
-                            if (computedTau < 10.0) computedTau = 10.0;
-                            if (computedTau > 450.0) computedTau = 450.0;
+                            if (computedTau < 5.0) computedTau = 5.0;
+                            if (computedTau > 600.0) computedTau = 600.0;
                         }
 
                         // Calculate Thermistor lag (Tau Thermistor)
@@ -657,9 +657,9 @@ void buildCurrentModelStep() {
                             if (currentHeatingDurationMs > 60000) currentHeatingDurationMs = 60000;
 
                             // Cooloff duration target: computedTau * 0.2 (clamped between 15s and 60s)
-                            currentCooloffDurationMs = (unsigned long)(computedTau * 0.9f * 1000.0f);
+                            currentCooloffDurationMs = (unsigned long)(computedTau * 2.5f * 1000.0f);
                             if (currentCooloffDurationMs < 15000) currentCooloffDurationMs = 15000;
-                            if (currentCooloffDurationMs > 120000) currentCooloffDurationMs = 120000;
+                            if (currentCooloffDurationMs > 300000) currentCooloffDurationMs = 300000;
 
                             characPhase = 0;
                         } else {

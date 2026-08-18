@@ -859,8 +859,8 @@ void buildCurrentModelStep() {
                                 }
                             }
                         }
-                        if (computedTau < 10.0) computedTau = 10.0;
-                        if (computedTau > 450.0) computedTau = 450.0;
+                        if (computedTau < 5.0) computedTau = 5.0;
+                        if (computedTau > 600.0) computedTau = 600.0;
 
                         // Solve sensor pole tau_s for two-pole thermal system where t_peak = (tau_b * tau_s / (tau_b - tau_s)) * ln(tau_b / tau_s)
                         double obsPeakDelayS = (peakTimeAfterShutoff > shutoffTime) ? (double)(peakTimeAfterShutoff - shutoffTime) / 1000.0 : 1.0;
@@ -933,10 +933,10 @@ void buildCurrentModelStep() {
                             if (currentHeatingDurationMs < 8000) currentHeatingDurationMs = 8000;
                             if (currentHeatingDurationMs > 60000) currentHeatingDurationMs = 60000;
 
-                            // Set cooloff duration target to 2.5 * Tau (clamped between 45s and 180s) to guarantee >90% decay dynamic range
+                            // Set cooloff duration target to 2.5 * Tau (clamped between 15s and 300s) to guarantee >90% decay dynamic range
                             currentCooloffDurationMs = (unsigned long)(computedTau * 2.5f * 1000.0f);
-                            if (currentCooloffDurationMs < 45000) currentCooloffDurationMs = 45000;
-                            if (currentCooloffDurationMs > 180000) currentCooloffDurationMs = 180000;
+                            if (currentCooloffDurationMs < 15000) currentCooloffDurationMs = 15000;
+                            if (currentCooloffDurationMs > 300000) currentCooloffDurationMs = 300000;
 
                             characPhase = 0;
                         } else {
