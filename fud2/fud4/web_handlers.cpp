@@ -208,13 +208,15 @@ struct HistorySnapshot {
     float i[PLOT_WIDTH];
 };
 
-static void getSnapshotHistory(HistorySnapshot& h) {
+static HistorySnapshot s_historySnapshot;
+
+static void getSnapshotHistory() {
     WEB_LOCK();
-    memcpy(h.t1, temp1_values, sizeof(h.t1));
-    memcpy(h.t2, temp2_values, sizeof(h.t2));
-    memcpy(h.td, diff_values, sizeof(h.td));
-    memcpy(h.v, voltage_values, sizeof(h.v));
-    memcpy(h.i, current_values, sizeof(h.i));
+    memcpy(s_historySnapshot.t1, temp1_values, sizeof(s_historySnapshot.t1));
+    memcpy(s_historySnapshot.t2, temp2_values, sizeof(s_historySnapshot.t2));
+    memcpy(s_historySnapshot.td, diff_values, sizeof(s_historySnapshot.td));
+    memcpy(s_historySnapshot.v, voltage_values, sizeof(s_historySnapshot.v));
+    memcpy(s_historySnapshot.i, current_values, sizeof(s_historySnapshot.i));
     WEB_UNLOCK();
 }
 
@@ -233,11 +235,13 @@ struct AmbientSnapshot {
     float d[PLOT_WIDTH];
 };
 
-static void getSnapshotAmbient(AmbientSnapshot& a) {
+static AmbientSnapshot s_ambientSnapshot;
+
+static void getSnapshotAmbient() {
     WEB_LOCK();
-    memcpy(a.t, homeScreen.temp_history, sizeof(a.t));
-    memcpy(a.h, homeScreen.humidity_history, sizeof(a.h));
-    memcpy(a.d, homeScreen.dew_point_history, sizeof(a.d));
+    memcpy(s_ambientSnapshot.t, homeScreen.temp_history, sizeof(s_ambientSnapshot.t));
+    memcpy(s_ambientSnapshot.h, homeScreen.humidity_history, sizeof(s_ambientSnapshot.h));
+    memcpy(s_ambientSnapshot.d, homeScreen.dew_point_history, sizeof(s_ambientSnapshot.d));
     WEB_UNLOCK();
 }
 
@@ -255,15 +259,17 @@ struct IRSnapshot {
     int pairsCount;
 };
 
-static void getSnapshotIR(IRSnapshot& ir) {
+static IRSnapshot s_irSnapshot;
+
+static void getSnapshotIR() {
     WEB_LOCK();
-    ir.luCount = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
-    if (ir.luCount > 0) {
-        memcpy(ir.lu, internalResistanceData, sizeof(float) * 2 * ir.luCount);
+    s_irSnapshot.luCount = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
+    if (s_irSnapshot.luCount > 0) {
+        memcpy(s_irSnapshot.lu, internalResistanceData, sizeof(float) * 2 * s_irSnapshot.luCount);
     }
-    ir.pairsCount = std::clamp(resistanceDataCountPairs, 0, (int)MAX_RESISTANCE_POINTS);
-    if (ir.pairsCount > 0) {
-        memcpy(ir.pairs, internalResistanceDataPairs, sizeof(float) * 2 * ir.pairsCount);
+    s_irSnapshot.pairsCount = std::clamp(resistanceDataCountPairs, 0, (int)MAX_RESISTANCE_POINTS);
+    if (s_irSnapshot.pairsCount > 0) {
+        memcpy(s_irSnapshot.pairs, internalResistanceDataPairs, sizeof(float) * 2 * s_irSnapshot.pairsCount);
     }
     WEB_UNLOCK();
 }
@@ -287,12 +293,11 @@ static void sendCborState(AsyncWebSocketClient *client) {
 
 static void sendCborHistory(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    HistorySnapshot history;
-    getSnapshotHistory(history);
+    getSnapshotHistory();
     std::vector<uint8_t> vec;
     vec.reserve(PLOT_WIDTH * 5 * 8 + 32);
     CborWriter w(vec);
-    appendCborHistory(w, history);
+    appendCborHistory(w, s_historySnapshot);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
@@ -300,12 +305,11 @@ static void sendCborHistory(AsyncWebSocketClient *client) {
 
 static void sendCborAmbient(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    AmbientSnapshot ambient;
-    getSnapshotAmbient(ambient);
+    getSnapshotAmbient();
     std::vector<uint8_t> vec;
     vec.reserve(PLOT_WIDTH * 3 * 8 + 32);
     CborWriter w(vec);
-    appendCborAmbient(w, ambient);
+    appendCborAmbient(w, s_ambientSnapshot);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
@@ -313,12 +317,11 @@ static void sendCborAmbient(AsyncWebSocketClient *client) {
 
 static void sendCborIR(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    IRSnapshot ir;
-    getSnapshotIR(ir);
+    getSnapshotIR();
     std::vector<uint8_t> vec;
-    vec.reserve(256 + (ir.luCount + ir.pairsCount) * 24);
+    vec.reserve(256 + (s_irSnapshot.luCount + s_irSnapshot.pairsCount) * 24);
     CborWriter w(vec);
-    appendCborIR(w, ir);
+    appendCborIR(w, s_irSnapshot);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
@@ -388,15 +391,14 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
 static void sendCborRoot(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
     StateSnapshot state = getSnapshotState();
-    AmbientSnapshot ambient;
-    getSnapshotAmbient(ambient);
+    getSnapshotAmbient();
 
     std::vector<uint8_t> vec;
     vec.reserve(PLOT_WIDTH * 3 * 8 + 384);
     CborWriter w(vec);
     w.startMap(2);
     w.addText("state");   appendCborState(w, state);
-    w.addText("ambient"); appendCborAmbient(w, ambient);
+    w.addText("ambient"); appendCborAmbient(w, s_ambientSnapshot);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
@@ -435,17 +437,23 @@ static void processCommandRaw(const char* data, size_t len, AsyncWebSocketClient
         setBuildModelPhase(BuildModelPhase::Idle);
         setAppState(APP_STATE_BUILDING_MODEL);
     } else if (cmdMatch(data, len, "ir")) {
+        bool modelBuilt = false;
         WEB_LOCK();
         isMeasuringResistance = true;
-        if (currentModel.isModelBuilt) {
+        modelBuilt = currentModel.isModelBuilt;
+        if (modelBuilt) {
             currentIRState = IR_STATE_START;
-            setAppState(APP_STATE_MEASURING_IR);
         } else {
             postModelAppState = APP_STATE_MEASURING_IR;
+        }
+        WEB_UNLOCK();
+
+        if (modelBuilt) {
+            setAppState(APP_STATE_MEASURING_IR);
+        } else {
             setBuildModelPhase(BuildModelPhase::Idle);
             setAppState(APP_STATE_BUILDING_MODEL);
         }
-        WEB_UNLOCK();
     } else if (cmdMatch(data, len, "reset")) {
         WEB_LOCK();
         resetAh = true;
