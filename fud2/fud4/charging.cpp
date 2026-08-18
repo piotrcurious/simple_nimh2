@@ -610,7 +610,7 @@ bool chargeBattery() {
                 s.dutyCycle = 0;
                 s.internalResistanceLoadedUnloaded = getAverageResistanceNearCurrent(c, internalResistanceData, resistanceDataCount);
                 s.internalResistancePairs = getAverageResistanceNearCurrent(c, internalResistanceDataPairs, resistanceDataCountPairs);
-                s.threshold = MAX_DIFF_TEMP;
+                s.threshold = predictedTempTrack - (float)t1;
                 logChargeData(s); pushRecentChargeLog(s);
             }
             chargingState = CHARGE_PULSE_IR_TEST;
@@ -1252,7 +1252,7 @@ bool chargeBattery() {
                         if (R_pairs > 5.0f) R_pairs = 5.0f;
                         e.internalResistancePairs = R_pairs;
                     }
-                    e.threshold = MAX_DIFF_TEMP;
+                    e.threshold = predictedDiff;
                     logChargeData(e);
                     pushRecentChargeLog(e);
 
