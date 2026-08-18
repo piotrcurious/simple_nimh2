@@ -11,6 +11,7 @@
 #include <cstring>
 #include <vector>
 #include <algorithm>
+#include <memory>
 
 #ifndef MOCK_TEST
 extern AsyncWebServer server;
@@ -208,18 +209,6 @@ struct HistorySnapshot {
     float i[PLOT_WIDTH];
 };
 
-static HistorySnapshot s_historySnapshot;
-
-static void getSnapshotHistory() {
-    WEB_LOCK();
-    memcpy(s_historySnapshot.t1, temp1_values, sizeof(s_historySnapshot.t1));
-    memcpy(s_historySnapshot.t2, temp2_values, sizeof(s_historySnapshot.t2));
-    memcpy(s_historySnapshot.td, diff_values, sizeof(s_historySnapshot.td));
-    memcpy(s_historySnapshot.v, voltage_values, sizeof(s_historySnapshot.v));
-    memcpy(s_historySnapshot.i, current_values, sizeof(s_historySnapshot.i));
-    WEB_UNLOCK();
-}
-
 static void appendCborHistory(CborWriter& w, const HistorySnapshot& h) {
     w.startMap(5);
     w.addText("t1"); cborAddFloatArray(w, h.t1, PLOT_WIDTH);
@@ -235,16 +224,6 @@ struct AmbientSnapshot {
     float d[PLOT_WIDTH];
 };
 
-static AmbientSnapshot s_ambientSnapshot;
-
-static void getSnapshotAmbient() {
-    WEB_LOCK();
-    memcpy(s_ambientSnapshot.t, homeScreen.temp_history, sizeof(s_ambientSnapshot.t));
-    memcpy(s_ambientSnapshot.h, homeScreen.humidity_history, sizeof(s_ambientSnapshot.h));
-    memcpy(s_ambientSnapshot.d, homeScreen.dew_point_history, sizeof(s_ambientSnapshot.d));
-    WEB_UNLOCK();
-}
-
 static void appendCborAmbient(CborWriter& w, const AmbientSnapshot& a) {
     w.startMap(3);
     w.addText("t"); cborAddFloatArray(w, a.t, PLOT_WIDTH);
@@ -258,21 +237,6 @@ struct IRSnapshot {
     float pairs[MAX_RESISTANCE_POINTS][2];
     int pairsCount;
 };
-
-static IRSnapshot s_irSnapshot;
-
-static void getSnapshotIR() {
-    WEB_LOCK();
-    s_irSnapshot.luCount = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
-    if (s_irSnapshot.luCount > 0) {
-        memcpy(s_irSnapshot.lu, internalResistanceData, sizeof(float) * 2 * s_irSnapshot.luCount);
-    }
-    s_irSnapshot.pairsCount = std::clamp(resistanceDataCountPairs, 0, (int)MAX_RESISTANCE_POINTS);
-    if (s_irSnapshot.pairsCount > 0) {
-        memcpy(s_irSnapshot.pairs, internalResistanceDataPairs, sizeof(float) * 2 * s_irSnapshot.pairsCount);
-    }
-    WEB_UNLOCK();
-}
 
 static void appendCborIR(CborWriter& w, const IRSnapshot& ir) {
     w.startMap(2);
@@ -293,11 +257,19 @@ static void sendCborState(AsyncWebSocketClient *client) {
 
 static void sendCborHistory(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    getSnapshotHistory();
+    auto h = std::unique_ptr<HistorySnapshot>(new HistorySnapshot());
+    WEB_LOCK();
+    memcpy(h->t1, temp1_values, sizeof(h->t1));
+    memcpy(h->t2, temp2_values, sizeof(h->t2));
+    memcpy(h->td, diff_values, sizeof(h->td));
+    memcpy(h->v, voltage_values, sizeof(h->v));
+    memcpy(h->i, current_values, sizeof(h->i));
+    WEB_UNLOCK();
+
     std::vector<uint8_t> vec;
     vec.reserve(PLOT_WIDTH * 5 * 8 + 32);
     CborWriter w(vec);
-    appendCborHistory(w, s_historySnapshot);
+    appendCborHistory(w, *h);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
@@ -305,11 +277,17 @@ static void sendCborHistory(AsyncWebSocketClient *client) {
 
 static void sendCborAmbient(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    getSnapshotAmbient();
+    auto a = std::unique_ptr<AmbientSnapshot>(new AmbientSnapshot());
+    WEB_LOCK();
+    memcpy(a->t, homeScreen.temp_history, sizeof(a->t));
+    memcpy(a->h, homeScreen.humidity_history, sizeof(a->h));
+    memcpy(a->d, homeScreen.dew_point_history, sizeof(a->d));
+    WEB_UNLOCK();
+
     std::vector<uint8_t> vec;
     vec.reserve(PLOT_WIDTH * 3 * 8 + 32);
     CborWriter w(vec);
-    appendCborAmbient(w, s_ambientSnapshot);
+    appendCborAmbient(w, *a);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
@@ -317,11 +295,22 @@ static void sendCborAmbient(AsyncWebSocketClient *client) {
 
 static void sendCborIR(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    getSnapshotIR();
+    auto ir = std::unique_ptr<IRSnapshot>(new IRSnapshot());
+    WEB_LOCK();
+    ir->luCount = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
+    if (ir->luCount > 0) {
+        memcpy(ir->lu, internalResistanceData, sizeof(float) * 2 * ir->luCount);
+    }
+    ir->pairsCount = std::clamp(resistanceDataCountPairs, 0, (int)MAX_RESISTANCE_POINTS);
+    if (ir->pairsCount > 0) {
+        memcpy(ir->pairs, internalResistanceDataPairs, sizeof(float) * 2 * ir->pairsCount);
+    }
+    WEB_UNLOCK();
+
     std::vector<uint8_t> vec;
-    vec.reserve(256 + (s_irSnapshot.luCount + s_irSnapshot.pairsCount) * 24);
+    vec.reserve(256 + (ir->luCount + ir->pairsCount) * 24);
     CborWriter w(vec);
-    appendCborIR(w, s_irSnapshot);
+    appendCborIR(w, *ir);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
@@ -391,14 +380,19 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
 static void sendCborRoot(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
     StateSnapshot state = getSnapshotState();
-    getSnapshotAmbient();
+    auto a = std::unique_ptr<AmbientSnapshot>(new AmbientSnapshot());
+    WEB_LOCK();
+    memcpy(a->t, homeScreen.temp_history, sizeof(a->t));
+    memcpy(a->h, homeScreen.humidity_history, sizeof(a->h));
+    memcpy(a->d, homeScreen.dew_point_history, sizeof(a->d));
+    WEB_UNLOCK();
 
     std::vector<uint8_t> vec;
     vec.reserve(PLOT_WIDTH * 3 * 8 + 384);
     CborWriter w(vec);
     w.startMap(2);
     w.addText("state");   appendCborState(w, state);
-    w.addText("ambient"); appendCborAmbient(w, s_ambientSnapshot);
+    w.addText("ambient"); appendCborAmbient(w, *a);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
