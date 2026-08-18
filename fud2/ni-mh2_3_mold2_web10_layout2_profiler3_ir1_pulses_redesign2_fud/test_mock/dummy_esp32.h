@@ -156,7 +156,11 @@ struct AsyncWebSocketClient {
     void text(const char* data) {}
     AsyncWebSocketClientStatus status() { return _status; }
     size_t queueLen() { return 0; }
+    bool queueIsFull() { return queueLen() >= 16; }
 };
+
+inline AsyncWebSocketClient* resolve_client(AsyncWebSocketClient* c) { return c; }
+inline AsyncWebSocketClient* resolve_client(AsyncWebSocketClient& c) { return &c; }
 
 struct AsyncWebSocket {
     const char* _url;
@@ -168,8 +172,12 @@ struct AsyncWebSocket {
         _eventCallback = cb;
     }
     size_t count() { return 1; }
+    std::vector<AsyncWebSocketClient*> getClients() {
+        return { &_mockClient };
+    }
     void binaryAll(const uint8_t* data, size_t len) {
         lastBinaryAll.assign(data, data + len);
+        _mockClient.lastBinary.assign(data, data + len);
     }
     void cleanupClients() {}
 
