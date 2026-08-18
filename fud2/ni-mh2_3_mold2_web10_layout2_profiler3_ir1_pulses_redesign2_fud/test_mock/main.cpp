@@ -542,16 +542,19 @@ void buildCurrentModelStep() {
                             }
                         }
                     } else {
-                        if (now - startTime >= currentHeatingDurationMs) {
-                            double t1, t2, td; float tmv, v, c;
-                            getThermistorReadings(t1, t2, td, tmv, v, c);
-                            tempAtShutoff = t2;
-                            peakTempAfterShutoff = t2;
+                        double t1_h, t2_h, td_h; float tmv_h, v_h, c_h;
+                        getThermistorReadings(t1_h, t2_h, td_h, tmv_h, v_h, c_h);
+                        bool targetTempReached = (t2_h - tempStart >= 0.5);
+                        bool heatingTimeout = (now - startTime >= 90000);
+
+                        if (targetTempReached || heatingTimeout) {
+                            tempAtShutoff = t2_h;
+                            peakTempAfterShutoff = t2_h;
                             peakTimeAfterShutoff = now;
                             shutoffTime = now;
                             applyDuty(0); // Shutoff load to observe sensor lag peak
                             characPhase = 1;
-                            std::cout << "  Thermal Characterize [Iteration " << (characIteration + 1) << "/3] Phase 2 (Overshoot Peak Detection): shutoff load at temp: " << tempAtShutoff << " C" << std::endl;
+                            std::cout << "  Thermal Characterize [Iteration " << (characIteration + 1) << "/3] Phase 2 (Overshoot Peak Detection): shutoff load at temp: " << tempAtShutoff << " C (deltaT: " << (tempAtShutoff - tempStart) << " C, duration: " << (now - startTime) << " ms, targetReached: " << (targetTempReached ? "YES" : "NO") << ")" << std::endl;
                         }
                     }
                 } else if (characPhase == 1) {

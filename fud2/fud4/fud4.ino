@@ -772,7 +772,10 @@ void buildCurrentModelStep() {
                         heatingPowerSum += (v_h * c_h);
                         heatingPowerCount++;
 
-                        if (now - startTime >= currentHeatingDurationMs) {
+                        bool targetTempReached = (t2_h - tempStart >= 0.5);
+                        bool heatingTimeout = (now - startTime >= 90000);
+
+                        if (targetTempReached || heatingTimeout) {
                             tempAtShutoff = t2_h;
                             peakTempAfterShutoff = t2_h;
                             peakAmbientTemp = t1_h;
@@ -780,8 +783,8 @@ void buildCurrentModelStep() {
                             shutoffTime = now;
                             applyDuty(0); // Shutoff load to observe sensor lag peak
                             characPhase = 1;
-                            Serial.printf("Thermal Characterize [Iteration %d/3] Phase 2 (Overshoot Peak Detection): shutoff load at temp: %.4f C\n",
-                                          characIteration + 1, tempAtShutoff);
+                            Serial.printf("Thermal Characterize [Iteration %d/3] Phase 2 (Overshoot Peak Detection): shutoff load at temp: %.4f C (deltaT: %.4f C, duration: %lu ms, targetReached: %s)\n",
+                                          characIteration + 1, tempAtShutoff, (float)(tempAtShutoff - tempStart), now - startTime, targetTempReached ? "YES" : "NO");
                         }
                     }
                 } else if (characPhase == 1) {
