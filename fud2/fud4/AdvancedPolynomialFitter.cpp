@@ -131,6 +131,9 @@ std::vector<double> AdvancedPolynomialFitter::solveLinearSystem(std::vector<std:
         for (size_t j = i + 1; j < n; ++j) sum += A[i][j] * x[j];
         if (std::abs(A[i][i]) > PIVOT_EPSILON) x[i] = (b[i] - sum) / A[i][i];
     }
+    for (size_t i = 0; i < n; ++i) {
+        if (!std::isfinite(x[i])) x[i] = 0.0;
+    }
     return x;
 }
 

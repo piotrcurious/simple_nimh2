@@ -51,7 +51,10 @@ double HomeScreen::calculateDewPoint(double temperature, double humidity) {
     double h = humidity;
     if (!isfinite(h) || h <= 0.0) h = 0.0001;
     if (h > 100.0) h = 100.0;
-    double alpha = ((a * temperature) / (b + temperature)) + log(h / 100.0);
+    double t = temperature;
+    if (!isfinite(t)) t = 25.0;
+    double alpha = ((a * t) / (b + t)) + log(h / 100.0);
     double dew_point = (b * alpha) / (a - alpha);
+    if (!isfinite(dew_point)) return t;
     return dew_point;
 }

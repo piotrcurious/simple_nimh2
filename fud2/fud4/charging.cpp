@@ -138,7 +138,7 @@ float computeAbsoluteTempRiseFromHistory(int depth) {
         const ChargeLogData &e = recentChargeLogs[idx];
         uint32_t ts = e.timestamp;
         uint32_t dt_ms = ts - prev_ts;
-        if (dt_ms == 0) { ts = prev_ts + 1; dt_ms = 1; }
+        if (ts <= prev_ts) { ts = prev_ts + 1; dt_ms = 1; }
 
         float cur = e.current;
         if (!std::isfinite(cur) || cur < 0.0f) cur = 0.0f;
@@ -1311,4 +1311,11 @@ bool chargeBattery() {
 }
 
 void startCharging() { if (currentAppState != APP_STATE_CHARGING) { currentAppState = APP_STATE_CHARGING; chargingState = CHARGE_IDLE; } }
-void stopCharging() { if (currentAppState == APP_STATE_CHARGING && chargingState != CHARGE_STOPPED) { chargingState = CHARGE_STOPPED; applyDuty(0); } }
+void stopCharging() {
+    if (currentAppState == APP_STATE_CHARGING && chargingState != CHARGE_STOPPED) {
+        chargingState = CHARGE_STOPPED;
+        applyDuty(0);
+        s_thermalHistory.clear();
+        s_thermalHistory.shrink_to_fit();
+    }
+}

@@ -123,6 +123,7 @@ void setupAdcDma() {
 }
 
 static inline void pushSample(uint8_t idx, uint16_t raw) {
+    if (idx >= ADC_CH_COUNT) return;
     sample_ring[sample_write_idx] = { raw, idx };
     uint32_t next = (sample_write_idx + 1) & SAMPLE_RING_MASK;
     if (next == sample_read_idx) {
