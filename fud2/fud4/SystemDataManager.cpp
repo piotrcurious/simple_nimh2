@@ -69,7 +69,14 @@ void SystemDataManager::update(float estimatedCurrentA) {
                 currentA = estimatedCurrentA;
             }
 
+            if (!std::isfinite(currentA) || currentA < 0.0f) {
+                currentA = 0.0f;
+            }
+
             _currentData.mah_charged += (double)currentA * 1000.0 * delta_h;
+            if (!std::isfinite(_currentData.mah_charged) || _currentData.mah_charged < 0.0) {
+                _currentData.mah_charged = 0.0;
+            }
             _lastMahUpdateMs = now;
         }
 

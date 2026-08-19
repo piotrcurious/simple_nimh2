@@ -477,6 +477,13 @@ void updateDynamicMaximumCurrent() {
 }
 
 float estimateTempDiff(float vL, float vN, float cur, float Rp, float ambC, uint32_t now, uint32_t last, float bC, float* uE, float mass, float spec, float area, float convH, float emiss) {
+  if (!std::isfinite(vL)) vL = 1.2f;
+  if (!std::isfinite(vN)) vN = 1.2f;
+  if (!std::isfinite(cur) || cur < 0.0f) cur = 0.0f;
+  if (!std::isfinite(Rp) || Rp <= 0.0f) Rp = 0.18f;
+  if (!std::isfinite(ambC)) ambC = 25.0f;
+  if (!std::isfinite(bC)) bC = ambC;
+
   uint32_t dt_ms = now - last;
   float dt_s = (float)dt_ms * 0.001f;
   if (dt_s <= 0.0f) return bC - ambC;
@@ -484,26 +491,35 @@ float estimateTempDiff(float vL, float vN, float cur, float Rp, float ambC, uint
   // Numerical Stability Clamping: Guard against extremely tiny positive dt_s causing division blow-ups
   if (dt_s < 1e-4f) dt_s = 1e-4f;
 
-  if (convH == DEFAULT_CONVECTIVE_H) {
+  if (convH == DEFAULT_CONVECTIVE_H && std::isfinite(estimatedConvectiveH)) {
     convH = estimatedConvectiveH;
   }
 
   float P = computeDissipatedPower(vL, vN, cur, Rp);
+  if (!std::isfinite(P)) P = 0.0f;
+
   float G = thermalConductance_W_per_K(area, convH, emiss, ambC + 273.15f);
+  if (!std::isfinite(G) || G <= 1e-12f) G = 0.01f;
+
   float Cth = (mass == DEFAULT_CELL_MASS_KG && spec == DEFAULT_SPECIFIC_HEAT && std::isfinite(estimatedThermalCapacitance) && estimatedThermalCapacitance >= 5.0f && estimatedThermalCapacitance <= 50.0f)
               ? (float)estimatedThermalCapacitance
               : mass * spec;
+  if (!std::isfinite(Cth) || Cth <= 1e-12f) Cth = 14.0f;
+
   float theta0 = bC - ambC;
+  if (!std::isfinite(theta0)) theta0 = 0.0f;
+
   float E_gen = P * dt_s;
   float E_rel = 0.0f;
-  if (uE && *uE > 0.0f) {
+  if (uE && *uE > 0.0f && std::isfinite(*uE)) {
     float tau_rel = std::max(1e-12f, g_internalReleaseTau_s);
     float frac = 1.0f - expf(-dt_s / tau_rel);
     E_rel = *uE * frac; *uE -= E_rel;
+    if (!std::isfinite(*uE) || *uE < 0.0f) *uE = 0.0f;
   }
   float E_total = E_gen + E_rel;
-  if (G <= 1e-12f || Cth <= 1e-12f) return theta0 + E_total / std::max(1e-12f, Cth);
   float theta_ss = (E_total / dt_s) / G;
+  if (!std::isfinite(theta_ss)) theta_ss = 0.0f;
 
   // Fit the thermal prediction model using the dynamically characterized estimatedTauThermal constant
   float tau = estimatedTauThermal;
@@ -512,9 +528,11 @@ float estimateTempDiff(float vL, float vN, float cur, float Rp, float ambC, uint
   }
 
   // Numerical Stability Clamping: Guard against extremely large or near-infinite tau causing exponential division issues
-  if (tau > 10000.0f) tau = 10000.0f;
+  if (tau > 10000.0f || !std::isfinite(tau)) tau = 10000.0f;
 
-  return theta_ss + (theta0 - theta_ss) * expf(-dt_s / tau);
+  float res = theta_ss + (theta0 - theta_ss) * expf(-dt_s / tau);
+  if (!std::isfinite(res)) return theta0;
+  return res;
 }
 
 // Structured, smaller resolution IR test variables
@@ -903,12 +921,18 @@ bool chargeBattery() {
                 pulseCurrentSum += cur;
                 pulseCurrentSamples++;
 
+                if (!std::isfinite(t1)) t1 = 25.0;
+                if (!std::isfinite(t2)) t2 = 25.0;
+                if (!std::isfinite(v)) v = 1.2f;
+                if (!std::isfinite(cur) || cur < 0.0f) cur = 0.0f;
+
                 if (prev_t1 < 0) {
                     prev_t1 = t1;
                     prev_t2 = t2;
                     t1_deriv = 0.0;
                     t2_deriv = 0.0;
                     predictedTempTrack = (float)t2; // Align tracking model with actual temperature at pulse boundary
+                    if (!std::isfinite(predictedTempTrack)) predictedTempTrack = 25.0f;
                     prev_divergence_m_set = false;
                     dD_dt_smooth = 0.0;
                     P_residual_slow = 0.0;
@@ -918,6 +942,8 @@ bool chargeBattery() {
                 // robust derivative with simple smoothing (alpha = 0.5)
                 double raw_t1_deriv = (t1 - prev_t1) / dt_s;
                 double raw_t2_deriv = (t2 - prev_t2) / dt_s;
+                if (!std::isfinite(raw_t1_deriv)) raw_t1_deriv = 0.0;
+                if (!std::isfinite(raw_t2_deriv)) raw_t2_deriv = 0.0;
 
                 // Physical Derivative Clamping: Guard against derivative spikes from transitions or sensor anomalies
                 if (raw_t1_deriv > MAX_TEMPERATURE_DERIVATIVE_C_PER_S) raw_t1_deriv = MAX_TEMPERATURE_DERIVATIVE_C_PER_S;
@@ -927,12 +953,16 @@ bool chargeBattery() {
 
                 t1_deriv = (1.0 - TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA) * t1_deriv + TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA * raw_t1_deriv;
                 t2_deriv = (1.0 - TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA) * t2_deriv + TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA * raw_t2_deriv;
+                if (!std::isfinite(t1_deriv)) t1_deriv = 0.0;
+                if (!std::isfinite(t2_deriv)) t2_deriv = 0.0;
                 prev_t1 = t1;
                 prev_t2 = t2;
 
                 // Recover true physical temperatures to compensate for sensor thermal inertia
                 float t1_true = (float)(t1 + estimatedTauSHT * t1_deriv);
                 float t2_true = (float)(t2 + estimatedTauTherm * t2_deriv);
+                if (!std::isfinite(t1_true)) t1_true = (float)t1;
+                if (!std::isfinite(t2_true)) t2_true = (float)t2;
                 float td_true = t2_true - t1_true;
 
                 // Update real-time global recovered physical values
@@ -943,14 +973,19 @@ bool chargeBattery() {
                 // Predict temp change using recovered true ambient temperature (t1_true)
                 // Run the standard non-linear estimateTempDiff model using predictedTempTrack and persistent file-scope unapplied energy state
                 float R_load = getAverageResistanceNearCurrent(cur, internalResistanceDataPairs, resistanceDataCountPairs);
-                if (R_load < 0.01f) R_load = 0.01f;
+                if (!std::isfinite(R_load) || R_load < 0.01f) R_load = 0.01f;
                 if (R_load > 5.0f) R_load = 5.0f;
                 float predictedDiff = estimateTempDiff(v, s_irTest.unloadedVoltage, cur, R_load, t1_true, now, now - dt_ms, predictedTempTrack, &g_unappliedEnergy_J);
-                predictedTempTrack = predictedDiff + t1_true;
+                if (std::isfinite(predictedDiff)) {
+                    predictedTempTrack = predictedDiff + t1_true;
+                } else {
+                    predictedTempTrack = t2_true;
+                }
 
                 // Slow first-order residual-power estimator
                 // Calculate raw measured divergence using unified lag-compensated physical temperature (t2_true)
                 float D_m = t2_true - predictedTempTrack;
+                if (!std::isfinite(D_m)) D_m = 0.0f;
                 if (!prev_divergence_m_set) {
                     prev_divergence_m = D_m;
                     prev_divergence_m_set = true;
@@ -959,6 +994,7 @@ bool chargeBattery() {
                 }
                 float dt_s_div = dt_s;
                 double raw_div_deriv = (D_m - prev_divergence_m) / dt_s_div;
+                if (!std::isfinite(raw_div_deriv)) raw_div_deriv = 0.0;
 
                 // Physical Derivative Clamping: filter outlier spikes
                 if (raw_div_deriv > MAX_TEMPERATURE_DERIVATIVE_C_PER_S) raw_div_deriv = MAX_TEMPERATURE_DERIVATIVE_C_PER_S;
@@ -966,6 +1002,7 @@ bool chargeBattery() {
 
                 // Smooth derivative with an alpha of 0.15
                 dD_dt_smooth = 0.85 * dD_dt_smooth + 0.15 * raw_div_deriv;
+                if (!std::isfinite(dD_dt_smooth)) dD_dt_smooth = 0.0;
                 prev_divergence_m = D_m;
 
                 float Cth = (std::isfinite(estimatedThermalCapacitance) && estimatedThermalCapacitance >= 5.0f && estimatedThermalCapacitance <= 50.0f)
@@ -973,14 +1010,17 @@ bool chargeBattery() {
                             : DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
                 float G = thermalConductance_W_per_K(DEFAULT_SURFACE_AREA_M2, estimatedConvectiveH, DEFAULT_EMISSIVITY, t1_true + 273.15f);
                 float P_inst = Cth * dD_dt_smooth + G * D_m;
+                if (!std::isfinite(P_inst)) P_inst = 0.0f;
 
                 // Estimate P_residual slowly with a true 20s continuous time constant independent of sample rate
                 float alpha_p = 1.0f - expf(-dt_s / 20.0f);
                 P_residual_slow += (double)alpha_p * ((double)P_inst - P_residual_slow);
+                if (!std::isfinite(P_residual_slow)) P_residual_slow = 0.0;
                 float p_residual = (float)P_residual_slow;
 
                 // Integrate unexplained thermal power using a leaky integrator (relaxation time constant = 60s)
                 residualEnergy_J = std::max(0.0f, residualEnergy_J * expf(-dt_s / 60.0f) + p_residual * dt_s);
+                if (!std::isfinite(residualEnergy_J)) residualEnergy_J = 0.0f;
 
                 // Self-tune baseline during first 30 seconds of active charging pulse cycle (based on elapsed time)
                 if (!baseline_calibrated) {
