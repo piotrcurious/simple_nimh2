@@ -159,7 +159,6 @@ struct StateSnapshot {
 };
 
 static StateSnapshot getSnapshotState() {
-    float offsetMv = systemData.getCurrentZeroOffsetMv();
     StateSnapshot s;
     WEB_LOCK();
     s.app = currentAppState;
@@ -170,7 +169,7 @@ static StateSnapshot getSnapshotState() {
     s.mah = (float)mAh_charged;
     s.max_dt = MAX_DIFF_TEMP;
     s.phase = buildModelPhase;
-    s.offset = offsetMv;
+    s.offset = systemData.getCurrentZeroOffsetMv();
     s.noise = (float)noiseFloorMv;
     WEB_UNLOCK();
     return s;
@@ -333,9 +332,15 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
     std::unique_ptr<ChargeLogData[]> batchEntries(new (std::nothrow) ChargeLogData[batchSize]);
     if (!batchEntries) return;
 
+    size_t batchesSent = 0;
+
     for (size_t i = 0; i < total; i += batchSize) {
         if (!client || client->status() != WS_CONNECTED || client->queueLen() >= WS_LOG_HIGH_WATER) {
             Serial.printf("Aborting CBOR log stream for client %u due to backed up queue or disconnect.\n", client ? client->id() : 0);
+            break;
+        }
+
+        if (batchesSent >= 2 && client->queueLen() > 0) {
             break;
         }
 
@@ -385,6 +390,7 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
         w.addText("total"); w.addUInt(total);
         if (w.ok() && w.size() > 0) {
             client->binary(w.data(), w.size());
+            batchesSent++;
         }
     }
 }
