@@ -876,6 +876,9 @@ bool chargeBattery() {
                             updateDynamicMaximumCurrent();
                             Serial.println("Pulse IR Re-measurement Complete. Fitted new linear regression lines.");
 
+                            s_reMeasure.points.clear();
+                            s_reMeasure.points.shrink_to_fit();
+
                             chargingState = CHARGE_PULSE_ACTIVE;
                             pulseCycleStartTime = now;
                             pulseCurrentSum = 0.0;

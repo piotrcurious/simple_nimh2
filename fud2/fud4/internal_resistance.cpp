@@ -1638,6 +1638,18 @@ void completeResistanceMeasurement() {
         performLinearRegression(internalResistanceDataPairs, resistanceDataCountPairs, regressedInternalResistancePairsSlope, regressedInternalResistancePairsIntercept);
     }
     WEB_UNLOCK();
+
+    dutyCyclePairs.clear();
+    dutyCyclePairs.shrink_to_fit();
+    voltagesLoaded.clear();
+    voltagesLoaded.shrink_to_fit();
+    currentsLoaded.clear();
+    currentsLoaded.shrink_to_fit();
+    ir_dutyCycles.clear();
+    ir_dutyCycles.shrink_to_fit();
+    consecutiveInternalResistances.clear();
+    consecutiveInternalResistances.shrink_to_fit();
+
     isMeasuringResistance = false;
     applyDuty(0);
     currentIRState = IR_STATE_IDLE;
