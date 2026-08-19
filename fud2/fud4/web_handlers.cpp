@@ -285,8 +285,13 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
     size_t batchesSent = 0;
 
     for (size_t i = 0; i < total; i += batchSize) {
-        if (!client || client->status() != WS_CONNECTED || client->queueLen() >= WS_LOG_HIGH_WATER) {
-            Serial.printf("Aborting CBOR log stream for client %u due to backed up queue or disconnect.\n", client ? client->id() : 0);
+        if (!client || client->status() != WS_CONNECTED) {
+            Serial.printf("Aborting CBOR log stream for client %u: client disconnected.\n", client ? client->id() : 0);
+            break;
+        }
+
+        if (client->queueLen() >= WS_LOG_HIGH_WATER) {
+            Serial.printf("Aborting CBOR log stream for client %u: queue backed up (queueLen = %zu).\n", client->id(), client->queueLen());
             break;
         }
 
