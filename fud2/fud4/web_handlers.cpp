@@ -12,6 +12,7 @@
 #include <vector>
 #include <algorithm>
 #include <memory>
+#include <new>
 
 #ifndef MOCK_TEST
 extern AsyncWebServer server;
@@ -244,7 +245,9 @@ static void sendCborState(AsyncWebSocketClient *client) {
 
 static void sendCborHistory(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    auto h = std::unique_ptr<HistorySnapshot>(new HistorySnapshot());
+    auto h = std::unique_ptr<HistorySnapshot>(new (std::nothrow) HistorySnapshot());
+    if (!h) return;
+
     WEB_LOCK();
     memcpy(h->t1, temp1_values, sizeof(h->t1));
     memcpy(h->t2, temp2_values, sizeof(h->t2));
@@ -254,7 +257,9 @@ static void sendCborHistory(AsyncWebSocketClient *client) {
     WEB_UNLOCK();
 
     size_t cap = PLOT_WIDTH * 5 * 8 + 64;
-    std::unique_ptr<uint8_t[]> buf(new uint8_t[cap]);
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
+    if (!buf) return;
+
     CborWriter w(buf.get(), cap);
     appendCborHistory(w, *h);
     if (w.ok() && w.size() > 0) {
@@ -264,7 +269,9 @@ static void sendCborHistory(AsyncWebSocketClient *client) {
 
 static void sendCborAmbient(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    auto a = std::unique_ptr<AmbientSnapshot>(new AmbientSnapshot());
+    auto a = std::unique_ptr<AmbientSnapshot>(new (std::nothrow) AmbientSnapshot());
+    if (!a) return;
+
     WEB_LOCK();
     memcpy(a->t, homeScreen.temp_history, sizeof(a->t));
     memcpy(a->h, homeScreen.humidity_history, sizeof(a->h));
@@ -272,7 +279,9 @@ static void sendCborAmbient(AsyncWebSocketClient *client) {
     WEB_UNLOCK();
 
     size_t cap = PLOT_WIDTH * 3 * 8 + 64;
-    std::unique_ptr<uint8_t[]> buf(new uint8_t[cap]);
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
+    if (!buf) return;
+
     CborWriter w(buf.get(), cap);
     appendCborAmbient(w, *a);
     if (w.ok() && w.size() > 0) {
@@ -282,7 +291,9 @@ static void sendCborAmbient(AsyncWebSocketClient *client) {
 
 static void sendCborIR(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    auto ir = std::unique_ptr<IRSnapshot>(new IRSnapshot());
+    auto ir = std::unique_ptr<IRSnapshot>(new (std::nothrow) IRSnapshot());
+    if (!ir) return;
+
     WEB_LOCK();
     ir->luCount = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
     if (ir->luCount > 0) {
@@ -295,7 +306,9 @@ static void sendCborIR(AsyncWebSocketClient *client) {
     WEB_UNLOCK();
 
     size_t cap = 256 + (ir->luCount + ir->pairsCount) * 24;
-    std::unique_ptr<uint8_t[]> buf(new uint8_t[cap]);
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
+    if (!buf) return;
+
     CborWriter w(buf.get(), cap);
     appendCborIR(w, *ir);
     if (w.ok() && w.size() > 0) {
@@ -315,7 +328,8 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
 
     if (total == 0) return;
 
-    const size_t batchSize = 100;
+    constexpr size_t batchSize = 100;
+    ChargeLogData batchEntries[batchSize];
 
     for (size_t i = 0; i < total; i += batchSize) {
         if (client->queueLen() >= WS_LOG_HIGH_WATER) {
@@ -323,8 +337,7 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
             break;
         }
 
-        std::vector<ChargeLogData> batchEntries;
-        batchEntries.reserve(batchSize);
+        size_t itemsInBatch = 0;
 
         WEB_LOCK();
         if (chargeLogGeneration != startGen) {
@@ -335,20 +348,23 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
         size_t currentSize = chargeLog.size();
         size_t batchTotal = std::min(total, currentSize);
         for (size_t j = 0; j < batchSize && (i + j) < batchTotal; j++) {
-            batchEntries.push_back(chargeLog[i + j]);
+            batchEntries[itemsInBatch++] = chargeLog[i + j];
         }
         WEB_UNLOCK();
 
-        if (batchEntries.empty()) break;
+        if (itemsInBatch == 0) break;
 
-        size_t cap = batchEntries.size() * 150 + 64;
-        std::unique_ptr<uint8_t[]> buf(new uint8_t[cap]);
+        size_t cap = itemsInBatch * 150 + 64;
+        std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
+        if (!buf) break;
+
         CborWriter w(buf.get(), cap);
         w.startMap(3);
         w.addText("offset"); w.addUInt(i);
-        w.addText("batch"); w.startArray(batchEntries.size());
+        w.addText("batch"); w.startArray(itemsInBatch);
 
-        for (const auto& entry : batchEntries) {
+        for (size_t k = 0; k < itemsInBatch; k++) {
+            const auto& entry = batchEntries[k];
             float td = entry.batteryTemperature - entry.ambientTemperature;
             float thresholdValue = entry.threshold;
 
@@ -374,7 +390,9 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
 static void sendCborRoot(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
     StateSnapshot state = getSnapshotState();
-    auto a = std::unique_ptr<AmbientSnapshot>(new AmbientSnapshot());
+    auto a = std::unique_ptr<AmbientSnapshot>(new (std::nothrow) AmbientSnapshot());
+    if (!a) return;
+
     WEB_LOCK();
     memcpy(a->t, homeScreen.temp_history, sizeof(a->t));
     memcpy(a->h, homeScreen.humidity_history, sizeof(a->h));
@@ -382,7 +400,9 @@ static void sendCborRoot(AsyncWebSocketClient *client) {
     WEB_UNLOCK();
 
     size_t cap = PLOT_WIDTH * 3 * 8 + 384;
-    std::unique_ptr<uint8_t[]> buf(new uint8_t[cap]);
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
+    if (!buf) return;
+
     CborWriter w(buf.get(), cap);
     w.startMap(2);
     w.addText("state");   appendCborState(w, state);
