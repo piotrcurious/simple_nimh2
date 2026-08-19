@@ -256,10 +256,54 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       opacity: 0.92;
     }
 
+    .memPanel {
+      padding: 4px;
+    }
+    .memGrid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 4px;
+      margin-bottom: 4px;
+    }
+    .memBox {
+      background: rgba(0,255,255,0.03);
+      border: 1px solid rgba(0,255,255,0.12);
+      border-radius: 3px;
+      padding: 3px 4px;
+      text-align: center;
+    }
+    .memVal {
+      font-size: 11px;
+      font-weight: bold;
+      color: var(--cyan);
+      text-shadow: 0 0 6px rgba(0,255,255,0.25);
+    }
+    .memLbl {
+      font-size: 8px;
+      color: var(--muted);
+      margin-top: 1px;
+      text-transform: uppercase;
+    }
+    .memBarWrap {
+      width: 100%;
+      height: 6px;
+      background: rgba(0,0,0,0.5);
+      border-radius: 3px;
+      overflow: hidden;
+      border: 1px solid rgba(0,255,255,0.1);
+    }
+    .memBarFill {
+      height: 100%;
+      background: linear-gradient(90deg, #58ff98, #00f7ff);
+      box-shadow: 0 0 8px rgba(0,255,255,0.4);
+      transition: width 0.3s ease, background 0.3s ease;
+    }
+
     @media (max-width: 900px) {
       .topGrid { grid-template-columns: 1fr; }
       .gaugesBar { grid-template-columns: 1fr 1fr; }
       .grid { grid-template-columns: 1fr; }
+      .memGrid { grid-template-columns: repeat(3, 1fr); }
     }
 
     @media (max-width: 640px) {
@@ -292,6 +336,42 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       <button onclick="sendCommand('ir')">Measure IR</button>
       <button onclick="sendCommand('reset')">Reset Ah</button>
       <button onclick="sendCommand('stop')">Stop</button>
+    </div>
+
+    <div class="panel fullWidth memPanel" style="margin-top: 2px; margin-bottom: 2px;">
+      <div class="panelHead">
+        <div class="panelTitle">Memory Diagnostics</div>
+        <div class="panelHint" id="memHint">Heap Health: 100% · Dynamic Allocation Monitor</div>
+      </div>
+      <div class="memGrid">
+        <div class="memBox">
+          <div class="memVal" id="memFree">0 kB</div>
+          <div class="memLbl">Free DRAM</div>
+        </div>
+        <div class="memBox">
+          <div class="memVal" id="memMin">0 kB</div>
+          <div class="memLbl">Min Free DRAM</div>
+        </div>
+        <div class="memBox">
+          <div class="memVal" id="memMaxBlk">0 kB</div>
+          <div class="memLbl">Max Free Block</div>
+        </div>
+        <div class="memBox">
+          <div class="memVal" id="memFrag">0%</div>
+          <div class="memLbl">Frag Rate</div>
+        </div>
+        <div class="memBox">
+          <div class="memVal" id="memLogLen">0 / 1000</div>
+          <div class="memLbl">Charge Log Entries</div>
+        </div>
+        <div class="memBox">
+          <div class="memVal" id="memThLen">0 / 60</div>
+          <div class="memLbl">Thermal History</div>
+        </div>
+      </div>
+      <div class="memBarWrap">
+        <div class="memBarFill" id="memBarFill" style="width: 100%;"></div>
+      </div>
     </div>
 
       <div class="card">
@@ -1036,6 +1116,39 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       dom.iValue.innerText = `${fmt(state.i, 3)} A`;
       dom.mahValue.innerText = `${fmt(state.mah, 3)} mAh`;
       dom.extraState.innerText = `offset ${fmt(state.offset, 2)} mV · noise ${fmt(state.noise, 2)} mV`;
+      updateMemoryDiagnostics(state);
+    }
+
+    function updateMemoryDiagnostics(state) {
+      if (state.free_hp === undefined) return;
+      const freeKb = (state.free_hp / 1024).toFixed(1);
+      const minKb = (state.min_hp / 1024).toFixed(1);
+      const maxBlkKb = (state.max_blk / 1024).toFixed(1);
+      const totalKb = (state.tot_hp / 1024) || 320;
+      const freePct = Math.min(100, Math.max(0, (state.free_hp / (state.tot_hp || (320 * 1024))) * 100));
+
+      let frag = 0;
+      if (state.free_hp > 0 && state.max_blk > 0) {
+        frag = Math.max(0, (1 - (state.max_blk / state.free_hp)) * 100);
+      }
+
+      document.getElementById('memFree').innerText = `${freeKb} kB`;
+      document.getElementById('memMin').innerText = `${minKb} kB`;
+      document.getElementById('memMaxBlk').innerText = `${maxBlkKb} kB`;
+      document.getElementById('memFrag').innerText = `${frag.toFixed(1)}%`;
+      document.getElementById('memLogLen').innerText = `${state.log_len || 0} / 1000`;
+      document.getElementById('memThLen').innerText = `${state.th_len || 0} / 60`;
+
+      const barFill = document.getElementById('memBarFill');
+      barFill.style.width = `${freePct.toFixed(1)}%`;
+      if (freePct < 20) {
+        barFill.style.background = 'linear-gradient(90deg, #ff6c7a, #ff3344)';
+      } else if (freePct < 50) {
+        barFill.style.background = 'linear-gradient(90deg, #ffe86a, #ffb05a)';
+      } else {
+        barFill.style.background = 'linear-gradient(90deg, #58ff98, #00f7ff)';
+      }
+      document.getElementById('memHint').innerText = `Heap Health: ${freePct.toFixed(0)}% Free (${freeKb} kB / ${totalKb.toFixed(0)} kB)`;
     }
 
     function drawAllGauges(state) {
