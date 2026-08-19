@@ -1140,17 +1140,15 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         return;
       }
 
-      const arrI = data.map(d => d.i);
-      const arrV = data.map(d => d.v);
-      const arrD = data.map(d => d.d);
-      const arrTD = data.map(d => d.td);
-      const arrTH = data.map(d => d.th);
-      const arrIRLU = data.map(d => d.irlu);
-      const arrIRP = data.map(d => d.irp);
+      const arrI = data.map(d => d[1]);
+      const arrV = data.map(d => d[2]);
+      const arrTD = data.map(d => d[4] - d[3]);
+      const arrTH = data.map(d => d[7]);
+      const arrIRLU = data.map(d => d[5]);
+      const arrIRP = data.map(d => d[6]);
 
       const sI = autoScale(arrI);
       const sV = autoScale(arrV);
-      const sD = autoScale(arrD);
 
       // Filter out non-finite or null/undefined values from arrTD and arrTH
       const validTDs = arrTD.filter(v => v != null && Number.isFinite(v));
@@ -1164,19 +1162,17 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       // Tie dT scale directly to Th scale
       const sTD = [sTH[0], sTH[1]];
 
-
       const sIRLU = autoScale(arrIRLU);
       const sIRP = autoScale(arrIRP);
 
-      const yMin = Math.min(sI[0], sV[0], sD[0], sTD[0], sTH[0], sIRLU[0], sIRP[0]);
-      const yMax = Math.max(sI[1], sV[1], sD[1], sTD[1], sTH[1], sIRLU[1], sIRP[1]);
+      const yMin = Math.min(sI[0], sV[0], sTD[0], sTH[0], sIRLU[0], sIRP[0]);
+      const yMax = Math.max(sI[1], sV[1], sTD[1], sTH[1], sIRLU[1], sIRP[1]);
 
       drawAxes(ctx, margin, 0, data.length - 1, 'Index', yMin, yMax, 'Auto-scaled');
       drawRegion(ctx, arrTD, arrTH, 'rgba(255,108,122,0.20)', Math.min(sTD[0], sTH[0]), Math.max(sTD[1], sTH[1]), margin);
 
       drawSeries(ctx, arrI, '#ff4dff', sI[0], sI[1], margin, 'I', 1);
       drawSeries(ctx, arrV, '#ffe86a', sV[0], sV[1], margin, 'V', 1);
-      drawSeries(ctx, arrD, '#a9a9a9', sD[0], sD[1], margin, 'Duty', 1);
       drawSeries(ctx, arrTD, '#58a8ff', sTD[0], sTD[1], margin, 'dT', 1);
       drawSeries(ctx, arrTH, '#ff6c7a', sTH[0], sTH[1], margin, 'Th', 1);
       drawSeries(ctx, arrIRLU, '#ffb05a', sIRLU[0], sIRLU[1], margin, 'RiLU', 1);

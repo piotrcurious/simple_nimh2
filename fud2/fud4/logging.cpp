@@ -4,6 +4,7 @@
 
 // Define the global chargeLog vector here
 std::vector<ChargeLogData> chargeLog;
+uint32_t chargeLogGeneration = 0;
 
 void logChargeData(const ChargeLogData& data) {
     WEB_LOCK();
@@ -20,5 +21,6 @@ void logChargeData(const ChargeLogData& data) {
         }
     }
     chargeLog.push_back(data);
+    chargeLogGeneration++;
     WEB_UNLOCK();
 }

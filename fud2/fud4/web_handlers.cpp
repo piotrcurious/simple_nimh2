@@ -12,6 +12,7 @@
 #include <vector>
 #include <algorithm>
 #include <memory>
+#include <new>
 
 #ifndef MOCK_TEST
 extern AsyncWebServer server;
@@ -125,7 +126,7 @@ public:
 
 static void cborAddFloatArray(CborWriter& w, const float* arr, int len) {
     w.startArray(len);
-    for (int i = 0; i < len; i++) {
+    for (int i = 0; i < len && w.ok(); i++) {
         if (!std::isfinite(arr[i])) w.addNull();
         else w.addFloat(arr[i]);
     }
@@ -137,7 +138,7 @@ static void cborAddXYPairs(CborWriter& w, const float data[][2], int count) {
         return;
     }
     w.startArray(count);
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count && w.ok(); i++) {
         w.startArray(2);
         w.addFloat(data[i][0]);
         w.addFloat(data[i][1]);
@@ -188,49 +189,6 @@ static void appendCborState(CborWriter& w, const StateSnapshot& s) {
     w.addText("noise");  w.addFloat(s.noise);
 }
 
-struct HistorySnapshot {
-    float t1[PLOT_WIDTH];
-    float t2[PLOT_WIDTH];
-    float td[PLOT_WIDTH];
-    float v[PLOT_WIDTH];
-    float i[PLOT_WIDTH];
-};
-
-static void appendCborHistory(CborWriter& w, const HistorySnapshot& h) {
-    w.startMap(5);
-    w.addText("t1"); cborAddFloatArray(w, h.t1, PLOT_WIDTH);
-    w.addText("t2"); cborAddFloatArray(w, h.t2, PLOT_WIDTH);
-    w.addText("td"); cborAddFloatArray(w, h.td, PLOT_WIDTH);
-    w.addText("v");  cborAddFloatArray(w, h.v, PLOT_WIDTH);
-    w.addText("i");  cborAddFloatArray(w, h.i, PLOT_WIDTH);
-}
-
-struct AmbientSnapshot {
-    float t[PLOT_WIDTH];
-    float h[PLOT_WIDTH];
-    float d[PLOT_WIDTH];
-};
-
-static void appendCborAmbient(CborWriter& w, const AmbientSnapshot& a) {
-    w.startMap(3);
-    w.addText("t"); cborAddFloatArray(w, a.t, PLOT_WIDTH);
-    w.addText("h"); cborAddFloatArray(w, a.h, PLOT_WIDTH);
-    w.addText("d"); cborAddFloatArray(w, a.d, PLOT_WIDTH);
-}
-
-struct IRSnapshot {
-    float lu[MAX_RESISTANCE_POINTS][2];
-    int luCount;
-    float pairs[MAX_RESISTANCE_POINTS][2];
-    int pairsCount;
-};
-
-static void appendCborIR(CborWriter& w, const IRSnapshot& ir) {
-    w.startMap(2);
-    w.addText("lu");    cborAddXYPairs(w, ir.lu, ir.luCount);
-    w.addText("pairs"); cborAddXYPairs(w, ir.pairs, ir.pairsCount);
-}
-
 static void sendCborState(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
     StateSnapshot state = getSnapshotState();
@@ -244,18 +202,22 @@ static void sendCborState(AsyncWebSocketClient *client) {
 
 static void sendCborHistory(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    auto h = std::unique_ptr<HistorySnapshot>(new HistorySnapshot());
+
+    size_t cap = PLOT_WIDTH * 5 * 5 + 64;
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
+    if (!buf) return;
+
+    CborWriter w(buf.get(), cap);
+    w.startMap(5);
+
     WEB_LOCK();
-    memcpy(h->t1, temp1_values, sizeof(h->t1));
-    memcpy(h->t2, temp2_values, sizeof(h->t2));
-    memcpy(h->td, diff_values, sizeof(h->td));
-    memcpy(h->v, voltage_values, sizeof(h->v));
-    memcpy(h->i, current_values, sizeof(h->i));
+    w.addText("t1"); cborAddFloatArray(w, temp1_values, PLOT_WIDTH);
+    w.addText("t2"); cborAddFloatArray(w, temp2_values, PLOT_WIDTH);
+    w.addText("td"); cborAddFloatArray(w, diff_values, PLOT_WIDTH);
+    w.addText("v");  cborAddFloatArray(w, voltage_values, PLOT_WIDTH);
+    w.addText("i");  cborAddFloatArray(w, current_values, PLOT_WIDTH);
     WEB_UNLOCK();
 
-    std::vector<uint8_t> vec(PLOT_WIDTH * 5 * 8 + 64);
-    CborWriter w(vec.data(), vec.size());
-    appendCborHistory(w, *h);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
@@ -263,16 +225,20 @@ static void sendCborHistory(AsyncWebSocketClient *client) {
 
 static void sendCborAmbient(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    auto a = std::unique_ptr<AmbientSnapshot>(new AmbientSnapshot());
+
+    size_t cap = PLOT_WIDTH * 3 * 5 + 64;
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
+    if (!buf) return;
+
+    CborWriter w(buf.get(), cap);
+    w.startMap(3);
+
     WEB_LOCK();
-    memcpy(a->t, homeScreen.temp_history, sizeof(a->t));
-    memcpy(a->h, homeScreen.humidity_history, sizeof(a->h));
-    memcpy(a->d, homeScreen.dew_point_history, sizeof(a->d));
+    w.addText("t"); cborAddFloatArray(w, homeScreen.temp_history, PLOT_WIDTH);
+    w.addText("h"); cborAddFloatArray(w, homeScreen.humidity_history, PLOT_WIDTH);
+    w.addText("d"); cborAddFloatArray(w, homeScreen.dew_point_history, PLOT_WIDTH);
     WEB_UNLOCK();
 
-    std::vector<uint8_t> vec(PLOT_WIDTH * 3 * 8 + 64);
-    CborWriter w(vec.data(), vec.size());
-    appendCborAmbient(w, *a);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
@@ -280,78 +246,94 @@ static void sendCborAmbient(AsyncWebSocketClient *client) {
 
 static void sendCborIR(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    auto ir = std::unique_ptr<IRSnapshot>(new IRSnapshot());
+
+    size_t cap = 256 + (MAX_RESISTANCE_POINTS * 2) * 24;
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
+    if (!buf) return;
+
+    CborWriter w(buf.get(), cap);
+    w.startMap(2);
+
     WEB_LOCK();
-    ir->luCount = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
-    if (ir->luCount > 0) {
-        memcpy(ir->lu, internalResistanceData, sizeof(float) * 2 * ir->luCount);
-    }
-    ir->pairsCount = std::clamp(resistanceDataCountPairs, 0, (int)MAX_RESISTANCE_POINTS);
-    if (ir->pairsCount > 0) {
-        memcpy(ir->pairs, internalResistanceDataPairs, sizeof(float) * 2 * ir->pairsCount);
-    }
+    int luCount = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
+    int pairsCount = std::clamp(resistanceDataCountPairs, 0, (int)MAX_RESISTANCE_POINTS);
+    w.addText("lu");    cborAddXYPairs(w, internalResistanceData, luCount);
+    w.addText("pairs"); cborAddXYPairs(w, internalResistanceDataPairs, pairsCount);
     WEB_UNLOCK();
 
-    std::vector<uint8_t> vec(256 + (ir->luCount + ir->pairsCount) * 24);
-    CborWriter w(vec.data(), vec.size());
-    appendCborIR(w, *ir);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
 }
 
-static void sendCborChargeLog(AsyncWebSocketClient *client) {
+static void sendCborChargeLog(AsyncWebSocketClient *client, size_t startOffset = 0) {
     if (!clientReadyForMessage(client, WS_LOG_HIGH_WATER)) return;
 
     size_t total = 0;
+    uint32_t startGen = 0;
     WEB_LOCK();
     total = chargeLog.size();
+    startGen = chargeLogGeneration;
     WEB_UNLOCK();
 
-    if (total == 0) return;
+    if (total == 0 || startOffset >= total) return;
 
-    const size_t batchSize = 100;
+    constexpr size_t batchSize = 100;
+    std::unique_ptr<ChargeLogData[]> batchEntries(new (std::nothrow) ChargeLogData[batchSize]);
+    if (!batchEntries) return;
 
-    for (size_t i = 0; i < total; i += batchSize) {
-        if (client->queueLen() >= WS_LOG_HIGH_WATER) {
-            Serial.printf("Aborting CBOR log stream for client %u due to backed up queue.\n", client->id());
+    for (size_t i = startOffset; i < total; i += batchSize) {
+        if (!client || client->status() != WS_CONNECTED) {
+            Serial.printf("Aborting CBOR log stream for client %u: client disconnected.\n", client ? client->id() : 0);
             break;
         }
 
-        std::vector<ChargeLogData> batchEntries;
-        batchEntries.reserve(batchSize);
+        if (client->queueLen() >= WS_LOG_HIGH_WATER) {
+            Serial.printf("Aborting CBOR log stream for client %u: queue backed up (queueLen = %zu).\n", client->id(), client->queueLen());
+            break;
+        }
+
+        size_t itemsInBatch = 0;
 
         WEB_LOCK();
+        if (chargeLogGeneration != startGen) {
+            WEB_UNLOCK();
+            Serial.printf("Aborting CBOR log stream for client %u: dataset mutated during transfer.\n", client->id());
+            break;
+        }
         size_t currentSize = chargeLog.size();
         size_t batchTotal = std::min(total, currentSize);
         for (size_t j = 0; j < batchSize && (i + j) < batchTotal; j++) {
-            batchEntries.push_back(chargeLog[i + j]);
+            batchEntries[itemsInBatch++] = chargeLog[i + j];
         }
         WEB_UNLOCK();
 
-        if (batchEntries.empty()) break;
+        if (itemsInBatch == 0) break;
 
-        std::vector<uint8_t> vec(batchEntries.size() * 150 + 64);
-        CborWriter w(vec.data(), vec.size());
-        w.startMap(3);
+        uint8_t status = (i + itemsInBatch >= total) ? 1 : 0; // 1 = complete, 0 = in-progress
+
+        size_t cap = itemsInBatch * 60 + 128;
+        std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
+        if (!buf) break;
+
+        CborWriter w(buf.get(), cap);
+        w.startMap(4);
         w.addText("offset"); w.addUInt(i);
-        w.addText("batch"); w.startArray(batchEntries.size());
+        w.addText("status"); w.addUInt(status);
+        w.addText("batch");  w.startArray(itemsInBatch);
 
-        for (const auto& entry : batchEntries) {
-            float td = entry.batteryTemperature - entry.ambientTemperature;
-            float thresholdValue = entry.threshold;
+        for (size_t k = 0; k < itemsInBatch; k++) {
+            const auto& entry = batchEntries[k];
 
-            w.startMap(10);
-            w.addText("t");    w.addUInt((uint64_t)entry.timestamp);
-            w.addText("i");    w.addFloat(entry.current);
-            w.addText("v");    w.addFloat(entry.voltage);
-            w.addText("at");   w.addFloat(entry.ambientTemperature);
-            w.addText("bt");   w.addFloat(entry.batteryTemperature);
-            w.addText("d");    w.addInt((int64_t)entry.dutyCycle);
-            w.addText("irlu"); w.addFloat(entry.internalResistanceLoadedUnloaded);
-            w.addText("irp");  w.addFloat(entry.internalResistancePairs);
-            w.addText("td");   w.addFloat(td);
-            w.addText("th");   w.addFloat(thresholdValue);
+            w.startArray(8);
+            w.addUInt((uint64_t)entry.timestamp);
+            w.addFloat(entry.current);
+            w.addFloat(entry.voltage);
+            w.addFloat(entry.ambientTemperature);
+            w.addFloat(entry.batteryTemperature);
+            w.addFloat(entry.internalResistanceLoadedUnloaded);
+            w.addFloat(entry.internalResistancePairs);
+            w.addFloat(entry.threshold);
         }
         w.addText("total"); w.addUInt(total);
         if (w.ok() && w.size() > 0) {
@@ -362,19 +344,25 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
 
 static void sendCborRoot(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
-    StateSnapshot state = getSnapshotState();
-    auto a = std::unique_ptr<AmbientSnapshot>(new AmbientSnapshot());
-    WEB_LOCK();
-    memcpy(a->t, homeScreen.temp_history, sizeof(a->t));
-    memcpy(a->h, homeScreen.humidity_history, sizeof(a->h));
-    memcpy(a->d, homeScreen.dew_point_history, sizeof(a->d));
-    WEB_UNLOCK();
 
-    std::vector<uint8_t> vec(PLOT_WIDTH * 3 * 8 + 384);
-    CborWriter w(vec.data(), vec.size());
+    size_t cap = PLOT_WIDTH * 3 * 5 + 384;
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
+    if (!buf) return;
+
+    StateSnapshot state = getSnapshotState();
+
+    CborWriter w(buf.get(), cap);
     w.startMap(2);
     w.addText("state");   appendCborState(w, state);
-    w.addText("ambient"); appendCborAmbient(w, *a);
+
+    w.addText("ambient");
+    w.startMap(3);
+    WEB_LOCK();
+    w.addText("t"); cborAddFloatArray(w, homeScreen.temp_history, PLOT_WIDTH);
+    w.addText("h"); cborAddFloatArray(w, homeScreen.humidity_history, PLOT_WIDTH);
+    w.addText("d"); cborAddFloatArray(w, homeScreen.dew_point_history, PLOT_WIDTH);
+    WEB_UNLOCK();
+
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
     }
@@ -399,11 +387,35 @@ static bool cmdMatch(const char* data, size_t len, const char* target) {
 static bool processCommandRaw(const char* data, size_t len, AsyncWebSocketClient *client = nullptr) {
     if (!data || len == 0 || len > MAX_COMMAND_LENGTH) return false;
 
-    if (cmdMatch(data, len, "REQ_STATE")) { sendCborState(client); return true; }
-    if (cmdMatch(data, len, "REQ_HISTORY")) { sendCborHistory(client); return true; }
-    if (cmdMatch(data, len, "REQ_AMBIENT")) { sendCborAmbient(client); return true; }
-    if (cmdMatch(data, len, "REQ_CHARGELOG")) { sendCborChargeLog(client); return true; }
-    if (cmdMatch(data, len, "REQ_IR")) { sendCborIR(client); return true; }
+    if (cmdMatch(data, len, "REQ_STATE")) {
+        if (!client) return false;
+        sendCborState(client);
+        return true;
+    }
+    if (cmdMatch(data, len, "REQ_HISTORY")) {
+        if (!client) return false;
+        sendCborHistory(client);
+        return true;
+    }
+    if (cmdMatch(data, len, "REQ_AMBIENT")) {
+        if (!client) return false;
+        sendCborAmbient(client);
+        return true;
+    }
+    if (len >= 13 && memcmp(data, "REQ_CHARGELOG", 13) == 0) {
+        if (!client) return false;
+        size_t startOffset = 0;
+        if (len > 14 && data[13] == ':') {
+            startOffset = (size_t)atoi(data + 14);
+        }
+        sendCborChargeLog(client, startOffset);
+        return true;
+    }
+    if (cmdMatch(data, len, "REQ_IR")) {
+        if (!client) return false;
+        sendCborIR(client);
+        return true;
+    }
 
     if (cmdMatch(data, len, "charge")) {
         WEB_LOCK();
@@ -446,18 +458,14 @@ static bool processCommandRaw(const char* data, size_t len, AsyncWebSocketClient
     return false;
 }
 
-static void processCommand(String cmd, AsyncWebSocketClient *client = nullptr) {
-    processCommandRaw(cmd.c_str(), cmd.length(), client);
-}
-
 void handleCommand(AsyncWebServerRequest *request) {
     String cmd = request->arg("cmd");
     Serial.printf("DEBUG: Web command received: %s\n", cmd.c_str());
-    bool recognized = processCommandRaw(cmd.c_str(), cmd.length());
+    bool recognized = processCommandRaw(cmd.c_str(), cmd.length(), nullptr);
     if (recognized) {
         request->send(200, "text/plain", "OK");
     } else {
-        request->send(400, "text/plain", "Bad Request: Unknown command");
+        request->send(400, "text/plain", "Bad Request: Unknown or unsupported command");
     }
 }
 

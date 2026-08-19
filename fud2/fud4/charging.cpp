@@ -607,7 +607,6 @@ bool chargeBattery() {
                 t1_deriv = 0.0;
                 t2_deriv = 0.0;
                 ChargeLogData s; s.timestamp = (uint32_t)now; s.current = c; s.voltage = v; s.ambientTemperature = (float)t1; s.batteryTemperature = (float)t2;
-                s.dutyCycle = 0;
                 s.internalResistanceLoadedUnloaded = getAverageResistanceNearCurrent(c, internalResistanceData, resistanceDataCount);
                 s.internalResistancePairs = getAverageResistanceNearCurrent(c, internalResistanceDataPairs, resistanceDataCountPairs);
                 s.threshold = predictedTempTrack - (float)t1;
@@ -1239,7 +1238,6 @@ bool chargeBattery() {
                     e.voltage = v;
                     e.ambientTemperature = (float)t1;
                     e.batteryTemperature = (float)t2;
-                    e.dutyCycle = (uint8_t)dutyCycle;
                     {
                         float R_lu = getAverageResistanceNearCurrent(meanPulseCurrent, internalResistanceData, resistanceDataCount);
                         if (R_lu < 0.01f) R_lu = 0.01f;

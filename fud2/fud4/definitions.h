@@ -282,7 +282,6 @@ struct ChargeLogData {
     float voltage;
     float ambientTemperature;
     float batteryTemperature;
-    uint8_t dutyCycle;
     float internalResistanceLoadedUnloaded;
     float internalResistancePairs;
     float threshold;
@@ -430,6 +429,7 @@ extern float regressedInternalResistanceIntercept;
 extern float regressedInternalResistancePairsSlope;
 extern float regressedInternalResistancePairsIntercept;
 extern std::vector<ChargeLogData> chargeLog;
+extern uint32_t chargeLogGeneration;
 
 extern unsigned long lastPlotUpdateTime;
 extern unsigned long lastChargingHouseTime;

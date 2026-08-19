@@ -1161,26 +1161,38 @@ bool isDutyCycleLinearRegion(int dc, float& out_slope) {
 }
 
 bool isCurrentCovered(float current, float tolerance) {
-    for (int i = 0; i < resistanceDataCountPairs; ++i) {
-        if (std::fabs(internalResistanceDataPairs[i][0] - current) < tolerance) return true;
+    WEB_LOCK();
+    int countPairs = std::clamp(resistanceDataCountPairs, 0, (int)MAX_RESISTANCE_POINTS);
+    for (int i = 0; i < countPairs; ++i) {
+        if (std::fabs(internalResistanceDataPairs[i][0] - current) < tolerance) {
+            WEB_UNLOCK();
+            return true;
+        }
     }
-    for (int i = 0; i < resistanceDataCount; ++i) {
-        if (std::fabs(internalResistanceData[i][0] - current) < tolerance) return true;
+    int countLu = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
+    for (int i = 0; i < countLu; ++i) {
+        if (std::fabs(internalResistanceData[i][0] - current) < tolerance) {
+            WEB_UNLOCK();
+            return true;
+        }
     }
+    WEB_UNLOCK();
     return false;
 }
 
 void computeIntervalMidpointsAndBlindSpots(std::vector<CandidatePoint>& candidates, float minI, float maxI, float activeCurrent) {
     candidates.clear();
     std::vector<float> uniqueCurrents;
-    uniqueCurrents.reserve(resistanceDataCountPairs + resistanceDataCount + 2);
 
     WEB_LOCK();
-    for (int i = 0; i < resistanceDataCountPairs; ++i) {
+    int countPairs = std::clamp(resistanceDataCountPairs, 0, (int)MAX_RESISTANCE_POINTS);
+    uniqueCurrents.reserve(countPairs + std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS) + 2);
+    for (int i = 0; i < countPairs; ++i) {
         float cur = internalResistanceDataPairs[i][0];
         if (cur >= minI && cur <= maxI) uniqueCurrents.push_back(cur);
     }
-    for (int i = 0; i < resistanceDataCount; ++i) {
+    int countLu = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
+    for (int i = 0; i < countLu; ++i) {
         float cur = internalResistanceData[i][0];
         if (cur >= minI && cur <= maxI) uniqueCurrents.push_back(cur);
     }
@@ -1648,6 +1660,7 @@ void bubbleSort(float data[][2], int n) {
 
 void storeResistanceData(float current, float resistance, float dataArray[MAX_RESISTANCE_POINTS][2], int& count) {
     if (count >= MAX_RESISTANCE_POINTS) return;
+    if (!std::isfinite(current) || !std::isfinite(resistance)) return;
     if (resistance > MIN_VALID_RESISTANCE && resistance < 1000.0f) {
         dataArray[count][0] = current;
         dataArray[count][1] = resistance;
@@ -1687,7 +1700,7 @@ void removeDataPoint(float data[][2], int& count, int index) {
 }
 
 void storeOrAverageResistanceData(float current, float resistance, float data[][2], int& count) {
-    if (resistance <= MIN_VALID_RESISTANCE || resistance >= 1000.0f || current < 0.0f) return;
+    if (!std::isfinite(current) || !std::isfinite(resistance) || resistance <= MIN_VALID_RESISTANCE || resistance >= 1000.0f || current < 0.0f) return;
     if (count < MAX_RESISTANCE_POINTS) {
         int insertIndex = 0;
         while (insertIndex < count && data[insertIndex][0] < current) insertIndex++;
