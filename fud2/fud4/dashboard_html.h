@@ -1140,14 +1140,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
         return;
       }
 
-      const isArr = data.length && Array.isArray(data[0]);
-      const arrI = data.map(d => isArr ? d[1] : d.i);
-      const arrV = data.map(d => isArr ? d[2] : d.v);
-      const arrD = data.map(d => isArr ? d[5] : d.d);
-      const arrTD = data.map(d => isArr ? (d[4] - d[3]) : d.td);
-      const arrTH = data.map(d => isArr ? d[8] : d.th);
-      const arrIRLU = data.map(d => isArr ? d[6] : d.irlu);
-      const arrIRP = data.map(d => isArr ? d[7] : d.irp);
+      const arrI = data.map(d => d[1]);
+      const arrV = data.map(d => d[2]);
+      const arrD = data.map(d => d[5]);
+      const arrTD = data.map(d => d[4] - d[3]);
+      const arrTH = data.map(d => d[8]);
+      const arrIRLU = data.map(d => d[6]);
+      const arrIRP = data.map(d => d[7]);
 
       const sI = autoScale(arrI);
       const sV = autoScale(arrV);
