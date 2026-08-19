@@ -1,5 +1,6 @@
 #include "definitions.h"
 #include "home_screen.h"
+#include "charging.h"
 #include "dashboard_html.h"
 
 #ifndef MOCK_TEST
@@ -156,6 +157,12 @@ struct StateSnapshot {
     BuildModelPhase phase;
     float offset;
     float noise;
+    uint32_t free_heap;
+    uint32_t min_free_heap;
+    uint32_t max_alloc_heap;
+    uint32_t total_heap;
+    uint16_t chargelog_len;
+    uint16_t thermal_hist_len;
 };
 
 static StateSnapshot getSnapshotState() {
@@ -171,22 +178,41 @@ static StateSnapshot getSnapshotState() {
     s.phase = buildModelPhase;
     s.offset = systemData.getCurrentZeroOffsetMv();
     s.noise = (float)noiseFloorMv;
+#ifndef MOCK_TEST
+    s.free_heap = ESP.getFreeHeap();
+    s.min_free_heap = ESP.getMinFreeHeap();
+    s.max_alloc_heap = ESP.getMaxAllocHeap();
+    s.total_heap = ESP.getHeapSize();
+#else
+    s.free_heap = 180000;
+    s.min_free_heap = 160000;
+    s.max_alloc_heap = 110000;
+    s.total_heap = 320000;
+#endif
+    s.chargelog_len = (uint16_t)chargeLog.size();
+    s.thermal_hist_len = (uint16_t)s_thermalHistory.size();
     WEB_UNLOCK();
     return s;
 }
 
 static void appendCborState(CborWriter& w, const StateSnapshot& s) {
-    w.startMap(10);
-    w.addText("app");    w.addInt((int64_t)s.app);
-    w.addText("display");w.addInt((int64_t)s.display);
-    w.addText("duty");   w.addInt((int64_t)s.duty);
-    w.addText("v");      w.addFloat(s.v);
-    w.addText("i");      w.addFloat(s.i);
-    w.addText("mah");    w.addFloat(s.mah);
-    w.addText("max_dt"); w.addFloat(s.max_dt);
-    w.addText("phase");  w.addInt((int64_t)s.phase);
-    w.addText("offset"); w.addFloat(s.offset);
-    w.addText("noise");  w.addFloat(s.noise);
+    w.startMap(16);
+    w.addText("app");       w.addInt((int64_t)s.app);
+    w.addText("display");   w.addInt((int64_t)s.display);
+    w.addText("duty");      w.addInt((int64_t)s.duty);
+    w.addText("v");         w.addFloat(s.v);
+    w.addText("i");         w.addFloat(s.i);
+    w.addText("mah");       w.addFloat(s.mah);
+    w.addText("max_dt");    w.addFloat(s.max_dt);
+    w.addText("phase");     w.addInt((int64_t)s.phase);
+    w.addText("offset");    w.addFloat(s.offset);
+    w.addText("noise");     w.addFloat(s.noise);
+    w.addText("free_hp");   w.addUInt(s.free_heap);
+    w.addText("min_hp");    w.addUInt(s.min_free_heap);
+    w.addText("max_blk");   w.addUInt(s.max_alloc_heap);
+    w.addText("tot_hp");    w.addUInt(s.total_heap);
+    w.addText("log_len");   w.addUInt(s.chargelog_len);
+    w.addText("th_len");    w.addUInt(s.thermal_hist_len);
 }
 
 static void sendCborState(AsyncWebSocketClient *client) {
