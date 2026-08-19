@@ -766,10 +766,15 @@ void buildCurrentModelStep() {
                             }
                         }
                     } else {
-                        // Sample power during heating phase
+                        // Sample internal cell heat power during heating phase
                         double t1_h, t2_h, td_h; float tmv_h, v_h, c_h;
                         getThermistorReadings(t1_h, t2_h, td_h, tmv_h, v_h, c_h);
-                        heatingPowerSum += (v_h * c_h);
+                        float r_cell = regressedInternalResistancePairsIntercept > 0.001f ? regressedInternalResistancePairsIntercept : 0.18f;
+                        float p_joule = c_h * c_h * r_cell;
+                        float v_drop = (sweepUnloadedV > 0.8f) ? std::fabs(v_h - sweepUnloadedV) : (c_h * r_cell);
+                        float p_polarization = std::max(0.0f, c_h * v_drop - p_joule);
+                        float cellP = p_joule + p_polarization;
+                        heatingPowerSum += cellP;
                         heatingPowerCount++;
 
                         bool targetTempReached = (t2_h - tempStart >= 0.5);
@@ -896,21 +901,32 @@ void buildCurrentModelStep() {
                         float heatDurationS = (shutoffTime > startTime) ? (float)(shutoffTime - startTime) / 1000.0f : 0.0f;
                         float avgHeatingP = (heatingPowerCount > 0) ? (float)(heatingPowerSum / heatingPowerCount) : 0.0f;
 
-                        if (avgHeatingP > 0.01f && deltaTempHeat > 0.05f && heatDurationS > 1.0f) {
+                        float nominalC = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+
+                        if (avgHeatingP > 0.001f && deltaTempHeat > 0.02f && heatDurationS > 1.0f) {
                             computedGTotal = (avgHeatingP / deltaTempHeat) * (1.0f - expf(-heatDurationS / (float)computedTau));
                             computedCTheta = computedGTotal * (float)computedTau;
                         } else {
-                            computedCTheta = DEFAULT_CELL_MASS_KG * DEFAULT_SPECIFIC_HEAT;
+                            computedCTheta = nominalC;
                             computedGTotal = computedCTheta / std::max(1.0f, (float)computedTau);
                         }
-                        if (computedGTotal < 0.001f) computedGTotal = 0.001f;
-                        if (computedCTheta < 1.0f) computedCTheta = 1.0f;
+
+                        if (computedCTheta < 10.0f || computedCTheta > 60.0f || !std::isfinite(computedCTheta)) {
+                            computedCTheta = nominalC;
+                            computedGTotal = computedCTheta / std::max(1.0f, (float)computedTau);
+                        }
+
+                        if (computedGTotal < 0.005f) computedGTotal = 0.005f;
+                        if (computedGTotal > 0.500f) computedGTotal = 0.500f;
 
                         float computedRTheta = 1.0f / computedGTotal;
                         float ambK = (float)peakAmbientTemp + 273.15f;
                         float G_rad = 4.0f * DEFAULT_EMISSIVITY * STEFAN_BOLTZMANN * DEFAULT_SURFACE_AREA_M2 * powf(ambK, 3.0f);
-                        float G_conv = std::max(0.0001f, computedGTotal - G_rad);
+                        float G_conv = std::max(0.001f, computedGTotal - G_rad);
                         float computedConvectiveH = G_conv / DEFAULT_SURFACE_AREA_M2;
+
+                        if (computedConvectiveH < 2.0f) computedConvectiveH = 2.0f;
+                        if (computedConvectiveH > 100.0f) computedConvectiveH = 100.0f;
 
                         float G_reconstructed = computedConvectiveH * DEFAULT_SURFACE_AREA_M2 + G_rad;
                         float G_rel_err = std::fabs(computedGTotal - G_reconstructed) / std::max(1e-4f, computedGTotal);

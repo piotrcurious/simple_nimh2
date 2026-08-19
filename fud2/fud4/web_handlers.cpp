@@ -325,13 +325,12 @@ static void sendCborChargeLog(AsyncWebSocketClient *client, size_t startOffset =
         for (size_t k = 0; k < itemsInBatch; k++) {
             const auto& entry = batchEntries[k];
 
-            w.startArray(9);
+            w.startArray(8);
             w.addUInt((uint64_t)entry.timestamp);
             w.addFloat(entry.current);
             w.addFloat(entry.voltage);
             w.addFloat(entry.ambientTemperature);
             w.addFloat(entry.batteryTemperature);
-            w.addInt((int64_t)entry.dutyCycle);
             w.addFloat(entry.internalResistanceLoadedUnloaded);
             w.addFloat(entry.internalResistancePairs);
             w.addFloat(entry.threshold);

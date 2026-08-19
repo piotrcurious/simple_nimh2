@@ -282,7 +282,6 @@ struct ChargeLogData {
     float voltage;
     float ambientTemperature;
     float batteryTemperature;
-    uint8_t dutyCycle;
     float internalResistanceLoadedUnloaded;
     float internalResistancePairs;
     float threshold;
