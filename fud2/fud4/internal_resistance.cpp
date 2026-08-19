@@ -1744,7 +1744,7 @@ float computeMedian(std::vector<float>& v) {
 
 void distribute_error(float data[][2], int count, float spacing_threshold, float error_threshold_multiplier) {
     if (count < DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE) return;
-    static std::vector<float> res;
+    std::vector<float> res;
     res.reserve(MAX_RESISTANCE_POINTS);
     for (int i = 0; i <= count - DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE; ++i) {
         for (int j = i + (DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE - 1); j < count; ++j) {

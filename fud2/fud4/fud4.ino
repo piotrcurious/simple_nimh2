@@ -210,7 +210,11 @@ inline AsyncWebSocketClient* resolve_client(AsyncWebSocketClient& c) { return &c
 
 static void sendFramePacket(bool timeoutFlag) {
 #ifndef MOCK_TEST
-    if (ws.count() == 0) return;
+    WEB_LOCK();
+    if (ws.count() == 0) {
+        WEB_UNLOCK();
+        return;
+    }
 
     // 1. Prepare the packet buffer
     uint8_t packet[18 + (CORE_COUNT * MAX_EVENTS_PER_CORE * 6)];
@@ -263,7 +267,7 @@ static void sendFramePacket(bool timeoutFlag) {
     // 6. Selective Broadcast (The Fix for the Disconnects)
     for (auto & c : ws.getClients()) {
         AsyncWebSocketClient* client = resolve_client(c);
-        if (client->status() == WS_CONNECTED) {
+        if (client && client->status() == WS_CONNECTED) {
             // Only send if the queue is not backed up.
             // 16 is a safe threshold for a 32-slot queue.
             if (client->queueLen() < 4) {
@@ -274,6 +278,7 @@ static void sendFramePacket(bool timeoutFlag) {
             }
         }
     }
+    WEB_UNLOCK();
 #endif
 }
 
@@ -995,6 +1000,8 @@ void buildCurrentModelStep() {
                             characIteration = 0;
                             characPhase = 0;
                             buildModelLastStepTime = now;
+                            cooloffSamples.clear();
+                            cooloffSamples.shrink_to_fit();
                             setBuildModelPhase(BuildModelPhase::Idle);
                         }
                     }
@@ -1041,6 +1048,11 @@ void buildCurrentModelStep() {
                 applyDuty(0);
                 WEB_UNLOCK();
 
+                dutyCycles.clear();
+                dutyCycles.shrink_to_fit();
+                currents.clear();
+                currents.shrink_to_fit();
+
                 Serial.println("Duty Cycle Model Built. Transitioning to Thermal Characterization.");
                 buildModelLastStepTime = now;
                 setBuildModelPhase(BuildModelPhase::ThermalCharacterize);
@@ -1050,6 +1062,10 @@ void buildCurrentModelStep() {
                 setAppState(APP_STATE_IDLE);
                 postModelAppState = APP_STATE_IDLE;
                 WEB_UNLOCK();
+                dutyCycles.clear();
+                dutyCycles.shrink_to_fit();
+                currents.clear();
+                currents.shrink_to_fit();
                 applyDuty(0);
                 setBuildModelPhase(BuildModelPhase::Idle);
             }
@@ -1142,7 +1158,9 @@ void task_webServer(void* parameter) {
         uint32_t frameRef = g_frameStartUs;
         uint32_t t0 = (uint32_t)(esp_timer_get_time() - frameRef);
 #ifndef MOCK_TEST
+        WEB_LOCK();
         ws.cleanupClients();
+        WEB_UNLOCK();
         broadcastLiveTelemetry();
 #endif
         uint32_t t1 = (uint32_t)(esp_timer_get_time() - frameRef);

@@ -282,6 +282,10 @@ static void sendCborChargeLog(AsyncWebSocketClient *client, size_t startOffset =
     std::unique_ptr<ChargeLogData[]> batchEntries(new (std::nothrow) ChargeLogData[batchSize]);
     if (!batchEntries) return;
 
+    constexpr size_t cap = batchSize * 60 + 128;
+    std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
+    if (!buf) return;
+
     for (size_t i = startOffset; i < total; i += batchSize) {
         if (!client || client->status() != WS_CONNECTED) {
             Serial.printf("Aborting CBOR log stream for client %u: client disconnected.\n", client ? client->id() : 0);
@@ -311,10 +315,6 @@ static void sendCborChargeLog(AsyncWebSocketClient *client, size_t startOffset =
         if (itemsInBatch == 0) break;
 
         uint8_t status = (i + itemsInBatch >= total) ? 1 : 0; // 1 = complete, 0 = in-progress
-
-        size_t cap = itemsInBatch * 60 + 128;
-        std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
-        if (!buf) break;
 
         CborWriter w(buf.get(), cap);
         w.startMap(4);
@@ -387,37 +387,41 @@ static bool cmdMatch(const char* data, size_t len, const char* target) {
 static bool processCommandRaw(const char* data, size_t len, AsyncWebSocketClient *client = nullptr) {
     if (!data || len == 0 || len > MAX_COMMAND_LENGTH) return false;
 
-    if (cmdMatch(data, len, "REQ_STATE")) {
+    char cmdBuf[MAX_COMMAND_LENGTH + 1];
+    memcpy(cmdBuf, data, len);
+    cmdBuf[len] = '\0';
+
+    if (cmdMatch(cmdBuf, len, "REQ_STATE")) {
         if (!client) return false;
         sendCborState(client);
         return true;
     }
-    if (cmdMatch(data, len, "REQ_HISTORY")) {
+    if (cmdMatch(cmdBuf, len, "REQ_HISTORY")) {
         if (!client) return false;
         sendCborHistory(client);
         return true;
     }
-    if (cmdMatch(data, len, "REQ_AMBIENT")) {
+    if (cmdMatch(cmdBuf, len, "REQ_AMBIENT")) {
         if (!client) return false;
         sendCborAmbient(client);
         return true;
     }
-    if (len >= 13 && memcmp(data, "REQ_CHARGELOG", 13) == 0) {
+    if (len >= 13 && memcmp(cmdBuf, "REQ_CHARGELOG", 13) == 0) {
         if (!client) return false;
         size_t startOffset = 0;
-        if (len > 14 && data[13] == ':') {
-            startOffset = (size_t)atoi(data + 14);
+        if (len > 14 && cmdBuf[13] == ':') {
+            startOffset = (size_t)atoi(cmdBuf + 14);
         }
         sendCborChargeLog(client, startOffset);
         return true;
     }
-    if (cmdMatch(data, len, "REQ_IR")) {
+    if (cmdMatch(cmdBuf, len, "REQ_IR")) {
         if (!client) return false;
         sendCborIR(client);
         return true;
     }
 
-    if (cmdMatch(data, len, "charge")) {
+    if (cmdMatch(cmdBuf, len, "charge")) {
         WEB_LOCK();
         resetAh = true;
         postModelAppState = APP_STATE_CHARGING;
@@ -472,7 +476,9 @@ void handleCommand(AsyncWebServerRequest *request) {
 void handleWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
     if (type == WS_EVT_CONNECT) {
         Serial.printf("WS Client connected [%u]\n", client->id());
+        WEB_LOCK();
         sendCborRoot(client);
+        WEB_UNLOCK();
     } else if (type == WS_EVT_DISCONNECT) {
         uint16_t reason = 0;
         if (arg != nullptr) {
@@ -483,7 +489,9 @@ void handleWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, 
         AwsFrameInfo *info = (AwsFrameInfo*)arg;
         if (info && info->final && info->index == 0 && info->len == len && len <= MAX_COMMAND_LENGTH) {
             if (info->opcode == WS_TEXT) {
+                WEB_LOCK();
                 processCommandRaw((const char*)data, len, client);
+                WEB_UNLOCK();
             }
         }
     }
@@ -495,8 +503,12 @@ void broadcastLiveTelemetry() {
     if ((uint32_t)(now - lastBroadcast) < 1000U) return;
     lastBroadcast = now;
 
+    WEB_LOCK();
     ws.cleanupClients();
-    if (ws.count() == 0) return;
+    if (ws.count() == 0) {
+        WEB_UNLOCK();
+        return;
+    }
 
     StateSnapshot state = getSnapshotState();
 
@@ -504,7 +516,10 @@ void broadcastLiveTelemetry() {
     CborWriter w(buffer, sizeof(buffer));
     appendCborState(w, state);
 
-    if (!w.ok() || w.size() == 0) return;
+    if (!w.ok() || w.size() == 0) {
+        WEB_UNLOCK();
+        return;
+    }
 
     for (auto & c : ws.getClients()) {
         AsyncWebSocketClient* client = resolve_client(c);
@@ -514,4 +529,5 @@ void broadcastLiveTelemetry() {
             }
         }
     }
+    WEB_UNLOCK();
 }

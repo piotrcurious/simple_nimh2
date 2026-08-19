@@ -69,7 +69,14 @@ void SystemDataManager::update(float estimatedCurrentA) {
                 currentA = estimatedCurrentA;
             }
 
+            if (!std::isfinite(currentA) || currentA < 0.0f) {
+                currentA = 0.0f;
+            }
+
             _currentData.mah_charged += (double)currentA * 1000.0 * delta_h;
+            if (!std::isfinite(_currentData.mah_charged) || _currentData.mah_charged < 0.0) {
+                _currentData.mah_charged = 0.0;
+            }
             _lastMahUpdateMs = now;
         }
 
@@ -155,26 +162,31 @@ void SystemDataManager::processAdcSnapshots() {
 }
 
 double SystemDataManager::calculateBatteryTemp(double ambientTemp, float therm1Mv, float vccMv) {
+    if (!std::isfinite(ambientTemp)) ambientTemp = 25.0;
     double averageAnalogValue = (double)therm1Mv - _therm1Offset;
     double vcc_millivolts = (double)vccMv;
 
     // Math Safety Guards: Avoid division by zero when denominator approaches zero
     double denominator = (vcc_millivolts * MAIN_VCC_RATIO) - averageAnalogValue;
-    if (std::abs(denominator) < 1e-6) return ambientTemp;
+    if (std::abs(denominator) < 1e-6 || !std::isfinite(denominator)) return ambientTemp;
 
     double vRatio = averageAnalogValue / denominator;
-    if (vRatio <= 0) return ambientTemp; // Avoid log of non-positive or zero
+    if (vRatio <= 0 || !std::isfinite(vRatio)) return ambientTemp; // Avoid log of non-positive or zero
 
     double logVRatio = log(vRatio);
     double ambientKelvin = ambientTemp + 273.15;
+    if (ambientKelvin <= 0.0 || !std::isfinite(ambientKelvin)) ambientKelvin = 298.15;
 
     double invBattKelvin = (1.0 / ambientKelvin) + (logVRatio / BCOEFFICIENT);
 
     // Math Safety Guards: Avoid division by zero in reciprocal Kelvin calculation
-    if (std::abs(invBattKelvin) < 1e-12) return ambientTemp;
+    if (std::abs(invBattKelvin) < 1e-12 || !std::isfinite(invBattKelvin)) return ambientTemp;
 
     double battKelvin = 1.0 / invBattKelvin;
-    return battKelvin - 273.15;
+    double battC = battKelvin - 273.15;
+    if (!std::isfinite(battC) || battC < -50.0 || battC > 150.0) return ambientTemp;
+
+    return battC;
 }
 
 SystemData SystemDataManager::getData() {
