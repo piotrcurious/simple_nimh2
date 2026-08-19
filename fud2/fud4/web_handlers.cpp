@@ -125,7 +125,7 @@ public:
 
 static void cborAddFloatArray(CborWriter& w, const float* arr, int len) {
     w.startArray(len);
-    for (int i = 0; i < len; i++) {
+    for (int i = 0; i < len && w.ok(); i++) {
         if (!std::isfinite(arr[i])) w.addNull();
         else w.addFloat(arr[i]);
     }
@@ -137,7 +137,7 @@ static void cborAddXYPairs(CborWriter& w, const float data[][2], int count) {
         return;
     }
     w.startArray(count);
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < count && w.ok(); i++) {
         w.startArray(2);
         w.addFloat(data[i][0]);
         w.addFloat(data[i][1]);
@@ -253,8 +253,9 @@ static void sendCborHistory(AsyncWebSocketClient *client) {
     memcpy(h->i, current_values, sizeof(h->i));
     WEB_UNLOCK();
 
-    std::vector<uint8_t> vec(PLOT_WIDTH * 5 * 8 + 64);
-    CborWriter w(vec.data(), vec.size());
+    size_t cap = PLOT_WIDTH * 5 * 8 + 64;
+    std::unique_ptr<uint8_t[]> buf(new uint8_t[cap]);
+    CborWriter w(buf.get(), cap);
     appendCborHistory(w, *h);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
@@ -270,8 +271,9 @@ static void sendCborAmbient(AsyncWebSocketClient *client) {
     memcpy(a->d, homeScreen.dew_point_history, sizeof(a->d));
     WEB_UNLOCK();
 
-    std::vector<uint8_t> vec(PLOT_WIDTH * 3 * 8 + 64);
-    CborWriter w(vec.data(), vec.size());
+    size_t cap = PLOT_WIDTH * 3 * 8 + 64;
+    std::unique_ptr<uint8_t[]> buf(new uint8_t[cap]);
+    CborWriter w(buf.get(), cap);
     appendCborAmbient(w, *a);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
@@ -292,8 +294,9 @@ static void sendCborIR(AsyncWebSocketClient *client) {
     }
     WEB_UNLOCK();
 
-    std::vector<uint8_t> vec(256 + (ir->luCount + ir->pairsCount) * 24);
-    CborWriter w(vec.data(), vec.size());
+    size_t cap = 256 + (ir->luCount + ir->pairsCount) * 24;
+    std::unique_ptr<uint8_t[]> buf(new uint8_t[cap]);
+    CborWriter w(buf.get(), cap);
     appendCborIR(w, *ir);
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
@@ -331,8 +334,9 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
 
         if (batchEntries.empty()) break;
 
-        std::vector<uint8_t> vec(batchEntries.size() * 150 + 64);
-        CborWriter w(vec.data(), vec.size());
+        size_t cap = batchEntries.size() * 150 + 64;
+        std::unique_ptr<uint8_t[]> buf(new uint8_t[cap]);
+        CborWriter w(buf.get(), cap);
         w.startMap(3);
         w.addText("offset"); w.addUInt(i);
         w.addText("batch"); w.startArray(batchEntries.size());
@@ -370,8 +374,9 @@ static void sendCborRoot(AsyncWebSocketClient *client) {
     memcpy(a->d, homeScreen.dew_point_history, sizeof(a->d));
     WEB_UNLOCK();
 
-    std::vector<uint8_t> vec(PLOT_WIDTH * 3 * 8 + 384);
-    CborWriter w(vec.data(), vec.size());
+    size_t cap = PLOT_WIDTH * 3 * 8 + 384;
+    std::unique_ptr<uint8_t[]> buf(new uint8_t[cap]);
+    CborWriter w(buf.get(), cap);
     w.startMap(2);
     w.addText("state");   appendCborState(w, state);
     w.addText("ambient"); appendCborAmbient(w, *a);
@@ -399,11 +404,31 @@ static bool cmdMatch(const char* data, size_t len, const char* target) {
 static bool processCommandRaw(const char* data, size_t len, AsyncWebSocketClient *client = nullptr) {
     if (!data || len == 0 || len > MAX_COMMAND_LENGTH) return false;
 
-    if (cmdMatch(data, len, "REQ_STATE")) { sendCborState(client); return true; }
-    if (cmdMatch(data, len, "REQ_HISTORY")) { sendCborHistory(client); return true; }
-    if (cmdMatch(data, len, "REQ_AMBIENT")) { sendCborAmbient(client); return true; }
-    if (cmdMatch(data, len, "REQ_CHARGELOG")) { sendCborChargeLog(client); return true; }
-    if (cmdMatch(data, len, "REQ_IR")) { sendCborIR(client); return true; }
+    if (cmdMatch(data, len, "REQ_STATE")) {
+        if (!client) return false;
+        sendCborState(client);
+        return true;
+    }
+    if (cmdMatch(data, len, "REQ_HISTORY")) {
+        if (!client) return false;
+        sendCborHistory(client);
+        return true;
+    }
+    if (cmdMatch(data, len, "REQ_AMBIENT")) {
+        if (!client) return false;
+        sendCborAmbient(client);
+        return true;
+    }
+    if (cmdMatch(data, len, "REQ_CHARGELOG")) {
+        if (!client) return false;
+        sendCborChargeLog(client);
+        return true;
+    }
+    if (cmdMatch(data, len, "REQ_IR")) {
+        if (!client) return false;
+        sendCborIR(client);
+        return true;
+    }
 
     if (cmdMatch(data, len, "charge")) {
         WEB_LOCK();
@@ -446,18 +471,14 @@ static bool processCommandRaw(const char* data, size_t len, AsyncWebSocketClient
     return false;
 }
 
-static void processCommand(String cmd, AsyncWebSocketClient *client = nullptr) {
-    processCommandRaw(cmd.c_str(), cmd.length(), client);
-}
-
 void handleCommand(AsyncWebServerRequest *request) {
     String cmd = request->arg("cmd");
     Serial.printf("DEBUG: Web command received: %s\n", cmd.c_str());
-    bool recognized = processCommandRaw(cmd.c_str(), cmd.length());
+    bool recognized = processCommandRaw(cmd.c_str(), cmd.length(), nullptr);
     if (recognized) {
         request->send(200, "text/plain", "OK");
     } else {
-        request->send(400, "text/plain", "Bad Request: Unknown command");
+        request->send(400, "text/plain", "Bad Request: Unknown or unsupported command");
     }
 }
 
