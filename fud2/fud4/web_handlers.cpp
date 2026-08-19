@@ -307,8 +307,10 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_LOG_HIGH_WATER)) return;
 
     size_t total = 0;
+    uint32_t startGen = 0;
     WEB_LOCK();
     total = chargeLog.size();
+    startGen = chargeLogGeneration;
     WEB_UNLOCK();
 
     if (total == 0) return;
@@ -325,6 +327,11 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
         batchEntries.reserve(batchSize);
 
         WEB_LOCK();
+        if (chargeLogGeneration != startGen) {
+            WEB_UNLOCK();
+            Serial.printf("Aborting CBOR log stream for client %u: dataset mutated during transfer.\n", client->id());
+            break;
+        }
         size_t currentSize = chargeLog.size();
         size_t batchTotal = std::min(total, currentSize);
         for (size_t j = 0; j < batchSize && (i + j) < batchTotal; j++) {
