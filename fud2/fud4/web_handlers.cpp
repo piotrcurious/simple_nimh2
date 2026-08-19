@@ -266,7 +266,7 @@ static void sendCborIR(AsyncWebSocketClient *client) {
     }
 }
 
-static void sendCborChargeLog(AsyncWebSocketClient *client) {
+static void sendCborChargeLog(AsyncWebSocketClient *client, size_t startOffset = 0) {
     if (!clientReadyForMessage(client, WS_LOG_HIGH_WATER)) return;
 
     size_t total = 0;
@@ -276,15 +276,13 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
     startGen = chargeLogGeneration;
     WEB_UNLOCK();
 
-    if (total == 0) return;
+    if (total == 0 || startOffset >= total) return;
 
     constexpr size_t batchSize = 100;
     std::unique_ptr<ChargeLogData[]> batchEntries(new (std::nothrow) ChargeLogData[batchSize]);
     if (!batchEntries) return;
 
-    size_t batchesSent = 0;
-
-    for (size_t i = 0; i < total; i += batchSize) {
+    for (size_t i = startOffset; i < total; i += batchSize) {
         if (!client || client->status() != WS_CONNECTED) {
             Serial.printf("Aborting CBOR log stream for client %u: client disconnected.\n", client ? client->id() : 0);
             break;
@@ -292,10 +290,6 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
 
         if (client->queueLen() >= WS_LOG_HIGH_WATER) {
             Serial.printf("Aborting CBOR log stream for client %u: queue backed up (queueLen = %zu).\n", client->id(), client->queueLen());
-            break;
-        }
-
-        if (batchesSent >= 2 && client->queueLen() > 0) {
             break;
         }
 
@@ -345,7 +339,6 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
         w.addText("total"); w.addUInt(total);
         if (w.ok() && w.size() > 0) {
             client->binary(w.data(), w.size());
-            batchesSent++;
         }
     }
 }
@@ -410,9 +403,13 @@ static bool processCommandRaw(const char* data, size_t len, AsyncWebSocketClient
         sendCborAmbient(client);
         return true;
     }
-    if (cmdMatch(data, len, "REQ_CHARGELOG")) {
+    if (len >= 13 && memcmp(data, "REQ_CHARGELOG", 13) == 0) {
         if (!client) return false;
-        sendCborChargeLog(client);
+        size_t startOffset = 0;
+        if (len > 14 && data[13] == ':') {
+            startOffset = (size_t)atoi(data + 14);
+        }
+        sendCborChargeLog(client, startOffset);
         return true;
     }
     if (cmdMatch(data, len, "REQ_IR")) {
