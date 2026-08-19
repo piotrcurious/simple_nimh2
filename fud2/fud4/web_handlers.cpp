@@ -361,31 +361,31 @@ static void sendCborChargeLog(AsyncWebSocketClient *client) {
 
         if (itemsInBatch == 0) break;
 
-        size_t cap = itemsInBatch * 150 + 64;
+        uint8_t status = (i + itemsInBatch >= total) ? 1 : 0; // 1 = complete, 0 = in-progress
+
+        size_t cap = itemsInBatch * 60 + 128;
         std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
         if (!buf) break;
 
         CborWriter w(buf.get(), cap);
-        w.startMap(3);
+        w.startMap(4);
         w.addText("offset"); w.addUInt(i);
-        w.addText("batch"); w.startArray(itemsInBatch);
+        w.addText("status"); w.addUInt(status);
+        w.addText("batch");  w.startArray(itemsInBatch);
 
         for (size_t k = 0; k < itemsInBatch; k++) {
             const auto& entry = batchEntries[k];
-            float td = entry.batteryTemperature - entry.ambientTemperature;
-            float thresholdValue = entry.threshold;
 
-            w.startMap(10);
-            w.addText("t");    w.addUInt((uint64_t)entry.timestamp);
-            w.addText("i");    w.addFloat(entry.current);
-            w.addText("v");    w.addFloat(entry.voltage);
-            w.addText("at");   w.addFloat(entry.ambientTemperature);
-            w.addText("bt");   w.addFloat(entry.batteryTemperature);
-            w.addText("d");    w.addInt((int64_t)entry.dutyCycle);
-            w.addText("irlu"); w.addFloat(entry.internalResistanceLoadedUnloaded);
-            w.addText("irp");  w.addFloat(entry.internalResistancePairs);
-            w.addText("td");   w.addFloat(td);
-            w.addText("th");   w.addFloat(thresholdValue);
+            w.startArray(9);
+            w.addUInt((uint64_t)entry.timestamp);
+            w.addFloat(entry.current);
+            w.addFloat(entry.voltage);
+            w.addFloat(entry.ambientTemperature);
+            w.addFloat(entry.batteryTemperature);
+            w.addInt((int64_t)entry.dutyCycle);
+            w.addFloat(entry.internalResistanceLoadedUnloaded);
+            w.addFloat(entry.internalResistancePairs);
+            w.addFloat(entry.threshold);
         }
         w.addText("total"); w.addUInt(total);
         if (w.ok() && w.size() > 0) {
