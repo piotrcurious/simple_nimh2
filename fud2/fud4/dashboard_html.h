@@ -1297,11 +1297,12 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       // Tie dT scale directly to Th scale
       const sTD = [sTH[0], sTH[1]];
 
-      const sIRLU = autoScale(arrIRLU);
-      const sIRP = autoScale(arrIRP);
+      const sIRLU_raw = autoScale(arrIRLU);
+      const sIRP_raw = autoScale(arrIRP);
+      const sIR = [Math.min(sIRLU_raw[0], sIRP_raw[0]), Math.max(sIRLU_raw[1], sIRP_raw[1])];
 
-      const yMin = Math.min(sI[0], sV[0], sTD[0], sTH[0], sIRLU[0], sIRP[0]);
-      const yMax = Math.max(sI[1], sV[1], sTD[1], sTH[1], sIRLU[1], sIRP[1]);
+      const yMin = Math.min(sI[0], sV[0], sTD[0], sTH[0], sIR[0]);
+      const yMax = Math.max(sI[1], sV[1], sTD[1], sTH[1], sIR[1]);
 
       drawAxes(ctx, margin, 0, data.length - 1, 'Index', yMin, yMax, 'Auto-scaled');
       drawRegion(ctx, arrTD, arrTH, 'rgba(255,108,122,0.20)', Math.min(sTD[0], sTH[0]), Math.max(sTD[1], sTH[1]), margin);
@@ -1310,13 +1311,13 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       drawSeries(ctx, arrV, '#ffe86a', sV[0], sV[1], margin, 'V', 1);
       drawSeries(ctx, arrTD, '#58a8ff', sTD[0], sTD[1], margin, 'dT', 1);
       drawSeries(ctx, arrTH, '#ff6c7a', sTH[0], sTH[1], margin, 'Th', 1);
-      drawSeries(ctx, arrIRLU, '#ffb05a', sIRLU[0], sIRLU[1], margin, 'RiLU', 1);
-      drawSeries(ctx, arrIRP, '#58fff3', sIRP[0], sIRP[1], margin, 'RiP', 1);
+      drawSeries(ctx, arrIRLU, '#ffb05a', sIR[0], sIR[1], margin, 'RiLU', 1);
+      drawSeries(ctx, arrIRP, '#58fff3', sIR[0], sIR[1], margin, 'RiP', 1);
 
       const last = data[data.length - 1];
       dom.chargeLegend.textContent =
         `I[${fmt(sI[0],2)}, ${fmt(sI[1],2)}]  V[${fmt(sV[0],2)}, ${fmt(sV[1],2)}]  Duty[${fmt(sD[0],0)}, ${fmt(sD[1],0)}]  dT[${fmt(sTD[0],2)}, ${fmt(sTD[1],2)}]\n` +
-        `Th[${fmt(sTH[0],2)}, ${fmt(sTH[1],2)}]  RiLU[${fmt(sIRLU[0],2)}, ${fmt(sIRLU[1],2)}]  RiP[${fmt(sIRP[0],2)}, ${fmt(sIRP[1],2)}]\n` +
+        `Th[${fmt(sTH[0],2)}, ${fmt(sTH[1],2)}]  RiLU[${fmt(sIR[0],2)}, ${fmt(sIR[1],2)}]  RiP[${fmt(sIR[0],2)}, ${fmt(sIR[1],2)}]\n` +
         `Latest: V=${fmt(last.v,3)}  I=${fmt(last.i,3)}  dT=${fmt(last.td,2)}  Th=${fmt(last.th,2)}`;
     }
 
