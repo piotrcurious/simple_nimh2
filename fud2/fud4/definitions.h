@@ -64,7 +64,9 @@
 #define CHARGING_HOUSEKEEP_INTERVAL 250
 #define MAX_CHARGE_LOG_SIZE 1000
 #define MAIN_VCC_RATIO 2.0
-#define CURRENT_SHUNT_RESISTANCE 2.5f
+//#define CURRENT_SHUNT_RESISTANCE 2.5f
+#define CURRENT_SHUNT_RESISTANCE 13.5f
+
 #define CURRENT_SHUNT_PIN_ZERO_OFFSET 75
 #define PWM_FREQUENCY 8000
 #define BUILD_CURRENT_MODEL_DELAY 250
@@ -96,14 +98,14 @@ const int MAX_DUTY_CYCLE = 255;
 const int DUTY_CYCLE_INCREMENT_FIND_MIN = 5;
 const int STABILIZATION_DELAY_MS = 2000;
 const int STABILIZATION_PAIRS_FIND_DELAY_MS = 2000;
-const int UNLOADED_VOLTAGE_DELAY_MS = 2000;
+const int UNLOADED_VOLTAGE_DELAY_MS = 4000;
 const int MIN_DUTY_CYCLE_ADJUSTMENT_STEP = 1;
 const float MIN_CURRENT_DIFFERENCE_FOR_PAIR = 0.1f;
 const float MIN_VALID_RESISTANCE = 0.0f;
 const int MAX_RESISTANCE_POINTS = 100;
 
 // --- Charging and Remeasurement Constants ---
-const unsigned long PULSE_IR_REMEASURE_STABILIZATION_MS = 2000; // Duration of each sub-step during pulse IR re-measurement
+const unsigned long PULSE_IR_REMEASURE_STABILIZATION_MS = 4000; // Duration of each sub-step during pulse IR re-measurement
 const float REMEASURE_MIN_CURRENT_DIFF = 0.03f;                 // Minimum current delta required to calculate local IR (A)
 const float REMEASURE_DEFAULT_IR_FALLBACK = 0.15f;              // Default fallback internal resistance if delta cur is too low (Ohms)
 const float REMEASURE_MAX_VALID_IR = 15.0f;                      // Maximum physically plausible IR before falling back to sweep test (Ohms)
@@ -117,19 +119,19 @@ const int STRATIFIED_LU_SEGMENTS = 4;                            // Number of eq
 const double TEMPERATURE_DERIVATIVE_SMOOTHING_ALPHA = 0.5;      // Exponential moving average smoothing factor for raw temperature derivative
 
 // --- Categorized IR Pair & Re-measurement Constants ---
-const int PULSE_REMEASURE_BUDGET = 12;                         // Increased budget of re-measurements per pulse cycle
-const float GLOBAL_PAIR_MIN_DELTA_I = 0.25f;                     // Min current delta for global pairs (large Delta I, stable baseline)
-const float LOCAL_PAIR_MAX_DELTA_I = 0.18f;                     // Max current delta for local pairs (close currents, local accuracy)
+const int PULSE_REMEASURE_BUDGET = 18;                         // Increased budget of re-measurements per pulse cycle
+const float GLOBAL_PAIR_MIN_DELTA_I = 0.10f;                     // Min current delta for global pairs (large Delta I, stable baseline)
+const float LOCAL_PAIR_MAX_DELTA_I = 0.10f;                     // Max current delta for local pairs (close currents, local accuracy)
 const float LOCAL_PAIR_MIN_DELTA_I = 0.04f;                     // Min current delta for local pairs
 const float MIN_VALID_DUTY_MODEL_SLOPE = 0.0003f;                // Min valid dI/dDC slope to predict linear current region
 const float MODEL_CORRECTION_WEIGHT = 0.35f;                    // Blend weight for duty model current delta vs measured delta
-const float EXPLORATION_TOLERANCE_CURRENT = 0.008f;             // 8mA exclusion distance for already-measured currents
+const float EXPLORATION_TOLERANCE_CURRENT = 0.004f;             // 8mA exclusion distance for already-measured currents
 
 // --- Outlier and Error Distribution Constants ---
-const float DISTRIBUTE_ERROR_DEFAULT_SPACING = 0.05f;           // Default spacing threshold if data count is low (A)
+const float DISTRIBUTE_ERROR_DEFAULT_SPACING = 0.02f;           // Default spacing threshold if data count is low (A)
 const float DISTRIBUTE_ERROR_MIN_SPACING = 0.04f;               // Minimum allowed spacing threshold (A)
-const float DISTRIBUTE_ERROR_SPACING_MULTIPLIER = 1.5f;         // Multiplier for average spacing to compute spacing threshold
-const float DISTRIBUTE_ERROR_SD_MULTIPLIER = 1.5f;              // Number of standard deviations above median to classify an IR point as an outlier
+const float DISTRIBUTE_ERROR_SPACING_MULTIPLIER = 1.2f;         // Multiplier for average spacing to compute spacing threshold
+const float DISTRIBUTE_ERROR_SD_MULTIPLIER = 1.2f;              // Number of standard deviations above median to classify an IR point as an outlier
 const float DISTRIBUTE_ERROR_SMOOTHING_ALPHA = 0.6f;            // Blending factor (alpha) to pull outlier points toward the local median
 const int DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE = 5;           // Minimum number of points in neighborhood for outlier detection/standard deviation
 
