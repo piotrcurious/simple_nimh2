@@ -1296,9 +1296,9 @@ bool chargeBattery() {
                     }
                 }
 
-                // Safety and End of Charge checks: debounce both overtemperature and outgassing triggers
-                if (td_true > (MAX_DIFF_TEMP) || outgassingTriggered) {
-                    if (++overtemp_trip_counter >= OVERTEMP_TRIP_TRESHOLD || outgassingTriggered) {
+                // Safety and End of Charge checks: debounce overtemperature. outgassing lowers threshold of overtemperature 
+                if (td_true > (MAX_DIFF_TEMP) ) {
+                    if (++overtemp_trip_counter >= OVERTEMP_TRIP_TRESHOLD ) {
                         overtemp_trip_counter = 0;
                         outgassing_trip_counter = 0;
                         chargingState = CHARGE_STOPPED;
