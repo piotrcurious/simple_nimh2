@@ -984,6 +984,14 @@ bool evaluateElectrodeParameters(
     return evaluateElectrodeParameters(measurement);
 }
 
+ElectrodeParameters getElectrodeParametersSnapshot() {
+    ElectrodeParameters snap;
+    WEB_LOCK();
+    snap = g_electrode;
+    WEB_UNLOCK();
+    return snap;
+}
+
 // Helper function to initiate measurement
 void getSingleMeasurement(int dc, IRState nextState) {
     applyDuty(dc);
@@ -1087,7 +1095,8 @@ void measureInternalResistanceStep() {
 
         case IR_STATE_GET_MEASUREMENT:
             {
-                unsigned long reqDelay = g_electrode.evaluated ? g_electrode.adaptiveDelayMs : STABILIZATION_DELAY_MS;
+                ElectrodeParameters electrodeSnap = getElectrodeParametersSnapshot();
+                unsigned long reqDelay = electrodeSnap.evaluated ? electrodeSnap.adaptiveDelayMs : STABILIZATION_DELAY_MS;
                 if (now - irStateChangeTime >= reqDelay) {
                     getThermistorReadings(currentMeasurement.temp1, currentMeasurement.temp2,
                                          currentMeasurement.tempDiff, currentMeasurement.t1_millivolts,

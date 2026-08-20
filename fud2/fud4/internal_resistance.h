@@ -28,6 +28,7 @@ bool evaluateElectrodeParameters(
     float specificCdl_F_per_m2 = -1.0f);
 
 // Coverage tracking, interval midpoint discovery, and budget candidate allocator
+ElectrodeParameters getElectrodeParametersSnapshot();
 bool isCurrentCovered(float current, float tolerance);
 void computeIntervalMidpointsAndBlindSpots(CandidateBuffer& candidates, float minI, float maxI, float activeCurrent);
 

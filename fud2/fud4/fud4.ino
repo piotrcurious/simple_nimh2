@@ -625,7 +625,8 @@ void buildCurrentModelStep() {
                 if (characPhase == 0) {
                     if (!characSweepDone) {
                         // Categorized sweep state machine with dynamic adaptive delays and electrode evaluation
-                        unsigned long requiredDelay = g_electrode.adaptiveDelayMs > 0 ? (unsigned long)g_electrode.adaptiveDelayMs : 1000UL;
+                        ElectrodeParameters electrodeSnap = getElectrodeParametersSnapshot();
+                        unsigned long requiredDelay = electrodeSnap.adaptiveDelayMs > 0 ? (unsigned long)electrodeSnap.adaptiveDelayMs : 1000UL;
 
                         if (sweepStep == -1) {
                             if (now - startTime >= requiredDelay) {
