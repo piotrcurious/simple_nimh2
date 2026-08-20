@@ -646,7 +646,7 @@ bool chargeBattery() {
                 unsigned long reqStepDelay = g_electrode.evaluated ? g_electrode.adaptiveDelayMs : 1000;
 
                 if (s_irTest.step == 0) {
-                    if (stepElapsed >= 1000) {
+                    if (stepElapsed >= reqStepDelay) {
                         s_irTest.unloadedVoltage = v;
                         s_irTest.step = 1;
                         s_irTest.stepStartTime = now;
