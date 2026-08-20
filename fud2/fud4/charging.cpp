@@ -368,7 +368,10 @@ bool findOptimalChargingDutyCycleStepAsync() {
                 WEB_UNLOCK();
             }
             findOpt.cache.push_back(cur);
-            if (cur.loadedVoltage < findOpt.targetVoltage) findOpt.lowDC = cur.dutyCycle; else findOpt.highDC = cur.dutyCycle;
+            if (cur.loadedVoltage < findOpt.targetVoltage) findOpt.lowDC = std::max(findOpt.lowDC, (int)cur.dutyCycle);
+            else findOpt.highDC = std::min(findOpt.highDC, (int)cur.dutyCycle);
+            findOpt.lowDC = std::clamp(findOpt.lowDC, MIN_CHARGE_DUTY_CYCLE, findOpt.maxDC);
+            findOpt.highDC = std::clamp(findOpt.highDC, findOpt.lowDC, findOpt.maxDC);
             if (fabs(cur.loadedVoltage - findOpt.targetVoltage) < findOpt.closestVoltageDifference) { findOpt.closestVoltageDifference = fabs(cur.loadedVoltage - findOpt.targetVoltage); findOpt.optimalDC = cur.dutyCycle; }
             findOpt.phase = FIND_BINARY_PREPARE;
         }
@@ -436,7 +439,10 @@ bool remeasureStep() {
                     WEB_UNLOCK();
                     }
                     findOpt.cache.push_back(res);
-                    if (res.current < remeasure.targetCurrent) remeasure.lowDC = res.dutyCycle; else remeasure.highDC = res.dutyCycle;
+                    if (res.current < remeasure.targetCurrent) remeasure.lowDC = std::max((int)remeasure.lowDC, (int)res.dutyCycle);
+                    else remeasure.highDC = std::min((int)remeasure.highDC, (int)res.dutyCycle);
+                    remeasure.lowDC = (uint8_t)std::clamp((int)remeasure.lowDC, MIN_CHARGE_DUTY_CYCLE, MAX_CHARGE_DUTY_CYCLE);
+                    remeasure.highDC = (uint8_t)std::clamp((int)remeasure.highDC, (int)remeasure.lowDC, MAX_CHARGE_DUTY_CYCLE);
                     remeasure.phase = REMEASURE_BINARY_SEARCH_PREPARE;
                 }
             }
