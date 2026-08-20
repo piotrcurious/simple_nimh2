@@ -328,76 +328,53 @@ static void sendCborIR(AsyncWebSocketClient *client) {
 static void sendCborChargeLog(AsyncWebSocketClient *client, size_t startOffset = 0) {
     if (!clientReadyForMessage(client, WS_LOG_HIGH_WATER)) return;
 
-    size_t total = 0;
-    uint32_t startGen = 0;
-    WEB_LOCK();
-    total = chargeLog.size();
-    startGen = chargeLogGeneration;
-    WEB_UNLOCK();
-
-    if (total == 0 || startOffset >= total) return;
-
     constexpr size_t batchSize = 100;
     std::unique_ptr<ChargeLogData[]> batchEntries(new (std::nothrow) ChargeLogData[batchSize]);
     if (!batchEntries) return;
+
+    size_t total = 0;
+    size_t itemsInBatch = 0;
+
+    WEB_LOCK();
+    total = chargeLog.size();
+    if (total > 0 && startOffset < total) {
+        size_t batchEnd = std::min(total, startOffset + batchSize);
+        for (size_t j = startOffset; j < batchEnd; j++) {
+            batchEntries[itemsInBatch++] = chargeLog[j];
+        }
+    }
+    WEB_UNLOCK();
+
+    if (itemsInBatch == 0) return;
 
     constexpr size_t cap = batchSize * 60 + 128;
     std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
     if (!buf) return;
 
-    for (size_t i = startOffset; i < total; i += batchSize) {
-        if (!client || client->status() != WS_CONNECTED) {
-            Serial.printf("Aborting CBOR log stream for client %u: client disconnected.\n", client ? client->id() : 0);
-            break;
-        }
+    uint8_t status = (startOffset + itemsInBatch >= total) ? 1 : 0; // 1 = complete, 0 = in-progress
 
-        if (client->queueLen() >= WS_LOG_HIGH_WATER) {
-            Serial.printf("Aborting CBOR log stream for client %u: queue backed up (queueLen = %zu).\n", client->id(), client->queueLen());
-            break;
-        }
+    CborWriter w(buf.get(), cap);
+    w.startMap(4);
+    w.addText("offset"); w.addUInt(startOffset);
+    w.addText("status"); w.addUInt(status);
+    w.addText("batch");  w.startArray(itemsInBatch);
 
-        size_t itemsInBatch = 0;
+    for (size_t k = 0; k < itemsInBatch; k++) {
+        const auto& entry = batchEntries[k];
 
-        WEB_LOCK();
-        if (chargeLogGeneration != startGen) {
-            WEB_UNLOCK();
-            Serial.printf("Aborting CBOR log stream for client %u: dataset mutated during transfer.\n", client->id());
-            break;
-        }
-        size_t currentSize = chargeLog.size();
-        size_t batchTotal = std::min(total, currentSize);
-        for (size_t j = 0; j < batchSize && (i + j) < batchTotal; j++) {
-            batchEntries[itemsInBatch++] = chargeLog[i + j];
-        }
-        WEB_UNLOCK();
-
-        if (itemsInBatch == 0) break;
-
-        uint8_t status = (i + itemsInBatch >= total) ? 1 : 0; // 1 = complete, 0 = in-progress
-
-        CborWriter w(buf.get(), cap);
-        w.startMap(4);
-        w.addText("offset"); w.addUInt(i);
-        w.addText("status"); w.addUInt(status);
-        w.addText("batch");  w.startArray(itemsInBatch);
-
-        for (size_t k = 0; k < itemsInBatch; k++) {
-            const auto& entry = batchEntries[k];
-
-            w.startArray(8);
-            w.addUInt((uint64_t)entry.timestamp);
-            w.addFloat(entry.current);
-            w.addFloat(entry.voltage);
-            w.addFloat(entry.ambientTemperature);
-            w.addFloat(entry.batteryTemperature);
-            w.addFloat(entry.internalResistanceLoadedUnloaded);
-            w.addFloat(entry.internalResistancePairs);
-            w.addFloat(entry.threshold);
-        }
-        w.addText("total"); w.addUInt(total);
-        if (w.ok() && w.size() > 0) {
-            client->binary(w.data(), w.size());
-        }
+        w.startArray(8);
+        w.addUInt((uint64_t)entry.timestamp);
+        w.addFloat(entry.current);
+        w.addFloat(entry.voltage);
+        w.addFloat(entry.ambientTemperature);
+        w.addFloat(entry.batteryTemperature);
+        w.addFloat(entry.internalResistanceLoadedUnloaded);
+        w.addFloat(entry.internalResistancePairs);
+        w.addFloat(entry.threshold);
+    }
+    w.addText("total"); w.addUInt(total);
+    if (w.ok() && w.size() > 0) {
+        client->binary(w.data(), w.size());
     }
 }
 
