@@ -2,6 +2,7 @@
 #include "home_screen.h"
 #include "charging.h"
 #include "dashboard_html.h"
+#include "calibrate_html.h"
 
 #ifndef MOCK_TEST
 #include <WiFi.h>
@@ -163,6 +164,8 @@ struct StateSnapshot {
     uint32_t total_heap;
     uint16_t chargelog_len;
     uint16_t thermal_hist_len;
+    float shunt_r;
+    float shunt_mv;
 };
 
 static StateSnapshot getSnapshotState() {
@@ -191,12 +194,14 @@ static StateSnapshot getSnapshotState() {
 #endif
     s.chargelog_len = (uint16_t)chargeLog.size();
     s.thermal_hist_len = (uint16_t)s_thermalHistory.size();
+    s.shunt_r = systemData.getShuntResistance();
+    s.shunt_mv = systemData.getData().current_mv - systemData.getCurrentZeroOffsetMv();
     WEB_UNLOCK();
     return s;
 }
 
 static void appendCborState(CborWriter& w, const StateSnapshot& s) {
-    w.startMap(16);
+    w.startMap(18);
     w.addText("app");       w.addInt((int64_t)s.app);
     w.addText("display");   w.addInt((int64_t)s.display);
     w.addText("duty");      w.addInt((int64_t)s.duty);
@@ -213,6 +218,8 @@ static void appendCborState(CborWriter& w, const StateSnapshot& s) {
     w.addText("tot_hp");    w.addUInt(s.total_heap);
     w.addText("log_len");   w.addUInt(s.chargelog_len);
     w.addText("th_len");    w.addUInt(s.thermal_hist_len);
+    w.addText("shunt_r");   w.addFloat(s.shunt_r);
+    w.addText("shunt_mv");  w.addFloat(s.shunt_mv);
 }
 
 static void sendCborState(AsyncWebSocketClient *client) {
@@ -405,6 +412,13 @@ void handleRoot(AsyncWebServerRequest *request) {
     request->send(response);
 }
 
+void handleCalibratePage(AsyncWebServerRequest *request) {
+    Serial.println("WEB: handleCalibratePage");
+    AsyncWebServerResponse *response = request->beginResponse_P(200, "text/html", CALIBRATE_HTML);
+    response->addHeader("Connection", "close");
+    request->send(response);
+}
+
 static bool cmdMatch(const char* data, size_t len, const char* target) {
     size_t tlen = strlen(target);
     return (len == tlen && memcmp(data, target, len) == 0);
@@ -444,6 +458,41 @@ static bool processCommandRaw(const char* data, size_t len, AsyncWebSocketClient
     if (cmdMatch(cmdBuf, len, "REQ_IR")) {
         if (!client) return false;
         sendCborIR(client);
+        return true;
+    }
+
+    if (len >= 9 && (memcmp(cmdBuf, "SET_DUTY:", 9) == 0 || memcmp(cmdBuf, "set_duty:", 9) == 0)) {
+        int val = atoi(cmdBuf + 9);
+        val = std::clamp(val, 0, 255);
+        setAppState(APP_STATE_IDLE);
+        applyDuty(val);
+        return true;
+    }
+    if (len >= 5 && (memcmp(cmdBuf, "duty:", 5) == 0 || memcmp(cmdBuf, "DUTY:", 5) == 0)) {
+        int val = atoi(cmdBuf + 5);
+        val = std::clamp(val, 0, 255);
+        setAppState(APP_STATE_IDLE);
+        applyDuty(val);
+        return true;
+    }
+    if (len >= 12 && (memcmp(cmdBuf, "SET_SHUNT_R:", 12) == 0 || memcmp(cmdBuf, "set_shunt_r:", 12) == 0)) {
+        float val = atof(cmdBuf + 12);
+        if (std::isfinite(val) && val > 0.01f && val < 1000.0f) {
+            systemData.setShuntResistance(val);
+            return true;
+        }
+        return false;
+    }
+    if (len >= 13 && (memcmp(cmdBuf, "SAVE_SHUNT_R:", 13) == 0 || memcmp(cmdBuf, "save_shunt_r:", 13) == 0)) {
+        float val = atof(cmdBuf + 13);
+        if (std::isfinite(val) && val > 0.01f && val < 1000.0f) {
+            systemData.saveShuntResistance(val);
+            return true;
+        }
+        return false;
+    }
+    if (cmdMatch(cmdBuf, len, "SAVE_SHUNT_R") || cmdMatch(cmdBuf, len, "save_shunt_r")) {
+        systemData.saveShuntResistance(systemData.getShuntResistance());
         return true;
     }
 

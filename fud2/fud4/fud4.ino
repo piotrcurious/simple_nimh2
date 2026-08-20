@@ -30,6 +30,7 @@ constexpr TickType_t TASK_DELAY_THERMISTOR_MS = 50;
 extern void measureInternalResistanceStep();
 extern volatile IRState currentIRState;
 extern void handleRoot(AsyncWebServerRequest *request);
+extern void handleCalibratePage(AsyncWebServerRequest *request);
 extern void handleData(AsyncWebServerRequest *request);
 extern void handleCommand(AsyncWebServerRequest *request);
 #ifndef MOCK_TEST
@@ -1186,6 +1187,7 @@ void setup() {
     ws.onEvent(handleWebSocketEvent);
     server.addHandler(&ws);
     server.on("/", HTTP_GET, handleRoot);
+    server.on("/calibrate", HTTP_GET, handleCalibratePage);
     server.on("/data", HTTP_GET, handleData);
     server.on("/command", HTTP_GET, handleCommand);
     server.begin();

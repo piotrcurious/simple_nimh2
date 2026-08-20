@@ -3,6 +3,9 @@
 #include <cmath>
 #include <cstring>
 #include "definitions.h"
+#ifndef MOCK_TEST
+#include <Preferences.h>
+#endif
 
 /**
  * DATA PATH SPEEDS:
@@ -19,7 +22,8 @@
 
 SystemDataManager::SystemDataManager(SHT4xSensor& sht4, int therm1Pin, int vccPin, double therm1Offset)
     : _sht4(sht4), _therm1Pin(therm1Pin), _vccPin(vccPin), _therm1Offset(therm1Offset),
-      _lastVoltageUpdateMs(0), _lastMahUpdateMs(0), _currentZeroOffsetMv(CURRENT_SHUNT_PIN_ZERO_OFFSET) {
+      _lastVoltageUpdateMs(0), _lastMahUpdateMs(0), _currentZeroOffsetMv(CURRENT_SHUNT_PIN_ZERO_OFFSET),
+      _shuntResistance(CURRENT_SHUNT_RESISTANCE) {
     _dataMutex = nullptr;
     memset(&_currentData, 0, sizeof(_currentData));
     _currentData.current_sample_count = 1; // Non-zero start
@@ -41,6 +45,7 @@ void SystemDataManager::begin() {
         }
     }
     _lastMahUpdateMs = millis();
+    loadSettings();
     Serial.println("SystemDataManager: Initialized.");
 }
 
@@ -100,7 +105,7 @@ void SystemDataManager::processAdcSnapshots() {
         uint32_t avgRawCurrent = calculateSnapshotAverage(_lastSnapshots[ADC_IDX_CURRENT], currentSnap);
         float mv = snapshotToMillivolts(ADC_IDX_CURRENT, avgRawCurrent);
         float shuntMv = mv - _currentZeroOffsetMv;
-        float currentA = (shuntMv / (float)CURRENT_SHUNT_RESISTANCE) / 1000.0f;
+        float currentA = (shuntMv / _shuntResistance) / 1000.0f;
 
         if (xSemaphoreTakeRecursive(_dataMutex, portMAX_DELAY) == pdTRUE) {
             // Remove the clamp to allow noise to average out to zero
@@ -221,4 +226,58 @@ float SystemDataManager::getCurrentZeroOffsetMv() {
         xSemaphoreGiveRecursive(_dataMutex);
     }
     return mv;
+}
+
+void SystemDataManager::setShuntResistance(float resistance) {
+    if (!std::isfinite(resistance) || resistance <= 0.01f || resistance > 1000.0f) return;
+    if (_dataMutex && xSemaphoreTakeRecursive(_dataMutex, portMAX_DELAY) == pdTRUE) {
+        _shuntResistance = resistance;
+        xSemaphoreGiveRecursive(_dataMutex);
+    } else {
+        _shuntResistance = resistance;
+    }
+}
+
+float SystemDataManager::getShuntResistance() {
+    float r = 13.5f;
+    if (_dataMutex && xSemaphoreTakeRecursive(_dataMutex, portMAX_DELAY) == pdTRUE) {
+        r = _shuntResistance;
+        xSemaphoreGiveRecursive(_dataMutex);
+    } else {
+        r = _shuntResistance;
+    }
+    return r;
+}
+
+void SystemDataManager::loadSettings() {
+#ifndef MOCK_TEST
+    Preferences prefs;
+    if (prefs.begin("charger", true)) {
+        float savedShunt = prefs.getFloat("shunt_r", CURRENT_SHUNT_RESISTANCE);
+        if (std::isfinite(savedShunt) && savedShunt > 0.01f && savedShunt < 1000.0f) {
+            setShuntResistance(savedShunt);
+            Serial.printf("SystemDataManager: Loaded saved shunt resistance: %.4f Ohm\n", savedShunt);
+        }
+        prefs.end();
+    }
+#endif
+}
+
+bool SystemDataManager::saveShuntResistance(float resistance) {
+    if (!std::isfinite(resistance) || resistance <= 0.01f || resistance > 1000.0f) {
+        return false;
+    }
+    setShuntResistance(resistance);
+#ifndef MOCK_TEST
+    Preferences prefs;
+    if (prefs.begin("charger", false)) {
+        prefs.putFloat("shunt_r", resistance);
+        prefs.end();
+        Serial.printf("SystemDataManager: Saved shunt resistance to flash: %.4f Ohm\n", resistance);
+        return true;
+    }
+    return false;
+#else
+    return true;
+#endif
 }
