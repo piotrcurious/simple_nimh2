@@ -396,7 +396,7 @@ static float sweepVoltages[15] = {0.0f};
 static float sweepCurrents[15] = {0.0f};
 static int sweepDutyCycles[15] = {0};
 static unsigned long sweepStepStartTime = 0;
-static std::vector<DutyPair> sweepCatPairs;
+static DutyPairBuffer sweepCatPairs;
 
 // Transient recording buffer for thermal characterize sweep step 0
 static constexpr size_t SWEEP_TRANSIENT_MAX_SAMPLES = 64;
@@ -419,6 +419,9 @@ void buildCurrentModelStep() {
 
     switch (buildModelPhase) {
         case BuildModelPhase::Idle:
+            cooloffSamples.reserve(300);
+            dutyCycles.reserve(MAX_DUTY_CYCLE);
+            currents.reserve(MAX_DUTY_CYCLE);
             dutyCycles.clear();
             currents.clear();
             applyDuty(0);
@@ -1002,7 +1005,6 @@ void buildCurrentModelStep() {
                             characPhase = 0;
                             buildModelLastStepTime = now;
                             cooloffSamples.clear();
-                            cooloffSamples.shrink_to_fit();
                             setBuildModelPhase(BuildModelPhase::Idle);
                         }
                     }
@@ -1034,25 +1036,68 @@ void buildCurrentModelStep() {
             break;
         case BuildModelPhase::Finish:
             if (dutyCycles.size() >= 2) {
-                const int degree = 3;
-                AdvancedPolynomialFitter fitter;
-                // Mathematically consistent constrained fit: enforce zero current at zero duty
-                std::vector<float> coeffs = fitter.fitPolynomialLebesgueConstrainedZero(dutyCycles, currents, degree);
+                // Degree 3 constrained zero polynomial fit without AdvancedPolynomialFitter heap allocation
+                size_t n = dutyCycles.size();
+                double ATA[3][3] = {{0.0}};
+                double ATy[3] = {0.0};
+
+                for (size_t i = 0; i < n; ++i) {
+                    double weight = 0.0;
+                    if (n == 1) weight = 1.0;
+                    else if (i == 0) weight = (dutyCycles[1] - dutyCycles[0]);
+                    else if (i == n - 1) weight = (dutyCycles[n - 1] - dutyCycles[n - 2]);
+                    else weight = (dutyCycles[i + 1] - dutyCycles[i - 1]) / 2.0;
+                    if (weight < 0.0) weight = 0.0;
+
+                    double x = dutyCycles[i];
+                    double x1 = x;
+                    double x2 = x * x;
+                    double x3 = x2 * x;
+                    double p[3] = {x1, x2, x3};
+                    double y = currents[i];
+
+                    for (int j = 0; j < 3; ++j) {
+                        ATy[j] += weight * p[j] * y;
+                        for (int k = 0; k < 3; ++k) {
+                            ATA[j][k] += weight * p[j] * p[k];
+                        }
+                    }
+                }
+                for (int j = 0; j < 3; ++j) ATA[j][j] += 1e-6;
+
+                // Gaussian elimination for 3x3 system
+                for (int k = 0; k < 3; ++k) {
+                    int max_row = k;
+                    for (int i = k + 1; i < 3; ++i) if (std::abs(ATA[i][k]) > std::abs(ATA[max_row][k])) max_row = i;
+                    for (int j = 0; j < 3; ++j) std::swap(ATA[k][j], ATA[max_row][j]);
+                    std::swap(ATy[k], ATy[max_row]);
+                    if (std::abs(ATA[k][k]) < 1e-12) continue;
+                    for (int i = k + 1; i < 3; ++i) {
+                        double factor = ATA[i][k] / ATA[k][k];
+                        for (int j = k; j < 3; ++j) ATA[i][j] -= factor * ATA[k][j];
+                        ATy[i] -= factor * ATy[k];
+                    }
+                }
+                double c[3] = {0.0};
+                for (int i = 2; i >= 0; --i) {
+                    double sum = 0.0;
+                    for (int j = i + 1; j < 3; ++j) sum += ATA[i][j] * c[j];
+                    if (std::abs(ATA[i][i]) > 1e-12) c[i] = (ATy[i] - sum) / ATA[i][i];
+                }
 
                 WEB_LOCK();
-                currentModel.coefficients.resize(coeffs.size());
-                for (size_t i = 0; i < coeffs.size(); ++i) {
-                    currentModel.coefficients(i) = coeffs[i];
-                }
+                currentModel.coefficients.resize(4);
+                currentModel.coefficients(0) = 0.0;
+                currentModel.coefficients(1) = std::isfinite(c[0]) ? c[0] : 0.0;
+                currentModel.coefficients(2) = std::isfinite(c[1]) ? c[1] : 0.0;
+                currentModel.coefficients(3) = std::isfinite(c[2]) ? c[2] : 0.0;
 
                 currentModel.isModelBuilt = true;
                 applyDuty(0);
                 WEB_UNLOCK();
 
                 dutyCycles.clear();
-                dutyCycles.shrink_to_fit();
                 currents.clear();
-                currents.shrink_to_fit();
 
                 Serial.println("Duty Cycle Model Built. Transitioning to Thermal Characterization.");
                 buildModelLastStepTime = now;
@@ -1064,9 +1109,7 @@ void buildCurrentModelStep() {
                 postModelAppState = APP_STATE_IDLE;
                 WEB_UNLOCK();
                 dutyCycles.clear();
-                dutyCycles.shrink_to_fit();
                 currents.clear();
-                currents.shrink_to_fit();
                 applyDuty(0);
                 setBuildModelPhase(BuildModelPhase::Idle);
             }
@@ -1226,6 +1269,16 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
 
+    WEB_LOCK();
+    if (chargeLog.capacity() < MAX_CHARGE_LOG_SIZE) {
+        chargeLog.reserve(MAX_CHARGE_LOG_SIZE);
+    }
+    WEB_UNLOCK();
+
+    initInternalResistance();
+    cooloffSamples.reserve(300);
+    dutyCycles.reserve(MAX_DUTY_CYCLE);
+    currents.reserve(MAX_DUTY_CYCLE);
     setupPWM();
     WiFi.setSleep(false); // prevent modem sleep to stay snappy
 

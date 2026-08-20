@@ -230,15 +230,21 @@ void abortMeasurement() {
 }
 
 void startFindOptimalManagerAsync(int maxChargeDutyCycle, int suggestedStartDutyCycle, bool isReeval) {
-    findOpt = FindOptManager();
     findOpt.active = true;
     findOpt.maxDC = (maxChargeDutyCycle < MIN_CHARGE_DUTY_CYCLE) ? MAX_CHARGE_DUTY_CYCLE : maxChargeDutyCycle;
     findOpt.lowDC = std::max(MIN_CHARGE_DUTY_CYCLE, suggestedStartDutyCycle);
     findOpt.highDC = findOpt.maxDC;
     findOpt.optimalDC = findOpt.lowDC;
+    findOpt.closestVoltageDifference = 1000.0f;
+    findOpt.targetVoltage = 0.0f;
+    findOpt.initialUnloadedVoltage = 0.0f;
+    findOpt.cache.clear();
     findOpt.cache.reserve(MAX_RESISTANCE_POINTS);
     findOpt.phase = FIND_INIT_HIGHDC;
     findOpt.isReevaluation = isReeval;
+    findOpt.outliers.clear();
+    findOpt.outlier_measurement_index = 0;
+    findOpt.exploratory_measurement_phase = 0;
     startMHElectrodeMeasurement(findOpt.highDC, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
 }
 
@@ -264,7 +270,7 @@ bool findOptimalChargingDutyCycleStepAsync() {
         return true;
     }
     if (findOpt.phase == RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE) {
-        std::vector<RePoint> explPoints;
+        RePointBuffer explPoints;
         allocateReevaluationCandidates(explPoints, 2);
         int dc = findOpt.lowDC;
         if (!explPoints.empty()) {
@@ -396,7 +402,8 @@ bool findOptimalChargingDutyCycleStepAsync() {
 }
 
 void startRemeasure(float targetCurrent) {
-    remeasure = RemeasureManager(); remeasure.active = true; remeasure.targetCurrent = targetCurrent;
+    remeasure.active = true;
+    remeasure.targetCurrent = targetCurrent;
     int predicted = estimateDutyCycleForCurrent(targetCurrent);
     remeasure.lowDC = (uint8_t)std::max(MIN_CHARGE_DUTY_CYCLE, predicted - 20);
     remeasure.highDC = (uint8_t)std::min(MAX_CHARGE_DUTY_CYCLE, predicted + 20);
@@ -568,7 +575,7 @@ struct PulseIRRemeasure {
     unsigned long stepStartTime = 0;
     float unloadedVoltage = 0.0f;
     float unloadedCurrent = 0.0f;
-    std::vector<RePoint> points;
+    RePointBuffer points;
 };
 static PulseIRRemeasure s_reMeasure;
 
@@ -607,6 +614,7 @@ bool chargeBattery() {
             outgassing_trip_counter = 0;
             outgassingTriggered = false;
             lastHousekeepTime = 0;
+            s_thermalHistory.reserve(60);
             s_thermalHistory.clear();
             lastLogTime = 0;
             g_unappliedEnergy_J = 0.0f;
@@ -877,7 +885,6 @@ bool chargeBattery() {
                             Serial.println("Pulse IR Re-measurement Complete. Fitted new linear regression lines.");
 
                             s_reMeasure.points.clear();
-                            s_reMeasure.points.shrink_to_fit();
 
                             chargingState = CHARGE_PULSE_ACTIVE;
                             pulseCycleStartTime = now;
@@ -1319,6 +1326,5 @@ void stopCharging() {
         chargingState = CHARGE_STOPPED;
         applyDuty(0);
         s_thermalHistory.clear();
-        s_thermalHistory.shrink_to_fit();
     }
 }

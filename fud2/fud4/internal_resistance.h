@@ -3,6 +3,7 @@
 
 #include "definitions.h"
 
+void initInternalResistance();
 void measureInternalResistanceStep();
 void handleGeneratePairs();
 void handlePairGeneration();
@@ -13,7 +14,7 @@ void storeResistanceData(float current, float resistance, float dataArray[MAX_RE
 
 // Duty Cycle Model non-linear region prediction, blind-spot discovery, and pair generation helpers
 bool isDutyCycleLinearRegion(int dc, float& out_slope);
-void generateCategorizedDutyPairs(std::vector<DutyPair>& pairs, int maxPairs);
+void generateCategorizedDutyPairs(DutyPairBuffer& pairs, int maxPairs);
 void findCurrentBlindSpots(float gaps[][2], int& gapCount, float maxOperatingCurrent);
 bool evaluateAndCorrectPairData(int dc1, int dc2, float v1, float v2, float i1, float i2, float& out_I, float& out_IR);
 bool evaluateElectrodeParameters(const ElectrodeTransient &measurement);
@@ -28,15 +29,8 @@ bool evaluateElectrodeParameters(
 
 // Coverage tracking, interval midpoint discovery, and budget candidate allocator
 bool isCurrentCovered(float current, float tolerance);
-void computeIntervalMidpointsAndBlindSpots(std::vector<CandidatePoint>& candidates, float minI, float maxI, float activeCurrent);
+void computeIntervalMidpointsAndBlindSpots(CandidateBuffer& candidates, float minI, float maxI, float activeCurrent);
 
-// Structure definition for PulseIRRemeasure points
-struct RePoint {
-    float current;
-    int duty;
-    bool isPair;
-};
-
-void allocateReevaluationCandidates(std::vector<RePoint>& points, int budget);
+void allocateReevaluationCandidates(RePointBuffer& points, int budget);
 
 #endif

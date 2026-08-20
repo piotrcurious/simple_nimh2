@@ -4,6 +4,7 @@
 #include "adc_dma.h"
 #include "definitions.h"
 
+static esp_adc_cal_characteristics_t adc1_static_chars[ADC1_CHANNEL_COUNT];
 adc_calibration_data_t adc1_cal_data[ADC1_CHANNEL_COUNT];
 bool adc1_cal_initialized[ADC1_CHANNEL_COUNT] = {false};
 
@@ -41,19 +42,10 @@ int analogReadMillivolts(int pin, int attenuation, int oversampling) {
 
   // Initialize calibration data if not already initialized or if attenuation changed
   if (!adc1_cal_initialized[adc1_chan] || adc1_cal_data[adc1_chan].current_atten != attenuation) {
-    if (adc1_cal_data[adc1_chan].adc_chars != NULL) {
-      free(adc1_cal_data[adc1_chan].adc_chars);
-      adc1_cal_data[adc1_chan].adc_chars = NULL;
-    }
-    adc1_cal_data[adc1_chan].adc_chars = (esp_adc_cal_characteristics_t *)malloc(sizeof(esp_adc_cal_characteristics_t));
-    if (adc1_cal_data[adc1_chan].adc_chars != NULL) {
-      esp_adc_cal_characterize(ADC_UNIT_1, attenuation, ADC_WIDTH_BIT_12, 3300, adc1_cal_data[adc1_chan].adc_chars); // Assuming 3.3V Vref
-      adc1_cal_data[adc1_chan].current_atten = attenuation;
-      adc1_cal_initialized[adc1_chan] = true;
-    } else {
-      adc1_cal_initialized[adc1_chan] = false;
-      log_e("analogReadMillivolts", "Failed to allocate memory for ADC calibration data on pin %d!", pin);
-    }
+    adc1_cal_data[adc1_chan].adc_chars = &adc1_static_chars[adc1_chan];
+    esp_adc_cal_characterize(ADC_UNIT_1, attenuation, ADC_WIDTH_BIT_12, 3300, adc1_cal_data[adc1_chan].adc_chars); // Assuming 3.3V Vref
+    adc1_cal_data[adc1_chan].current_atten = attenuation;
+    adc1_cal_initialized[adc1_chan] = true;
   }
 
   int raw_adc = 0;
