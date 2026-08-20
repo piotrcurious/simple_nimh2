@@ -551,9 +551,7 @@ void handleCommand(AsyncWebServerRequest *request) {
 void handleWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
     if (type == WS_EVT_CONNECT) {
         Serial.printf("WS Client connected [%u]\n", client->id());
-        WEB_LOCK();
         sendCborRoot(client);
-        WEB_UNLOCK();
     } else if (type == WS_EVT_DISCONNECT) {
         uint16_t reason = 0;
         if (arg != nullptr) {
@@ -564,9 +562,7 @@ void handleWebSocketEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, 
         AwsFrameInfo *info = (AwsFrameInfo*)arg;
         if (info && info->final && info->index == 0 && info->len == len && len <= MAX_COMMAND_LENGTH) {
             if (info->opcode == WS_TEXT) {
-                WEB_LOCK();
                 processCommandRaw((const char*)data, len, client);
-                WEB_UNLOCK();
             }
         }
     }
@@ -578,14 +574,14 @@ void broadcastLiveTelemetry() {
     if ((uint32_t)(now - lastBroadcast) < 1000U) return;
     lastBroadcast = now;
 
+    StateSnapshot state = getSnapshotState();
+
     WEB_LOCK();
     ws.cleanupClients();
     if (ws.count() == 0) {
         WEB_UNLOCK();
         return;
     }
-
-    StateSnapshot state = getSnapshotState();
 
     uint8_t buffer[256];
     CborWriter w(buffer, sizeof(buffer));
