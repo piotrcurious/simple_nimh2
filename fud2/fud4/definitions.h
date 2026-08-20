@@ -199,6 +199,7 @@ struct CandidatePoint {
     PairType type;
 };
 
+
 struct CandidateBuffer {
     CandidatePoint items[MAX_REEVAL_CANDIDATES];
     size_t count = 0;
@@ -375,6 +376,30 @@ struct MHElectrodeData {
     uint8_t dutyCycle;
 };
 
+constexpr size_t MAX_MHELECTRODE_CACHE = MAX_RESISTANCE_POINTS;
+
+struct MHElectrodeDataBuffer {
+    MHElectrodeData items[MAX_MHELECTRODE_CACHE];
+    size_t count = 0;
+
+    void clear() { count = 0; }
+    bool push_back(const MHElectrodeData& item) {
+        if (count < MAX_MHELECTRODE_CACHE) {
+            items[count++] = item;
+            return true;
+        }
+        return false;
+    }
+    bool empty() const { return count == 0; }
+    size_t size() const { return count; }
+    const MHElectrodeData& operator[](size_t idx) const { return items[idx]; }
+    MHElectrodeData& operator[](size_t idx) { return items[idx]; }
+    const MHElectrodeData* begin() const { return items; }
+    const MHElectrodeData* end() const { return items + count; }
+    MHElectrodeData* begin() { return items; }
+    MHElectrodeData* end() { return items + count; }
+};
+
 enum ChargingState {
     CHARGE_IDLE = 0,
     CHARGE_PULSE_IR_TEST,
@@ -405,6 +430,28 @@ struct OutlierInfo {
     float resistance;
 };
 
+struct OutlierInfoBuffer {
+    OutlierInfo items[MAX_RESISTANCE_POINTS];
+    size_t count = 0;
+
+    void clear() { count = 0; }
+    bool push_back(const OutlierInfo& item) {
+        if (count < MAX_RESISTANCE_POINTS) {
+            items[count++] = item;
+            return true;
+        }
+        return false;
+    }
+    bool empty() const { return count == 0; }
+    size_t size() const { return count; }
+    const OutlierInfo& operator[](size_t idx) const { return items[idx]; }
+    OutlierInfo& operator[](size_t idx) { return items[idx]; }
+    const OutlierInfo* begin() const { return items; }
+    const OutlierInfo* end() const { return items + count; }
+    OutlierInfo* begin() { return items; }
+    OutlierInfo* end() { return items + count; }
+};
+
 struct FindOptManager {
     bool active = false;
     int maxDC = 0;
@@ -414,10 +461,10 @@ struct FindOptManager {
     float closestVoltageDifference = 1000.0f;
     float targetVoltage = 0.0f;
     float initialUnloadedVoltage = 0.0f;
-    std::vector<MHElectrodeData> cache;
+    MHElectrodeDataBuffer cache;
     FindPhase phase = FIND_IDLE;
     bool isReevaluation = false;
-    std::vector<OutlierInfo> outliers;
+    OutlierInfoBuffer outliers;
     int outlier_measurement_index = 0;
     int exploratory_measurement_phase = 0; // 0 for low, 1 for high
 };

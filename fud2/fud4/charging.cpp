@@ -240,7 +240,6 @@ void startFindOptimalManagerAsync(int maxChargeDutyCycle, int suggestedStartDuty
     findOpt.targetVoltage = 0.0f;
     findOpt.initialUnloadedVoltage = 0.0f;
     findOpt.cache.clear();
-    findOpt.cache.reserve(MAX_RESISTANCE_POINTS);
     findOpt.phase = FIND_INIT_HIGHDC;
     findOpt.isReevaluation = isReeval;
     findOpt.outliers.clear();
@@ -335,7 +334,7 @@ bool findOptimalChargingDutyCycleStepAsync() {
             }
         }
         if (findOpt.outliers.empty()) findOpt.phase = RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE;
-        else { std::sort(findOpt.outliers.begin(), findOpt.outliers.end(), [](const OutlierInfo& a, const OutlierInfo& b) { return a.original_index > b.original_index; }); findOpt.phase = RE_EVAL_CORRECTIVE_MEASUREMENT_PREPARE; }
+        else { std::sort(findOpt.outliers.begin(), findOpt.outliers.begin() + findOpt.outliers.size(), [](const OutlierInfo& a, const OutlierInfo& b) { return a.original_index > b.original_index; }); findOpt.phase = RE_EVAL_CORRECTIVE_MEASUREMENT_PREPARE; }
         return true;
     }
     if (findOpt.phase == FIND_BINARY_PREPARE) {
@@ -566,7 +565,7 @@ struct StructuredIRTest {
 };
 static StructuredIRTest s_irTest;
 
-std::vector<ThermalStepResponse> s_thermalHistory;
+ThermalHistoryBuffer s_thermalHistory;
 
 // Structured IR Re-measurement Subsystem Structures
 struct PulseIRRemeasure {
@@ -615,8 +614,9 @@ bool chargeBattery() {
             outgassing_trip_counter = 0;
             outgassingTriggered = false;
             lastHousekeepTime = 0;
-            s_thermalHistory.reserve(60);
+            WEB_LOCK();
             s_thermalHistory.clear();
+            WEB_UNLOCK();
             lastLogTime = 0;
             g_unappliedEnergy_J = 0.0f;
             residualEnergy_J = 0.0f;
@@ -1087,7 +1087,11 @@ bool chargeBattery() {
                 // to cover a full 5 minutes (300 seconds) window with exactly 60 elements.
                 static unsigned long lastThermalHistoryAppendTime = 0;
                 bool appendedHistoryThisTick = false;
-                if (s_thermalHistory.empty() || (now - lastThermalHistoryAppendTime >= THERMAL_HISTORY_LOG_INTERVAL_MS)) {
+                WEB_LOCK();
+                bool shouldAppend = s_thermalHistory.empty() || (now - lastThermalHistoryAppendTime >= THERMAL_HISTORY_LOG_INTERVAL_MS);
+                WEB_UNLOCK();
+
+                if (shouldAppend) {
                     ThermalStepResponse stepResp;
                     stepResp.timestamp = (uint32_t)now;
                     stepResp.current = cur;
@@ -1100,14 +1104,13 @@ bool chargeBattery() {
                     stepResp.ir = R_load_v;
                     stepResp.p_residual = p_residual;
                     stepResp.r_p = r_p_instant;
+
+                    WEB_LOCK();
                     s_thermalHistory.push_back(stepResp);
+                    WEB_UNLOCK();
+
                     lastThermalHistoryAppendTime = now;
                     appendedHistoryThisTick = true;
-
-                    // Prune/cap the history size to prevent SRAM exhaustion (only keep last 60 elements)
-                    if (s_thermalHistory.size() > 60) {
-                        s_thermalHistory.erase(s_thermalHistory.begin(), s_thermalHistory.end() - 60);
-                    }
                 }
 
                 // Detect when cell outgassing changes thermal profile (diverts from theoretical model)
@@ -1127,12 +1130,19 @@ bool chargeBattery() {
                 float accumulatedRpSum = 0.0f;
                 int countPresiduals = 0;
 
+                WEB_LOCK();
+                ThermalHistoryBuffer historySnap = s_thermalHistory;
+                WEB_UNLOCK();
+
                 // Look at the last 5 minutes (300 seconds) of pulse history to verify divergence and overpotential correlation
-                for (auto it = s_thermalHistory.rbegin(); it != s_thermalHistory.rend() && (now - it->timestamp < 300000); ++it) {
-                    accumulatedDivergenceSum += (it->actualTemp - it->predictedTemp);
-                    accumulatedOverpotentialSum += it->overpotential;
-                    accumulatedPresidualSum += it->p_residual;
-                    accumulatedRpSum += it->r_p;
+                for (size_t k = historySnap.size(); k > 0; --k) {
+                    size_t idx = k - 1;
+                    const auto& item = historySnap[idx];
+                    if (now - item.timestamp >= 300000) break;
+                    accumulatedDivergenceSum += (item.actualTemp - item.predictedTemp);
+                    accumulatedOverpotentialSum += item.overpotential;
+                    accumulatedPresidualSum += item.p_residual;
+                    accumulatedRpSum += item.r_p;
                     countDivergences++;
                     countOverpotentials++;
                     countPresiduals++;
@@ -1154,32 +1164,32 @@ bool chargeBattery() {
                 float sumDivergenceForLag = 0.0f;
                 float sumLaggedOverpotential = 0.0f;
 
-                auto get_lagged_overpotential = [](size_t i, uint32_t target_time) -> float {
-                    if (i == 0 || s_thermalHistory.empty()) return -1.0f;
-                    if (s_thermalHistory[0].timestamp > target_time) return -1.0f;
+                auto get_lagged_overpotential = [&historySnap](size_t i, uint32_t target_time) -> float {
+                    if (i == 0 || historySnap.empty()) return -1.0f;
+                    if (historySnap[0].timestamp > target_time) return -1.0f;
                     for (size_t j = i; j > 0; --j) {
                         size_t idx = j - 1;
-                        uint32_t ts_curr = s_thermalHistory[idx].timestamp;
+                        uint32_t ts_curr = historySnap[idx].timestamp;
                         if (ts_curr <= target_time) {
                             if (idx + 1 < i) {
-                                uint32_t ts_next = s_thermalHistory[idx + 1].timestamp;
+                                uint32_t ts_next = historySnap[idx + 1].timestamp;
                                 if (ts_next > ts_curr) {
                                     float frac = (float)(target_time - ts_curr) / (float)(ts_next - ts_curr);
-                                    return s_thermalHistory[idx].overpotential + frac * (s_thermalHistory[idx + 1].overpotential - s_thermalHistory[idx].overpotential);
+                                    return historySnap[idx].overpotential + frac * (historySnap[idx + 1].overpotential - historySnap[idx].overpotential);
                                 }
                             }
                             uint32_t diff = target_time - ts_curr;
-                            return (diff <= 3000) ? s_thermalHistory[idx].overpotential : -1.0f;
+                            return (diff <= 3000) ? historySnap[idx].overpotential : -1.0f;
                         }
                     }
                     return -1.0f;
                 };
 
                 // Pass 1: compute averages for the lagged samples in the 5-minute window
-                for (size_t i = 1; i < s_thermalHistory.size(); ++i) {
-                    if (now - s_thermalHistory[i].timestamp < 300000 && s_thermalHistory[i].timestamp >= 10000) {
-                        float div = s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp;
-                        float over = get_lagged_overpotential(i, s_thermalHistory[i].timestamp - 10000);
+                for (size_t i = 1; i < historySnap.size(); ++i) {
+                    if (now - historySnap[i].timestamp < 300000 && historySnap[i].timestamp >= 10000) {
+                        float div = historySnap[i].actualTemp - historySnap[i].predictedTemp;
+                        float over = get_lagged_overpotential(i, historySnap[i].timestamp - 10000);
                         if (over >= 0.0f) {
                             sumDivergenceForLag += div;
                             sumLaggedOverpotential += over;
@@ -1192,11 +1202,11 @@ bool chargeBattery() {
                 float avgLaggedOverpotential = (activeCount > 0) ? (sumLaggedOverpotential / activeCount) : 0.0f;
 
                 // Pass 2: compute covariance and variances
-                for (size_t i = 1; i < s_thermalHistory.size(); ++i) {
-                    if (now - s_thermalHistory[i].timestamp < 300000 && s_thermalHistory[i].timestamp >= 10000) {
-                        float over = get_lagged_overpotential(i, s_thermalHistory[i].timestamp - 10000);
+                for (size_t i = 1; i < historySnap.size(); ++i) {
+                    if (now - historySnap[i].timestamp < 300000 && historySnap[i].timestamp >= 10000) {
+                        float over = get_lagged_overpotential(i, historySnap[i].timestamp - 10000);
                         if (over >= 0.0f) {
-                            float devDiv = (s_thermalHistory[i].actualTemp - s_thermalHistory[i].predictedTemp) - avgLaggedDivergence;
+                            float devDiv = (historySnap[i].actualTemp - historySnap[i].predictedTemp) - avgLaggedDivergence;
                             float devOver = over - avgLaggedOverpotential;
                             covNumerator += devDiv * devOver;
                             varDivergence += devDiv * devDiv;
@@ -1328,6 +1338,8 @@ void stopCharging() {
     if (currentAppState == APP_STATE_CHARGING && chargingState != CHARGE_STOPPED) {
         chargingState = CHARGE_STOPPED;
         applyDuty(0);
+        WEB_LOCK();
         s_thermalHistory.clear();
+        WEB_UNLOCK();
     }
 }

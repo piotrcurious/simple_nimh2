@@ -18,7 +18,35 @@ struct ThermalStepResponse {
     float r_p;
 };
 
-extern std::vector<ThermalStepResponse> s_thermalHistory;
+constexpr size_t MAX_THERMAL_HISTORY = 60;
+
+struct ThermalHistoryBuffer {
+    ThermalStepResponse items[MAX_THERMAL_HISTORY];
+    size_t count = 0;
+    size_t head = 0; // index of oldest item if full, or next write index if not full
+
+    void clear() { count = 0; head = 0; }
+    void push_back(const ThermalStepResponse& item) {
+        if (count < MAX_THERMAL_HISTORY) {
+            items[count++] = item;
+        } else {
+            items[head] = item;
+            head = (head + 1) % MAX_THERMAL_HISTORY;
+        }
+    }
+    bool empty() const { return count == 0; }
+    size_t size() const { return count; }
+    const ThermalStepResponse& operator[](size_t idx) const {
+        if (count < MAX_THERMAL_HISTORY) return items[idx];
+        return items[(head + idx) % MAX_THERMAL_HISTORY];
+    }
+    ThermalStepResponse& operator[](size_t idx) {
+        if (count < MAX_THERMAL_HISTORY) return items[idx];
+        return items[(head + idx) % MAX_THERMAL_HISTORY];
+    }
+};
+
+extern ThermalHistoryBuffer s_thermalHistory;
 extern double prev_t1;
 extern double prev_t2;
 extern double t1_deriv;
