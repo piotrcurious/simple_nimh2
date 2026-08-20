@@ -453,6 +453,19 @@ void handleCalibratePage(AsyncWebServerRequest *request) {
     request->send(response);
 }
 
+static bool parseSizeT(const char *s, size_t &out) {
+    if (!s || !*s) return false;
+    size_t value = 0;
+    for (; *s; ++s) {
+        if (*s < '0' || *s > '9') return false;
+        const size_t digit = static_cast<size_t>(*s - '0');
+        if (value > (SIZE_MAX - digit) / 10) return false;
+        value = value * 10 + digit;
+    }
+    out = value;
+    return true;
+}
+
 static bool cmdMatch(const char* data, size_t len, const char* target) {
     size_t tlen = strlen(target);
     return (len == tlen && memcmp(data, target, len) == 0);
@@ -483,11 +496,15 @@ static bool processCommandRaw(const char* data, size_t len, AsyncWebSocketClient
     if (len >= 13 && memcmp(cmdBuf, "REQ_CHARGELOG", 13) == 0) {
         if (!client) return false;
         size_t startOffset = 0;
-        if (len > 14 && cmdBuf[13] == ':') {
-            startOffset = (size_t)atoi(cmdBuf + 14);
+        if (len == 13) {
+            sendCborChargeLog(client, 0);
+            return true;
+        } else if (cmdBuf[13] == ':') {
+            if (!parseSizeT(cmdBuf + 14, startOffset)) return false;
+            sendCborChargeLog(client, startOffset);
+            return true;
         }
-        sendCborChargeLog(client, startOffset);
-        return true;
+        return false;
     }
     if (cmdMatch(cmdBuf, len, "REQ_IR")) {
         if (!client) return false;
@@ -538,7 +555,7 @@ static bool processCommandRaw(const char* data, size_t len, AsyncWebSocketClient
         setBuildModelPhase(BuildModelPhase::Idle);
         setAppState(APP_STATE_BUILDING_MODEL);
         return true;
-    } else if (cmdMatch(data, len, "ir")) {
+    } else if (cmdMatch(cmdBuf, len, "ir")) {
         bool modelBuilt = false;
         WEB_LOCK();
         isMeasuringResistance = true;
@@ -557,12 +574,12 @@ static bool processCommandRaw(const char* data, size_t len, AsyncWebSocketClient
             setAppState(APP_STATE_BUILDING_MODEL);
         }
         return true;
-    } else if (cmdMatch(data, len, "reset")) {
+    } else if (cmdMatch(cmdBuf, len, "reset")) {
         WEB_LOCK();
         resetAh = true;
         WEB_UNLOCK();
         return true;
-    } else if (cmdMatch(data, len, "stop")) {
+    } else if (cmdMatch(cmdBuf, len, "stop")) {
         setAppState(APP_STATE_IDLE);
         applyDuty(0);
         return true;
