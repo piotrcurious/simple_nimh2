@@ -1750,33 +1750,47 @@ void storeOrAverageResistanceData(float current, float resistance, float data[][
     insertDataPoint(data, count, current, resistance, insertIndex);
 }
 
-float computeMedian(std::vector<float>& v) {
-    if (v.empty()) return 0.0f;
-    size_t n = v.size();
+static float computeMedianArray(float* v, size_t n) {
+    if (n == 0) return 0.0f;
     size_t mid = n / 2;
-    std::nth_element(v.begin(), v.begin() + mid, v.end());
+    std::nth_element(v, v + mid, v + n);
     float med = v[mid];
     if (n % 2 == 0) {
-        auto it = std::max_element(v.begin(), v.begin() + mid);
-        med = (med + *it) / 2.0f;
+        auto max_it = std::max_element(v, v + mid);
+        med = (med + *max_it) / 2.0f;
     }
     return med;
 }
 
 void distribute_error(float data[][2], int count, float spacing_threshold, float error_threshold_multiplier) {
     if (count < DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE) return;
-    std::vector<float> res;
-    res.reserve(MAX_RESISTANCE_POINTS);
+    float res[MAX_RESISTANCE_POINTS];
     for (int i = 0; i <= count - DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE; ++i) {
         for (int j = i + (DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE - 1); j < count; ++j) {
             if (data[j][0] - data[i][0] <= spacing_threshold) {
-                res.clear();
-                for (int k = i; k <= j; ++k) res.push_back(data[k][1]);
-                if ((int)res.size() >= DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE) {
-                    float median = computeMedian(res), sumSq = 0.0f;
-                    for (float r : res) { float d = r - median; sumSq += d * d; }
-                    float stdDev = std::sqrt(sumSq / res.size()), errorThreshold = error_threshold_multiplier * stdDev;
+                size_t resCount = 0;
+                for (int k = i; k <= j; ++k) {
+                    if (resCount < MAX_RESISTANCE_POINTS) {
+                        res[resCount++] = data[k][1];
+                    }
+                }
+                if ((int)resCount >= DISTRIBUTE_ERROR_MIN_NEIGHBORHOOD_SIZE) {
+                    // Compute stdDev before computeMedianArray reorders res array in place
+                    float sumVal = 0.0f;
+                    for (size_t k = 0; k < resCount; ++k) sumVal += res[k];
+                    float meanVal = sumVal / (float)resCount;
+
+                    float sumSq = 0.0f;
+                    for (size_t k = 0; k < resCount; ++k) {
+                        float d = res[k] - meanVal;
+                        sumSq += d * d;
+                    }
+                    float stdDev = std::sqrt(sumSq / (float)resCount);
+
+                    float median = computeMedianArray(res, resCount);
+                    float errorThreshold = error_threshold_multiplier * stdDev;
                     const float alpha = DISTRIBUTE_ERROR_SMOOTHING_ALPHA;
+
                     for (int k = i; k <= j; ++k) {
                         if (std::fabs(data[k][1] - median) > errorThreshold && stdDev > 1e-9f) {
                             data[k][1] = alpha * median + (1.0f - alpha) * data[k][1];
