@@ -264,7 +264,7 @@ bool findOptimalChargingDutyCycleStepAsync() {
         return true;
     }
     if (findOpt.phase == RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE) {
-        std::vector<RePoint> explPoints;
+        RePointBuffer explPoints;
         allocateReevaluationCandidates(explPoints, 2);
         int dc = findOpt.lowDC;
         if (!explPoints.empty()) {
@@ -568,7 +568,7 @@ struct PulseIRRemeasure {
     unsigned long stepStartTime = 0;
     float unloadedVoltage = 0.0f;
     float unloadedCurrent = 0.0f;
-    std::vector<RePoint> points;
+    RePointBuffer points;
 };
 static PulseIRRemeasure s_reMeasure;
 
@@ -877,7 +877,6 @@ bool chargeBattery() {
                             Serial.println("Pulse IR Re-measurement Complete. Fitted new linear regression lines.");
 
                             s_reMeasure.points.clear();
-                            s_reMeasure.points.shrink_to_fit();
 
                             chargingState = CHARGE_PULSE_ACTIVE;
                             pulseCycleStartTime = now;
@@ -1319,6 +1318,5 @@ void stopCharging() {
         chargingState = CHARGE_STOPPED;
         applyDuty(0);
         s_thermalHistory.clear();
-        s_thermalHistory.shrink_to_fit();
     }
 }

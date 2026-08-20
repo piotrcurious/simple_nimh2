@@ -1002,7 +1002,6 @@ void buildCurrentModelStep() {
                             characPhase = 0;
                             buildModelLastStepTime = now;
                             cooloffSamples.clear();
-                            cooloffSamples.shrink_to_fit();
                             setBuildModelPhase(BuildModelPhase::Idle);
                         }
                     }
@@ -1050,9 +1049,7 @@ void buildCurrentModelStep() {
                 WEB_UNLOCK();
 
                 dutyCycles.clear();
-                dutyCycles.shrink_to_fit();
                 currents.clear();
-                currents.shrink_to_fit();
 
                 Serial.println("Duty Cycle Model Built. Transitioning to Thermal Characterization.");
                 buildModelLastStepTime = now;
@@ -1064,9 +1061,7 @@ void buildCurrentModelStep() {
                 postModelAppState = APP_STATE_IDLE;
                 WEB_UNLOCK();
                 dutyCycles.clear();
-                dutyCycles.shrink_to_fit();
                 currents.clear();
-                currents.shrink_to_fit();
                 applyDuty(0);
                 setBuildModelPhase(BuildModelPhase::Idle);
             }
@@ -1226,6 +1221,7 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
 
+    initInternalResistance();
     setupPWM();
     WiFi.setSleep(false); // prevent modem sleep to stay snappy
 

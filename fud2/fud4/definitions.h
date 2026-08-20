@@ -166,11 +166,63 @@ struct IRPairRecord {
     uint32_t timestamp;
 };
 
+constexpr size_t MAX_REEVAL_CANDIDATES = 32;
+
 struct CandidatePoint {
     float current;
     int duty;
     float score;
     PairType type;
+};
+
+struct CandidateBuffer {
+    CandidatePoint items[MAX_REEVAL_CANDIDATES];
+    size_t count = 0;
+
+    void clear() { count = 0; }
+    bool push_back(const CandidatePoint& item) {
+        if (count < MAX_REEVAL_CANDIDATES) {
+            items[count++] = item;
+            return true;
+        }
+        return false;
+    }
+    bool empty() const { return count == 0; }
+    size_t size() const { return count; }
+    const CandidatePoint& operator[](size_t idx) const { return items[idx]; }
+    CandidatePoint& operator[](size_t idx) { return items[idx]; }
+    const CandidatePoint* begin() const { return items; }
+    const CandidatePoint* end() const { return items + count; }
+    CandidatePoint* begin() { return items; }
+    CandidatePoint* end() { return items + count; }
+};
+
+struct RePoint {
+    float current;
+    int duty;
+    bool isPair;
+};
+
+struct RePointBuffer {
+    RePoint items[MAX_REEVAL_CANDIDATES];
+    size_t count = 0;
+
+    void clear() { count = 0; }
+    bool push_back(const RePoint& item) {
+        if (count < MAX_REEVAL_CANDIDATES) {
+            items[count++] = item;
+            return true;
+        }
+        return false;
+    }
+    bool empty() const { return count == 0; }
+    size_t size() const { return count; }
+    const RePoint& operator[](size_t idx) const { return items[idx]; }
+    RePoint& operator[](size_t idx) { return items[idx]; }
+    const RePoint* begin() const { return items; }
+    const RePoint* end() const { return items + count; }
+    RePoint* begin() { return items; }
+    RePoint* end() { return items + count; }
 };
 
 struct ElectrodeParameters

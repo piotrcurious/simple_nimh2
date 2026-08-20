@@ -3,6 +3,7 @@
 
 #include "definitions.h"
 
+void initInternalResistance();
 void measureInternalResistanceStep();
 void handleGeneratePairs();
 void handlePairGeneration();
@@ -28,15 +29,8 @@ bool evaluateElectrodeParameters(
 
 // Coverage tracking, interval midpoint discovery, and budget candidate allocator
 bool isCurrentCovered(float current, float tolerance);
-void computeIntervalMidpointsAndBlindSpots(std::vector<CandidatePoint>& candidates, float minI, float maxI, float activeCurrent);
+void computeIntervalMidpointsAndBlindSpots(CandidateBuffer& candidates, float minI, float maxI, float activeCurrent);
 
-// Structure definition for PulseIRRemeasure points
-struct RePoint {
-    float current;
-    int duty;
-    bool isPair;
-};
-
-void allocateReevaluationCandidates(std::vector<RePoint>& points, int budget);
+void allocateReevaluationCandidates(RePointBuffer& points, int budget);
 
 #endif

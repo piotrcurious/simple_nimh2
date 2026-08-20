@@ -992,6 +992,14 @@ void getSingleMeasurement(int dc, IRState nextState) {
     currentIRState = IR_STATE_GET_MEASUREMENT;
 }
 
+void initInternalResistance() {
+    voltagesLoaded.reserve(MAX_RESISTANCE_POINTS);
+    currentsLoaded.reserve(MAX_RESISTANCE_POINTS);
+    ir_dutyCycles.reserve(MAX_RESISTANCE_POINTS);
+    consecutiveInternalResistances.reserve(MAX_RESISTANCE_POINTS);
+    dutyCyclePairs.reserve(MAX_RESISTANCE_POINTS / 2);
+}
+
 // Reset all state variables for new measurement
 void resetMeasurementState() {
     WEB_LOCK();
@@ -1000,19 +1008,10 @@ void resetMeasurementState() {
     WEB_UNLOCK();
 
     voltagesLoaded.clear();
-    voltagesLoaded.reserve(MAX_RESISTANCE_POINTS);
-
     currentsLoaded.clear();
-    currentsLoaded.reserve(MAX_RESISTANCE_POINTS);
-
     ir_dutyCycles.clear();
-    ir_dutyCycles.reserve(MAX_RESISTANCE_POINTS);
-
     consecutiveInternalResistances.clear();
-    consecutiveInternalResistances.reserve(MAX_RESISTANCE_POINTS);
-
     dutyCyclePairs.clear();
-    dutyCyclePairs.reserve(MAX_RESISTANCE_POINTS / 2);
 
     pairIndex = 0;
     measureStep = 0;
@@ -1180,32 +1179,45 @@ bool isCurrentCovered(float current, float tolerance) {
     return false;
 }
 
-void computeIntervalMidpointsAndBlindSpots(std::vector<CandidatePoint>& candidates, float minI, float maxI, float activeCurrent) {
+void computeIntervalMidpointsAndBlindSpots(CandidateBuffer& candidates, float minI, float maxI, float activeCurrent) {
     candidates.clear();
-    std::vector<float> uniqueCurrents;
+
+    constexpr size_t MAX_UNIQUE_CURRENTS = MAX_RESISTANCE_POINTS * 2 + 2;
+    float uniqueCurrents[MAX_UNIQUE_CURRENTS];
+    size_t uniqueCount = 0;
 
     WEB_LOCK();
     int countPairs = std::clamp(resistanceDataCountPairs, 0, (int)MAX_RESISTANCE_POINTS);
-    uniqueCurrents.reserve(countPairs + std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS) + 2);
     for (int i = 0; i < countPairs; ++i) {
         float cur = internalResistanceDataPairs[i][0];
-        if (cur >= minI && cur <= maxI) uniqueCurrents.push_back(cur);
+        if (cur >= minI && cur <= maxI && uniqueCount < MAX_UNIQUE_CURRENTS) {
+            uniqueCurrents[uniqueCount++] = cur;
+        }
     }
     int countLu = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
     for (int i = 0; i < countLu; ++i) {
         float cur = internalResistanceData[i][0];
-        if (cur >= minI && cur <= maxI) uniqueCurrents.push_back(cur);
+        if (cur >= minI && cur <= maxI && uniqueCount < MAX_UNIQUE_CURRENTS) {
+            uniqueCurrents[uniqueCount++] = cur;
+        }
     }
     WEB_UNLOCK();
 
-    uniqueCurrents.push_back(minI);
-    uniqueCurrents.push_back(maxI);
+    if (uniqueCount < MAX_UNIQUE_CURRENTS) uniqueCurrents[uniqueCount++] = minI;
+    if (uniqueCount < MAX_UNIQUE_CURRENTS) uniqueCurrents[uniqueCount++] = maxI;
 
-    std::sort(uniqueCurrents.begin(), uniqueCurrents.end());
-    uniqueCurrents.erase(std::unique(uniqueCurrents.begin(), uniqueCurrents.end(),
-        [](float a, float b) { return std::fabs(a - b) < 0.003f; }), uniqueCurrents.end());
+    std::sort(uniqueCurrents, uniqueCurrents + uniqueCount);
 
-    if (uniqueCurrents.size() < 2) {
+    // Dedup uniqueCurrents in-place
+    size_t newCount = 0;
+    for (size_t i = 0; i < uniqueCount; ++i) {
+        if (newCount == 0 || std::fabs(uniqueCurrents[i] - uniqueCurrents[newCount - 1]) >= 0.003f) {
+            uniqueCurrents[newCount++] = uniqueCurrents[i];
+        }
+    }
+    uniqueCount = newCount;
+
+    if (uniqueCount < 2) {
         float mid = (minI + maxI) / 2.0f;
         CandidatePoint cp;
         cp.current = mid;
@@ -1216,7 +1228,7 @@ void computeIntervalMidpointsAndBlindSpots(std::vector<CandidatePoint>& candidat
         return;
     }
 
-    for (size_t k = 0; k < uniqueCurrents.size() - 1; ++k) {
+    for (size_t k = 0; k < uniqueCount - 1; ++k) {
         float i1 = uniqueCurrents[k];
         float i2 = uniqueCurrents[k + 1];
         float gapWidth = i2 - i1;
@@ -1236,7 +1248,7 @@ void computeIntervalMidpointsAndBlindSpots(std::vector<CandidatePoint>& candidat
             cp.duty = dcMid;
             cp.score = score;
             cp.type = PAIR_TYPE_RANDOM_BLINDSPOT;
-            candidates.push_back(cp);
+            if (!candidates.push_back(cp)) break;
         }
     }
 
@@ -1246,17 +1258,18 @@ void computeIntervalMidpointsAndBlindSpots(std::vector<CandidatePoint>& candidat
 
 void findCurrentBlindSpots(float gaps[][2], int& gapCount, float maxOperatingCurrent) {
     gapCount = 0;
-    std::vector<CandidatePoint> candidates;
+    CandidateBuffer candidates;
     computeIntervalMidpointsAndBlindSpots(candidates, MEASURABLE_CURRENT_THRESHOLD, maxOperatingCurrent, maximumCurrent);
-    for (const auto& cp : candidates) {
+    for (size_t i = 0; i < candidates.size(); ++i) {
         if (gapCount >= 5) break;
+        const auto& cp = candidates[i];
         gaps[gapCount][0] = cp.current - 0.01f;
         gaps[gapCount][1] = cp.current + 0.01f;
         gapCount++;
     }
 }
 
-void allocateReevaluationCandidates(std::vector<RePoint>& points, int budget) {
+void allocateReevaluationCandidates(RePointBuffer& points, int budget) {
     points.clear();
     if (budget <= 0) return;
 
@@ -1297,17 +1310,18 @@ void allocateReevaluationCandidates(std::vector<RePoint>& points, int budget) {
     }
 
     // 2. Exploration / Top-Scoring Interval Midpoints
-    std::vector<CandidatePoint> candidates;
+    CandidateBuffer candidates;
     computeIntervalMidpointsAndBlindSpots(candidates, minI, maxI, activeI);
 
-    for (const auto& cand : candidates) {
+    for (size_t i = 0; i < candidates.size(); ++i) {
         if ((int)points.size() >= budget) break;
+        const auto& cand = candidates[i];
         if (!isCurrentCovered(cand.current, EXPLORATION_TOLERANCE_CURRENT)) {
             RePoint pExpl;
             pExpl.current = cand.current;
             pExpl.duty = cand.duty;
             pExpl.isPair = true;
-            points.push_back(pExpl);
+            if (!points.push_back(pExpl)) break;
         }
     }
 
@@ -1320,7 +1334,7 @@ void allocateReevaluationCandidates(std::vector<RePoint>& points, int budget) {
             pRand.current = randI;
             pRand.duty = dcRand;
             pRand.isPair = false;
-            points.push_back(pRand);
+            if (!points.push_back(pRand)) break;
         } else {
             break;
         }
@@ -1640,15 +1654,10 @@ void completeResistanceMeasurement() {
     WEB_UNLOCK();
 
     dutyCyclePairs.clear();
-    dutyCyclePairs.shrink_to_fit();
     voltagesLoaded.clear();
-    voltagesLoaded.shrink_to_fit();
     currentsLoaded.clear();
-    currentsLoaded.shrink_to_fit();
     ir_dutyCycles.clear();
-    ir_dutyCycles.shrink_to_fit();
     consecutiveInternalResistances.clear();
-    consecutiveInternalResistances.shrink_to_fit();
 
     isMeasuringResistance = false;
     applyDuty(0);
@@ -1782,34 +1791,38 @@ void distribute_error(float data[][2], int count, float spacing_threshold, float
 
 bool performLinearRegression(float data[][2], int count, float& slope, float& intercept) {
     if (count < 2) return false;
-#ifndef MOCK_TEST_DISABLED // Use it even in mock if possible, but let's provide a fallback
-    std::vector<float> x(count), y(count);
-    for (int i = 0; i < count; ++i) {
-        x[i] = data[i][0];
-        y[i] = data[i][1];
-    }
-    AdvancedPolynomialFitter fitter;
-    std::vector<float> coeffs = fitter.fitPolynomialLebesgue(x, y, 1);
-    if (coeffs.size() >= 2) {
-        intercept = coeffs[0];
-        slope = coeffs[1];
-    } else {
-        return false;
-    }
-#else
-    // Simple least squares fallback for mock or if fitter fails
-    double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+
+    double sumW = 0.0, sumWX = 0.0, sumWY = 0.0, sumWXY = 0.0, sumWX2 = 0.0;
+
     for (int i = 0; i < count; i++) {
-        sumX += data[i][0];
-        sumY += data[i][1];
-        sumXY += (double)data[i][0] * data[i][1];
-        sumX2 += (double)data[i][0] * data[i][0];
+        double x_val = data[i][0];
+        double y_val = data[i][1];
+
+        // Lebesgue measure weighting based on sorted X intervals
+        double weight = 0.0;
+        if (count == 1) {
+            weight = 1.0;
+        } else if (i == 0) {
+            weight = (double)(data[1][0] - data[0][0]);
+        } else if (i == count - 1) {
+            weight = (double)(data[count - 1][0] - data[count - 2][0]);
+        } else {
+            weight = (double)(data[i + 1][0] - data[i - 1][0]) / 2.0;
+        }
+        if (weight < 0.0) weight = 0.0;
+
+        sumW += weight;
+        sumWX += weight * x_val;
+        sumWY += weight * y_val;
+        sumWXY += weight * x_val * y_val;
+        sumWX2 += weight * x_val * x_val;
     }
-    double denominator = (count * sumX2 - sumX * sumX);
-    if (std::abs(denominator) < 1e-9) return false;
-    slope = (float)((count * sumXY - sumX * sumY) / denominator);
-    intercept = (float)((sumY - (double)slope * sumX) / count);
-#endif
+
+    double denominator = (sumW * sumWX2 - sumWX * sumWX) + 1e-6;
+    if (std::abs(denominator) < 1e-9 || sumW < 1e-9) return false;
+
+    slope = (float)((sumW * sumWXY - sumWX * sumWY) / denominator);
+    intercept = (float)((sumWY - (double)slope * sumWX) / sumW);
 
     // Calculate Standard Error of the Regression to determine fit quality / error
     double ss_resid = 0.0;
