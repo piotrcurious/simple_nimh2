@@ -334,7 +334,7 @@ bool findOptimalChargingDutyCycleStepAsync() {
             }
         }
         if (findOpt.outliers.empty()) findOpt.phase = RE_EVAL_EXPLORATORY_MEASUREMENT_PREPARE;
-        else { std::sort(findOpt.outliers.begin(), findOpt.outliers.begin() + findOpt.outliers.size(), [](const OutlierInfo& a, const OutlierInfo& b) { return a.original_index > b.original_index; }); findOpt.phase = RE_EVAL_CORRECTIVE_MEASUREMENT_PREPARE; }
+        else { std::sort(findOpt.outliers.begin(), findOpt.outliers.end(), [](const OutlierInfo& a, const OutlierInfo& b) { return a.original_index > b.original_index; }); findOpt.phase = RE_EVAL_CORRECTIVE_MEASUREMENT_PREPARE; }
         return true;
     }
     if (findOpt.phase == FIND_BINARY_PREPARE) {
@@ -1143,17 +1143,28 @@ bool chargeBattery() {
                 WEB_UNLOCK();
 
                 // Look at the last 5 minutes (300 seconds) of pulse history to verify divergence and overpotential correlation
+                uint32_t now_ts = (uint32_t)now;
                 for (size_t k = historySnap.size(); k > 0; --k) {
                     size_t idx = k - 1;
                     const auto& item = historySnap[idx];
-                    if (now - item.timestamp >= 300000) break;
-                    accumulatedDivergenceSum += (item.actualTemp - item.predictedTemp);
-                    accumulatedOverpotentialSum += item.overpotential;
-                    accumulatedPresidualSum += item.p_residual;
-                    accumulatedRpSum += item.r_p;
-                    countDivergences++;
-                    countOverpotentials++;
-                    countPresiduals++;
+                    uint32_t elapsed = now_ts - item.timestamp;
+                    if (elapsed >= 300000) break;
+                    float div = item.actualTemp - item.predictedTemp;
+                    if (std::isfinite(div)) {
+                        accumulatedDivergenceSum += div;
+                        countDivergences++;
+                    }
+                    if (std::isfinite(item.overpotential)) {
+                        accumulatedOverpotentialSum += item.overpotential;
+                        countOverpotentials++;
+                    }
+                    if (std::isfinite(item.p_residual)) {
+                        accumulatedPresidualSum += item.p_residual;
+                        countPresiduals++;
+                    }
+                    if (std::isfinite(item.r_p)) {
+                        accumulatedRpSum += item.r_p;
+                    }
                 }
 
                 float avgDivergence = (countDivergences > 0) ? (accumulatedDivergenceSum / countDivergences) : 0.0f;
@@ -1164,13 +1175,13 @@ bool chargeBattery() {
                 // Calculate Pearson-like covariance/correlation coefficient over the window with a 10s lag.
                 // We correlate divergence(t) with overpotential(t - 10s) using jitter-immune timestamp-based search
                 // to physically compensate for sensor thermal lag.
-                float covNumerator = 0.0f;
-                float varDivergence = 0.0f;
-                float varOverpotential = 0.0f;
+                double covNumerator = 0.0;
+                double varDivergence = 0.0;
+                double varOverpotential = 0.0;
 
                 int activeCount = 0;
-                float sumDivergenceForLag = 0.0f;
-                float sumLaggedOverpotential = 0.0f;
+                double sumDivergenceForLag = 0.0;
+                double sumLaggedOverpotential = 0.0;
 
                 auto get_lagged_overpotential = [&historySnap](size_t i, uint32_t target_time) -> float {
                     if (i == 0 || historySnap.empty()) return -1.0f;
@@ -1183,11 +1194,12 @@ bool chargeBattery() {
                                 uint32_t ts_next = historySnap[idx + 1].timestamp;
                                 if (ts_next > ts_curr) {
                                     float frac = (float)(target_time - ts_curr) / (float)(ts_next - ts_curr);
-                                    return historySnap[idx].overpotential + frac * (historySnap[idx + 1].overpotential - historySnap[idx].overpotential);
+                                    float interpolated = historySnap[idx].overpotential + frac * (historySnap[idx + 1].overpotential - historySnap[idx].overpotential);
+                                    return std::isfinite(interpolated) ? interpolated : -1.0f;
                                 }
                             }
                             uint32_t diff = target_time - ts_curr;
-                            return (diff <= 3000) ? historySnap[idx].overpotential : -1.0f;
+                            return (diff <= 3000 && std::isfinite(historySnap[idx].overpotential)) ? historySnap[idx].overpotential : -1.0f;
                         }
                     }
                     return -1.0f;
@@ -1195,27 +1207,30 @@ bool chargeBattery() {
 
                 // Pass 1: compute averages for the lagged samples in the 5-minute window
                 for (size_t i = 1; i < historySnap.size(); ++i) {
-                    if (now - historySnap[i].timestamp < 300000 && historySnap[i].timestamp >= 10000) {
+                    if (now_ts - historySnap[i].timestamp < 300000) {
+                        uint32_t target_ts = (historySnap[i].timestamp >= 10000) ? (historySnap[i].timestamp - 10000) : 0;
                         float div = historySnap[i].actualTemp - historySnap[i].predictedTemp;
-                        float over = get_lagged_overpotential(i, historySnap[i].timestamp - 10000);
-                        if (over >= 0.0f) {
-                            sumDivergenceForLag += div;
-                            sumLaggedOverpotential += over;
+                        float over = get_lagged_overpotential(i, target_ts);
+                        if (std::isfinite(div) && std::isfinite(over) && over >= 0.0f) {
+                            sumDivergenceForLag += (double)div;
+                            sumLaggedOverpotential += (double)over;
                             activeCount++;
                         }
                     }
                 }
 
-                float avgLaggedDivergence = (activeCount > 0) ? (sumDivergenceForLag / activeCount) : 0.0f;
-                float avgLaggedOverpotential = (activeCount > 0) ? (sumLaggedOverpotential / activeCount) : 0.0f;
+                double avgLaggedDivergence = (activeCount > 0) ? (sumDivergenceForLag / activeCount) : 0.0;
+                double avgLaggedOverpotential = (activeCount > 0) ? (sumLaggedOverpotential / activeCount) : 0.0;
 
                 // Pass 2: compute covariance and variances
                 for (size_t i = 1; i < historySnap.size(); ++i) {
-                    if (now - historySnap[i].timestamp < 300000 && historySnap[i].timestamp >= 10000) {
-                        float over = get_lagged_overpotential(i, historySnap[i].timestamp - 10000);
-                        if (over >= 0.0f) {
-                            float devDiv = (historySnap[i].actualTemp - historySnap[i].predictedTemp) - avgLaggedDivergence;
-                            float devOver = over - avgLaggedOverpotential;
+                    if (now_ts - historySnap[i].timestamp < 300000) {
+                        uint32_t target_ts = (historySnap[i].timestamp >= 10000) ? (historySnap[i].timestamp - 10000) : 0;
+                        float div = historySnap[i].actualTemp - historySnap[i].predictedTemp;
+                        float over = get_lagged_overpotential(i, target_ts);
+                        if (std::isfinite(div) && std::isfinite(over) && over >= 0.0f) {
+                            double devDiv = (double)div - avgLaggedDivergence;
+                            double devOver = (double)over - avgLaggedOverpotential;
                             covNumerator += devDiv * devOver;
                             varDivergence += devDiv * devDiv;
                             varOverpotential += devOver * devOver;
@@ -1225,15 +1240,10 @@ bool chargeBattery() {
 
                 float correlation = 0.0f;
                 // Enforce a minimum sample count of 20 to prevent spurious statistical correlation with sparse start-of-pulse data
-                if (activeCount >= 20 && varDivergence > 1e-6f && varOverpotential > 1e-6f) {
-                    correlation = covNumerator / std::sqrt(varDivergence * varOverpotential);
-                    // Robustness Guard: Clamp correlation to mathematical [-1.0, 1.0] domain
-                    if (std::isnan(correlation)) {
-                        correlation = 0.0f;
-                    } else if (correlation > 1.0f) {
-                        correlation = 1.0f;
-                    } else if (correlation < -1.0f) {
-                        correlation = -1.0f;
+                if (activeCount >= 20 && varDivergence > 1e-9 && varOverpotential > 1e-9) {
+                    double rawCorr = covNumerator / std::sqrt(varDivergence * varOverpotential);
+                    if (std::isfinite(rawCorr)) {
+                        correlation = std::clamp((float)rawCorr, -1.0f, 1.0f);
                     }
                 }
 
@@ -1287,8 +1297,8 @@ bool chargeBattery() {
                 }
 
                 // Safety and End of Charge checks: debounce both overtemperature and outgassing triggers
-                if (td_true > (MAX_DIFF_TEMP)) {
-                    if (++overtemp_trip_counter >= OVERTEMP_TRIP_TRESHOLD) {
+                if (td_true > (MAX_DIFF_TEMP) || outgassingTriggered) {
+                    if (++overtemp_trip_counter >= OVERTEMP_TRIP_TRESHOLD || outgassingTriggered) {
                         overtemp_trip_counter = 0;
                         outgassing_trip_counter = 0;
                         chargingState = CHARGE_STOPPED;
