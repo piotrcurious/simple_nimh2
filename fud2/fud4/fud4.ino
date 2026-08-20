@@ -396,7 +396,7 @@ static float sweepVoltages[15] = {0.0f};
 static float sweepCurrents[15] = {0.0f};
 static int sweepDutyCycles[15] = {0};
 static unsigned long sweepStepStartTime = 0;
-static std::vector<DutyPair> sweepCatPairs;
+static DutyPairBuffer sweepCatPairs;
 
 // Transient recording buffer for thermal characterize sweep step 0
 static constexpr size_t SWEEP_TRANSIENT_MAX_SAMPLES = 64;
@@ -419,6 +419,9 @@ void buildCurrentModelStep() {
 
     switch (buildModelPhase) {
         case BuildModelPhase::Idle:
+            cooloffSamples.reserve(300);
+            dutyCycles.reserve(MAX_DUTY_CYCLE);
+            currents.reserve(MAX_DUTY_CYCLE);
             dutyCycles.clear();
             currents.clear();
             applyDuty(0);
@@ -1222,6 +1225,9 @@ void setup() {
     digitalWrite(LED_PIN, LOW);
 
     initInternalResistance();
+    cooloffSamples.reserve(300);
+    dutyCycles.reserve(MAX_DUTY_CYCLE);
+    currents.reserve(MAX_DUTY_CYCLE);
     setupPWM();
     WiFi.setSleep(false); // prevent modem sleep to stay snappy
 

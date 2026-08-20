@@ -1341,7 +1341,7 @@ void allocateReevaluationCandidates(RePointBuffer& points, int budget) {
     }
 }
 
-void generateCategorizedDutyPairs(std::vector<DutyPair>& pairs, int maxPairs) {
+void generateCategorizedDutyPairs(DutyPairBuffer& pairs, int maxPairs) {
     pairs.clear();
     int minDC = minimalDutyCycle;
     if (minDC < MIN_DUTY_CYCLE_START) minDC = MIN_DUTY_CYCLE_START;
@@ -1444,7 +1444,7 @@ void generateCategorizedDutyPairs(std::vector<DutyPair>& pairs, int maxPairs) {
             r1.type = PAIR_TYPE_RANDOM_BLINDSPOT;
             r1.targetLowCurrent = estimateCurrent(r1.lowDC);
             r1.targetHighCurrent = estimateCurrent(r1.highDC);
-            pairs.push_back(r1);
+            if (!pairs.push_back(r1)) break;
         }
     }
 
@@ -1460,7 +1460,7 @@ void generateCategorizedDutyPairs(std::vector<DutyPair>& pairs, int maxPairs) {
             rPair.type = PAIR_TYPE_RANDOM_BLINDSPOT;
             rPair.targetLowCurrent = estimateCurrent(rPair.lowDC);
             rPair.targetHighCurrent = estimateCurrent(rPair.highDC);
-            pairs.push_back(rPair);
+            if (!pairs.push_back(rPair)) break;
         } else {
             break;
         }
@@ -1528,12 +1528,12 @@ bool evaluateAndCorrectPairData(int dc1, int dc2, float v1, float v2, float i1, 
 }
 
 void handlePairGeneration() {
-    std::vector<DutyPair> catPairs;
+    DutyPairBuffer catPairs;
     generateCategorizedDutyPairs(catPairs, MAX_RESISTANCE_POINTS / 2);
 
     dutyCyclePairs.clear();
-    for (const auto& cp : catPairs) {
-        dutyCyclePairs.push_back({cp.lowDC, cp.highDC});
+    for (size_t i = 0; i < catPairs.size(); ++i) {
+        dutyCyclePairs.push_back({catPairs[i].lowDC, catPairs[i].highDC});
     }
 
     currentIRState = IR_STATE_MEASURE_L_UL;

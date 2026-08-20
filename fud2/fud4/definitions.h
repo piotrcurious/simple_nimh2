@@ -159,6 +159,30 @@ struct DutyPair {
     float targetHighCurrent;
 };
 
+constexpr size_t MAX_DUTY_PAIRS = MAX_RESISTANCE_POINTS / 2;
+
+struct DutyPairBuffer {
+    DutyPair items[MAX_DUTY_PAIRS];
+    size_t count = 0;
+
+    void clear() { count = 0; }
+    bool push_back(const DutyPair& item) {
+        if (count < MAX_DUTY_PAIRS) {
+            items[count++] = item;
+            return true;
+        }
+        return false;
+    }
+    bool empty() const { return count == 0; }
+    size_t size() const { return count; }
+    const DutyPair& operator[](size_t idx) const { return items[idx]; }
+    DutyPair& operator[](size_t idx) { return items[idx]; }
+    const DutyPair* begin() const { return items; }
+    const DutyPair* end() const { return items + count; }
+    DutyPair* begin() { return items; }
+    DutyPair* end() { return items + count; }
+};
+
 struct IRPairRecord {
     float current1;
     float current2;

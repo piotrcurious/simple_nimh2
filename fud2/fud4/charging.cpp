@@ -614,6 +614,7 @@ bool chargeBattery() {
             outgassing_trip_counter = 0;
             outgassingTriggered = false;
             lastHousekeepTime = 0;
+            s_thermalHistory.reserve(60);
             s_thermalHistory.clear();
             lastLogTime = 0;
             g_unappliedEnergy_J = 0.0f;
