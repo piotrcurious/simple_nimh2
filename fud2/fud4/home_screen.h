@@ -16,7 +16,6 @@ public:
 
     float temp_history[PLOT_WIDTH];
     float humidity_history[PLOT_WIDTH];
-    float dew_point_history[PLOT_WIDTH];
 
 private:
     unsigned long lastRenderMs;

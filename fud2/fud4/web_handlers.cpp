@@ -241,18 +241,21 @@ static void sendCborHistory(AsyncWebSocketClient *client) {
     std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
     if (!buf) return;
 
-    float snap_t1[PLOT_WIDTH];
-    float snap_t2[PLOT_WIDTH];
-    float snap_td[PLOT_WIDTH];
-    float snap_v[PLOT_WIDTH];
-    float snap_i[PLOT_WIDTH];
+    std::unique_ptr<float[]> snap(new (std::nothrow) float[PLOT_WIDTH * 5]);
+    if (!snap) return;
+
+    float* snap_t1 = snap.get();
+    float* snap_t2 = snap.get() + PLOT_WIDTH;
+    float* snap_td = snap.get() + PLOT_WIDTH * 2;
+    float* snap_v  = snap.get() + PLOT_WIDTH * 3;
+    float* snap_i  = snap.get() + PLOT_WIDTH * 4;
 
     WEB_LOCK();
-    memcpy(snap_t1, temp1_values, sizeof(snap_t1));
-    memcpy(snap_t2, temp2_values, sizeof(snap_t2));
-    memcpy(snap_td, diff_values, sizeof(snap_td));
-    memcpy(snap_v, voltage_values, sizeof(snap_v));
-    memcpy(snap_i, current_values, sizeof(snap_i));
+    memcpy(snap_t1, temp1_values, sizeof(float) * PLOT_WIDTH);
+    memcpy(snap_t2, temp2_values, sizeof(float) * PLOT_WIDTH);
+    memcpy(snap_td, diff_values, sizeof(float) * PLOT_WIDTH);
+    memcpy(snap_v,  voltage_values, sizeof(float) * PLOT_WIDTH);
+    memcpy(snap_i,  current_values, sizeof(float) * PLOT_WIDTH);
     WEB_UNLOCK();
 
     CborWriter w(buf.get(), cap);
@@ -271,25 +274,22 @@ static void sendCborHistory(AsyncWebSocketClient *client) {
 static void sendCborAmbient(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
 
-    size_t cap = PLOT_WIDTH * 3 * 5 + 64;
+    size_t cap = PLOT_WIDTH * 2 * 5 + 64;
     std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
     if (!buf) return;
 
     float snap_t[PLOT_WIDTH];
     float snap_h[PLOT_WIDTH];
-    float snap_d[PLOT_WIDTH];
 
     WEB_LOCK();
     memcpy(snap_t, homeScreen.temp_history, sizeof(snap_t));
     memcpy(snap_h, homeScreen.humidity_history, sizeof(snap_h));
-    memcpy(snap_d, homeScreen.dew_point_history, sizeof(snap_d));
     WEB_UNLOCK();
 
     CborWriter w(buf.get(), cap);
-    w.startMap(3);
+    w.startMap(2);
     w.addText("t"); cborAddFloatArray(w, snap_t, PLOT_WIDTH);
     w.addText("h"); cborAddFloatArray(w, snap_h, PLOT_WIDTH);
-    w.addText("d"); cborAddFloatArray(w, snap_d, PLOT_WIDTH);
 
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
@@ -381,7 +381,7 @@ static void sendCborChargeLog(AsyncWebSocketClient *client, size_t startOffset =
 static void sendCborRoot(AsyncWebSocketClient *client) {
     if (!clientReadyForMessage(client, WS_STATE_HIGH_WATER)) return;
 
-    size_t cap = PLOT_WIDTH * 3 * 5 + 384;
+    size_t cap = PLOT_WIDTH * 2 * 5 + 384;
     std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
     if (!buf) return;
 
@@ -389,12 +389,10 @@ static void sendCborRoot(AsyncWebSocketClient *client) {
 
     float snap_t[PLOT_WIDTH];
     float snap_h[PLOT_WIDTH];
-    float snap_d[PLOT_WIDTH];
 
     WEB_LOCK();
     memcpy(snap_t, homeScreen.temp_history, sizeof(snap_t));
     memcpy(snap_h, homeScreen.humidity_history, sizeof(snap_h));
-    memcpy(snap_d, homeScreen.dew_point_history, sizeof(snap_d));
     WEB_UNLOCK();
 
     CborWriter w(buf.get(), cap);
@@ -402,10 +400,9 @@ static void sendCborRoot(AsyncWebSocketClient *client) {
     w.addText("state");   appendCborState(w, state);
 
     w.addText("ambient");
-    w.startMap(3);
+    w.startMap(2);
     w.addText("t"); cborAddFloatArray(w, snap_t, PLOT_WIDTH);
     w.addText("h"); cborAddFloatArray(w, snap_h, PLOT_WIDTH);
-    w.addText("d"); cborAddFloatArray(w, snap_d, PLOT_WIDTH);
 
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
