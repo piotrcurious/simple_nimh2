@@ -334,9 +334,11 @@ static void sendCborChargeLog(AsyncWebSocketClient *client, size_t startOffset =
 
     size_t total = 0;
     size_t itemsInBatch = 0;
+    uint32_t generation = 0;
 
     WEB_LOCK();
     total = chargeLog.size();
+    generation = chargeLogGeneration;
     if (total > 0 && startOffset < total) {
         size_t batchEnd = std::min(total, startOffset + batchSize);
         for (size_t j = startOffset; j < batchEnd; j++) {
@@ -354,9 +356,10 @@ static void sendCborChargeLog(AsyncWebSocketClient *client, size_t startOffset =
     uint8_t status = (startOffset + itemsInBatch >= total) ? 1 : 0; // 1 = complete, 0 = in-progress
 
     CborWriter w(buf.get(), cap);
-    w.startMap(4);
+    w.startMap(5);
     w.addText("offset"); w.addUInt(startOffset);
     w.addText("status"); w.addUInt(status);
+    w.addText("gen");    w.addUInt(generation);
     w.addText("batch");  w.startArray(itemsInBatch);
 
     for (size_t k = 0; k < itemsInBatch; k++) {
