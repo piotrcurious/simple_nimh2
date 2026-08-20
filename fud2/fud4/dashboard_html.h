@@ -1344,12 +1344,31 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       }
 
       else if (data.batch !== undefined) {
-      // Chargelog batch: clear buffer on first packet of new stream
-        if (data.offset === 0) {
-         chargeLogBuffer = [];
+        // Chargelog batch: detect dataset mutation via generation tracking
+        if (data.gen !== undefined) {
+          if (window._chargeLogGen !== undefined && window._chargeLogGen !== data.gen) {
+            chargeLogBuffer = [];
+            window._chargeLogGen = data.gen;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send('REQ_CHARGELOG:0');
+            }
+            return;
+          }
+          window._chargeLogGen = data.gen;
         }
-      chargeLogBuffer.push(...data.batch);
-      renderCharge(chargeLogBuffer);
+
+        if (data.offset === 0) {
+          chargeLogBuffer = [];
+        }
+        chargeLogBuffer.push(...data.batch);
+        renderCharge(chargeLogBuffer);
+
+        if (data.status === 0 && data.batch.length > 0) {
+          const nextOffset = data.offset + data.batch.length;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(`REQ_CHARGELOG:${nextOffset}`);
+          }
+        }
       }
 
     }

@@ -278,12 +278,15 @@ static void sendCborAmbient(AsyncWebSocketClient *client) {
     std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
     if (!buf) return;
 
-    float snap_t[PLOT_WIDTH];
-    float snap_h[PLOT_WIDTH];
+    std::unique_ptr<float[]> snap(new (std::nothrow) float[PLOT_WIDTH * 2]);
+    if (!snap) return;
+
+    float* snap_t = snap.get();
+    float* snap_h = snap.get() + PLOT_WIDTH;
 
     WEB_LOCK();
-    memcpy(snap_t, homeScreen.temp_history, sizeof(snap_t));
-    memcpy(snap_h, homeScreen.humidity_history, sizeof(snap_h));
+    memcpy(snap_t, homeScreen.temp_history, sizeof(float) * PLOT_WIDTH);
+    memcpy(snap_h, homeScreen.humidity_history, sizeof(float) * PLOT_WIDTH);
     WEB_UNLOCK();
 
     CborWriter w(buf.get(), cap);
@@ -303,22 +306,25 @@ static void sendCborIR(AsyncWebSocketClient *client) {
     std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[cap]);
     if (!buf) return;
 
-    float snap_lu[MAX_RESISTANCE_POINTS][2];
-    float snap_pairs[MAX_RESISTANCE_POINTS][2];
+    typedef float PairXY[2];
+    std::unique_ptr<PairXY[]> snap_lu(new (std::nothrow) PairXY[MAX_RESISTANCE_POINTS]);
+    std::unique_ptr<PairXY[]> snap_pairs(new (std::nothrow) PairXY[MAX_RESISTANCE_POINTS]);
+    if (!snap_lu || !snap_pairs) return;
+
     int luCount = 0;
     int pairsCount = 0;
 
     WEB_LOCK();
     luCount = std::clamp(resistanceDataCount, 0, (int)MAX_RESISTANCE_POINTS);
     pairsCount = std::clamp(resistanceDataCountPairs, 0, (int)MAX_RESISTANCE_POINTS);
-    if (luCount > 0) memcpy(snap_lu, internalResistanceData, luCount * sizeof(float) * 2);
-    if (pairsCount > 0) memcpy(snap_pairs, internalResistanceDataPairs, pairsCount * sizeof(float) * 2);
+    if (luCount > 0) memcpy(snap_lu.get(), internalResistanceData, luCount * sizeof(float) * 2);
+    if (pairsCount > 0) memcpy(snap_pairs.get(), internalResistanceDataPairs, pairsCount * sizeof(float) * 2);
     WEB_UNLOCK();
 
     CborWriter w(buf.get(), cap);
     w.startMap(2);
-    w.addText("lu");    cborAddXYPairs(w, snap_lu, luCount);
-    w.addText("pairs"); cborAddXYPairs(w, snap_pairs, pairsCount);
+    w.addText("lu");    cborAddXYPairs(w, snap_lu.get(), luCount);
+    w.addText("pairs"); cborAddXYPairs(w, snap_pairs.get(), pairsCount);
 
     if (w.ok() && w.size() > 0) {
         client->binary(w.data(), w.size());
@@ -334,13 +340,16 @@ static void sendCborChargeLog(AsyncWebSocketClient *client, size_t startOffset =
 
     size_t total = 0;
     size_t itemsInBatch = 0;
+    uint32_t generation = 0;
 
     WEB_LOCK();
     total = chargeLog.size();
+    generation = chargeLogGeneration;
     if (total > 0 && startOffset < total) {
-        size_t batchEnd = std::min(total, startOffset + batchSize);
-        for (size_t j = startOffset; j < batchEnd; j++) {
-            batchEntries[itemsInBatch++] = chargeLog[j];
+        const size_t remaining = total - startOffset;
+        itemsInBatch = std::min(batchSize, remaining);
+        for (size_t j = 0; j < itemsInBatch; j++) {
+            batchEntries[j] = chargeLog[startOffset + j];
         }
     }
     WEB_UNLOCK();
@@ -354,9 +363,10 @@ static void sendCborChargeLog(AsyncWebSocketClient *client, size_t startOffset =
     uint8_t status = (startOffset + itemsInBatch >= total) ? 1 : 0; // 1 = complete, 0 = in-progress
 
     CborWriter w(buf.get(), cap);
-    w.startMap(4);
+    w.startMap(5);
     w.addText("offset"); w.addUInt(startOffset);
     w.addText("status"); w.addUInt(status);
+    w.addText("gen");    w.addUInt(generation);
     w.addText("batch");  w.startArray(itemsInBatch);
 
     for (size_t k = 0; k < itemsInBatch; k++) {
@@ -387,12 +397,15 @@ static void sendCborRoot(AsyncWebSocketClient *client) {
 
     StateSnapshot state = getSnapshotState();
 
-    float snap_t[PLOT_WIDTH];
-    float snap_h[PLOT_WIDTH];
+    std::unique_ptr<float[]> snap(new (std::nothrow) float[PLOT_WIDTH * 2]);
+    if (!snap) return;
+
+    float* snap_t = snap.get();
+    float* snap_h = snap.get() + PLOT_WIDTH;
 
     WEB_LOCK();
-    memcpy(snap_t, homeScreen.temp_history, sizeof(snap_t));
-    memcpy(snap_h, homeScreen.humidity_history, sizeof(snap_h));
+    memcpy(snap_t, homeScreen.temp_history, sizeof(float) * PLOT_WIDTH);
+    memcpy(snap_h, homeScreen.humidity_history, sizeof(float) * PLOT_WIDTH);
     WEB_UNLOCK();
 
     CborWriter w(buf.get(), cap);
