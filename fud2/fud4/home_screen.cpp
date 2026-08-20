@@ -15,7 +15,6 @@ void HomeScreen::begin() {
     for (size_t i = 0; i < PLOT_WIDTH; ++i) {
         temp_history[i] = NAN;
         humidity_history[i] = NAN;
-        dew_point_history[i] = NAN;
     }
 }
 
@@ -33,15 +32,12 @@ void HomeScreen::gatherData() {
     WEB_LOCK();
     shiftHistoryLeft(temp_history, PLOT_WIDTH);
     shiftHistoryLeft(humidity_history, PLOT_WIDTH);
-    shiftHistoryLeft(dew_point_history, PLOT_WIDTH);
 
     float t = sht4Sensor.getTemperature();
     float h = sht4Sensor.getHumidity();
-    float d = static_cast<float>(calculateDewPoint(t, h));
 
     temp_history[PLOT_WIDTH - 1] = t;
     humidity_history[PLOT_WIDTH - 1] = h;
-    dew_point_history[PLOT_WIDTH - 1] = d;
     WEB_UNLOCK();
 }
 

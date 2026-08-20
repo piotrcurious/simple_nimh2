@@ -1187,6 +1187,20 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       drawSeries(ctx, data.td, '#58a8ff', -0.5, maxDT, margin, 'dT', 1);
     }
 
+    function calculateDewPoint(t, h) {
+      if (t === null || h === null || t === undefined || h === undefined) return null;
+      if (!Number.isFinite(t) || !Number.isFinite(h)) return null;
+      const a = 17.27;
+      const b = 237.7;
+      let humidity = h;
+      if (humidity <= 0.0) humidity = 0.0001;
+      if (humidity > 100.0) humidity = 100.0;
+      let temp = t;
+      const alpha = ((a * temp) / (b + temp)) + Math.log(humidity / 100.0);
+      const dew = (b * alpha) / (a - alpha);
+      return Number.isFinite(dew) ? dew : temp;
+    }
+
     function renderAmbient(data) {
       const canvas = document.getElementById('ambientGraph');
       const ctx = canvas.getContext('2d');
@@ -1194,10 +1208,17 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       fitCanvas(canvas);
       clearCanvas(ctx);
 
+      let dewData = null;
+      if (data && data.t && data.h) {
+        dewData = data.t.map((tVal, idx) => calculateDewPoint(tVal, data.h[idx]));
+      } else if (data && data.d) {
+        dewData = data.d;
+      }
+
       drawAxes(ctx, margin, 0, 320, 'Time', 0, 100, 'T / H');
-      drawSeries(ctx, data.t, '#ff6c7a', 10, 40, margin, 'T', 1);
-      drawSeries(ctx, data.d, '#58ff98', 10, 40, margin, 'Dew', 1);
-      drawSeries(ctx, data.h, '#58a8ff', 0, 100, margin, 'H', 1);
+      drawSeries(ctx, data ? data.t : null, '#ff6c7a', 10, 40, margin, 'T', 1);
+      drawSeries(ctx, dewData, '#58ff98', 10, 40, margin, 'Dew', 1);
+      drawSeries(ctx, data ? data.h : null, '#58a8ff', 0, 100, margin, 'H', 1);
 
       const y = canvas.height - margin.bottom - (65 / 100) * (canvas.height - margin.top - margin.bottom);
       ctx.save();

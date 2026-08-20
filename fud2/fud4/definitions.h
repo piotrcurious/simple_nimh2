@@ -436,6 +436,7 @@ extern uint32_t chargeLogGeneration;
 extern unsigned long lastPlotUpdateTime;
 extern unsigned long lastChargingHouseTime;
 
+#ifndef WEB_LOCK
 #ifndef MOCK_TEST
 extern AsyncWebSocket ws;
 extern SemaphoreHandle_t webDataMutex;
@@ -444,6 +445,7 @@ extern SemaphoreHandle_t webDataMutex;
 #else
 #define WEB_LOCK()
 #define WEB_UNLOCK()
+#endif
 #endif
 
 extern volatile AppState currentAppState;
