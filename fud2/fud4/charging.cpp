@@ -407,7 +407,9 @@ void startRemeasure(float targetCurrent) {
     int predicted = estimateDutyCycleForCurrent(targetCurrent);
     remeasure.lowDC = (uint8_t)std::max(MIN_CHARGE_DUTY_CYCLE, predicted - 20);
     remeasure.highDC = (uint8_t)std::min(MAX_CHARGE_DUTY_CYCLE, predicted + 20);
-    remeasure.phase = REMEASURE_BINARY_SEARCH_PREPARE;
+    int initialDuty = (remeasure.lowDC + remeasure.highDC) / 2;
+    startMHElectrodeMeasurement(initialDuty, STABILIZATION_DELAY_MS, UNLOADED_VOLTAGE_DELAY_MS);
+    remeasure.phase = REMEASURE_BINARY_SEARCH_WAIT;
 }
 
 bool remeasureStep() {
