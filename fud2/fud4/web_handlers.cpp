@@ -162,25 +162,14 @@ struct StateSnapshot {
     uint32_t min_free_heap;
     uint32_t max_alloc_heap;
     uint32_t total_heap;
-    uint16_t chargelog_len;
-    uint16_t thermal_hist_len;
+    uint32_t chargelog_len;
+    uint32_t thermal_hist_len;
     float shunt_r;
     float shunt_mv;
 };
 
 static StateSnapshot getSnapshotState() {
     StateSnapshot s;
-    WEB_LOCK();
-    s.app = currentAppState;
-    s.display = currentDisplayState;
-    s.duty = dutyCycle;
-    s.v = voltage_mv / 1000.0f;
-    s.i = current_ma / 1000.0f;
-    s.mah = (float)mAh_charged;
-    s.max_dt = MAX_DIFF_TEMP;
-    s.phase = buildModelPhase;
-    s.offset = systemData.getCurrentZeroOffsetMv();
-    s.noise = (float)noiseFloorMv;
 #ifndef MOCK_TEST
     s.free_heap = ESP.getFreeHeap();
     s.min_free_heap = ESP.getMinFreeHeap();
@@ -192,8 +181,20 @@ static StateSnapshot getSnapshotState() {
     s.max_alloc_heap = 110000;
     s.total_heap = 320000;
 #endif
-    s.chargelog_len = (uint16_t)chargeLog.size();
-    s.thermal_hist_len = (uint16_t)s_thermalHistory.size();
+
+    WEB_LOCK();
+    s.app = currentAppState;
+    s.display = currentDisplayState;
+    s.duty = dutyCycle;
+    s.v = voltage_mv / 1000.0f;
+    s.i = current_ma / 1000.0f;
+    s.mah = (float)mAh_charged;
+    s.max_dt = MAX_DIFF_TEMP;
+    s.phase = buildModelPhase;
+    s.offset = systemData.getCurrentZeroOffsetMv();
+    s.noise = (float)noiseFloorMv;
+    s.chargelog_len = (uint32_t)chargeLog.size();
+    s.thermal_hist_len = (uint32_t)s_thermalHistory.size();
     s.shunt_r = systemData.getShuntResistance();
     s.shunt_mv = systemData.getData().current_mv - systemData.getCurrentZeroOffsetMv();
     WEB_UNLOCK();
