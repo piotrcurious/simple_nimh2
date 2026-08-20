@@ -984,6 +984,14 @@ bool evaluateElectrodeParameters(
     return evaluateElectrodeParameters(measurement);
 }
 
+ElectrodeParameters getElectrodeParametersSnapshot() {
+    ElectrodeParameters snap;
+    WEB_LOCK();
+    snap = g_electrode;
+    WEB_UNLOCK();
+    return snap;
+}
+
 // Helper function to initiate measurement
 void getSingleMeasurement(int dc, IRState nextState) {
     applyDuty(dc);
@@ -1087,7 +1095,8 @@ void measureInternalResistanceStep() {
 
         case IR_STATE_GET_MEASUREMENT:
             {
-                unsigned long reqDelay = g_electrode.evaluated ? g_electrode.adaptiveDelayMs : STABILIZATION_DELAY_MS;
+                ElectrodeParameters electrodeSnap = getElectrodeParametersSnapshot();
+                unsigned long reqDelay = electrodeSnap.evaluated ? electrodeSnap.adaptiveDelayMs : STABILIZATION_DELAY_MS;
                 if (now - irStateChangeTime >= reqDelay) {
                     getThermistorReadings(currentMeasurement.temp1, currentMeasurement.temp2,
                                          currentMeasurement.tempDiff, currentMeasurement.t1_millivolts,
@@ -1806,37 +1815,21 @@ void distribute_error(float data[][2], int count, float spacing_threshold, float
 bool performLinearRegression(float data[][2], int count, float& slope, float& intercept) {
     if (count < 2) return false;
 
-    double sumW = 0.0, sumWX = 0.0, sumWY = 0.0, sumWXY = 0.0, sumWX2 = 0.0;
-
+    double sumX = 0.0, sumY = 0.0, sumXY = 0.0, sumX2 = 0.0;
     for (int i = 0; i < count; i++) {
         double x_val = data[i][0];
         double y_val = data[i][1];
-
-        // Lebesgue measure weighting based on sorted X intervals
-        double weight = 0.0;
-        if (count == 1) {
-            weight = 1.0;
-        } else if (i == 0) {
-            weight = (double)(data[1][0] - data[0][0]);
-        } else if (i == count - 1) {
-            weight = (double)(data[count - 1][0] - data[count - 2][0]);
-        } else {
-            weight = (double)(data[i + 1][0] - data[i - 1][0]) / 2.0;
-        }
-        if (weight < 0.0) weight = 0.0;
-
-        sumW += weight;
-        sumWX += weight * x_val;
-        sumWY += weight * y_val;
-        sumWXY += weight * x_val * y_val;
-        sumWX2 += weight * x_val * x_val;
+        sumX += x_val;
+        sumY += y_val;
+        sumXY += x_val * y_val;
+        sumX2 += x_val * x_val;
     }
 
-    double denominator = (sumW * sumWX2 - sumWX * sumWX) + 1e-6;
-    if (std::abs(denominator) < 1e-9 || sumW < 1e-9) return false;
+    double denominator = ((double)count * sumX2 - sumX * sumX);
+    if (std::abs(denominator) < 1e-9) return false;
 
-    slope = (float)((sumW * sumWXY - sumWX * sumWY) / denominator);
-    intercept = (float)((sumWY - (double)slope * sumWX) / sumW);
+    slope = (float)(((double)count * sumXY - sumX * sumY) / denominator);
+    intercept = (float)((sumY - (double)slope * sumX) / (double)count);
 
     // Calculate Standard Error of the Regression to determine fit quality / error
     double ss_resid = 0.0;
