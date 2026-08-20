@@ -38,6 +38,11 @@ public:
     void setCurrentZeroOffsetMv(float mv);
     float getCurrentZeroOffsetMv();
 
+    void setShuntResistance(float resistance);
+    float getShuntResistance();
+    bool saveShuntResistance(float resistance);
+    void loadSettings();
+
 private:
     SHT4xSensor& _sht4;
     int _therm1Pin;
@@ -54,6 +59,7 @@ public:
 private:
 #endif
     float _currentZeroOffsetMv;
+    float _shuntResistance;
     SemaphoreHandle_t _dataMutex;
 
     uint32_t _lastVoltageUpdateMs;

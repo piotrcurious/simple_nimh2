@@ -336,6 +336,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
       <button onclick="sendCommand('ir')">Measure IR</button>
       <button onclick="sendCommand('reset')">Reset Ah</button>
       <button onclick="sendCommand('stop')">Stop</button>
+      <button onclick="window.location.href='/calibrate'">Calibrate Current</button>
     </div>
 
     <div class="panel fullWidth memPanel" style="margin-top: 2px; margin-bottom: 2px;">
